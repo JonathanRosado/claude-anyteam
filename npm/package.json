@@ -1,13 +1,14 @@
 {
   "name": "claude-anyteam",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Beautiful zero-friction installer for claude-anyteam in Claude Code.",
   "type": "module",
   "bin": {
-    "claude-anyteam-setup": "./bin/setup.js"
+    "claude-anyteam": "bin/setup.js",
+    "claude-anyteam-setup": "bin/setup.js"
   },
   "scripts": {
-    "postinstall": "node ./bin/setup.js --postinstall"
+    "postinstall": "node bin/setup.js --postinstall"
   },
   "files": [
     "bin",
