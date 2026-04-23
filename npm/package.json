@@ -24,6 +24,14 @@
     "agent-teams",
     "developer-tools"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JonathanRosado/claude-anyteam.git"
+  },
+  "homepage": "https://github.com/JonathanRosado/claude-anyteam#readme",
+  "bugs": {
+    "url": "https://github.com/JonathanRosado/claude-anyteam/issues"
+  },
   "license": "MIT",
   "dependencies": {
     "gradient-string": "3.0.0",
