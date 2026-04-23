@@ -1,0 +1,33 @@
+{
+  "name": "codex-teammate",
+  "version": "0.1.0",
+  "description": "Beautiful zero-friction installer for codex-teammate in Claude Code.",
+  "type": "module",
+  "bin": {
+    "codex-teammate-setup": "./bin/setup.js"
+  },
+  "scripts": {
+    "postinstall": "node ./bin/setup.js --postinstall"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "codex",
+    "claude-code",
+    "installer",
+    "agent-teams",
+    "developer-tools"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "gradient-string": "3.0.0",
+    "yocto-spinner": "1.1.0",
+    "yoctocolors": "2.1.2"
+  }
+}
