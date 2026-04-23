@@ -3,6 +3,8 @@ set -eu
 
 PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 SETTINGS_PATH=${HOME}/.claude/settings.json
+CONFIG_VALIDATED=0
+ORIENTATION_MESSAGE="claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex. Docs: https://github.com/JonathanRosado/claude-anyteam"
 
 has_configured_command() {
   if [ ! -f "$SETTINGS_PATH" ]; then
@@ -10,7 +12,7 @@ has_configured_command() {
   fi
 
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$SETTINGS_PATH" <<'PY'
+    if python3 - "$SETTINGS_PATH" <<'PY'
 import json
 import os
 import sys
@@ -40,7 +42,11 @@ def valid_executable(value: object) -> bool:
 
 raise SystemExit(0 if valid_executable(command) and valid_executable(binary) else 1)
 PY
-    return $?
+    then
+      CONFIG_VALIDATED=1
+      return 0
+    fi
+    return 1
   fi
 
   grep -Eq '"CLAUDE_CODE_TEAMMATE_COMMAND"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
@@ -48,10 +54,14 @@ PY
 }
 
 if has_configured_command; then
+  if [ "$CONFIG_VALIDATED" -eq 1 ]; then
+    printf '%s\n' "$ORIENTATION_MESSAGE"
+  fi
   exit 0
 fi
 
 if "$PLUGIN_ROOT/bin/claude-anyteam" install >/dev/null; then
+  printf '%s\n' "$ORIENTATION_MESSAGE"
   exit 0
 else
   status=$?

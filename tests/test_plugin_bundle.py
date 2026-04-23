@@ -13,6 +13,11 @@ MARKETPLACE_MANIFEST = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 HOOK_SCRIPT = REPO_ROOT / "hooks" / "session-start.sh"
 WRAPPER_SCRIPT = REPO_ROOT / "bin" / "claude-anyteam"
 HELP_SKILL = REPO_ROOT / "skills" / "help" / "SKILL.md"
+STATUS_SKILL = REPO_ROOT / "skills" / "status" / "SKILL.md"
+ORIENTATION_MESSAGE = (
+    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex. "
+    "Docs: https://github.com/JonathanRosado/claude-anyteam"
+)
 
 
 def _make_executable(path: Path, body: str) -> Path:
@@ -39,13 +44,21 @@ def test_plugin_manifests_exist_and_are_well_formed() -> None:
 def test_help_skill_exists_and_teaches_claude_about_codex_teammates() -> None:
     content = HELP_SKILL.read_text(encoding="utf-8")
 
-    assert "claude-anyteam is installed" in content
-    assert "codex-<something>" in content
+    assert "name: help" in content
+    assert "claude-anyteam installed" in content
+    assert "codex-<name>" in content
     assert "~/.claude/settings.json" in content
     assert "Codex works today" in content
     assert "https://github.com/JonathanRosado/claude-anyteam" in content
     assert "when_to_use:" in content
     assert "disable-model-invocation: true" not in content
+
+
+def test_status_skill_has_required_name_frontmatter() -> None:
+    content = STATUS_SKILL.read_text(encoding="utf-8")
+
+    assert "name: status" in content
+    assert "disable-model-invocation: true" in content
 
 
 def test_wrapper_delegates_to_real_console_script(tmp_path: Path) -> None:
@@ -128,6 +141,7 @@ def test_session_start_hook_skips_install_when_command_is_already_configured(tmp
 
     assert completed.returncode == 0
     assert not marker.exists()
+    assert completed.stdout.strip() == ORIENTATION_MESSAGE
 
 
 def test_session_start_hook_repairs_missing_binary_entry(tmp_path: Path) -> None:
@@ -169,6 +183,7 @@ def test_session_start_hook_repairs_missing_binary_entry(tmp_path: Path) -> None
 
     assert completed.returncode == 0
     assert marker.read_text(encoding="utf-8").strip() == "install"
+    assert completed.stdout.strip() == ORIENTATION_MESSAGE
 
 
 def test_session_start_hook_repairs_missing_executable_paths(tmp_path: Path) -> None:
@@ -235,7 +250,7 @@ def test_session_start_hook_runs_install_once_when_missing(tmp_path: Path) -> No
 
     assert completed.returncode == 0
     assert marker.read_text(encoding="utf-8").strip() == "install"
-    assert completed.stdout == ""
+    assert completed.stdout.strip() == ORIENTATION_MESSAGE
 
 
 def test_session_start_hook_uses_grep_fallback_when_python3_is_missing(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 ---
+name: status
 description: Show claude-anyteam plugin setup status and the adapter launch command.
 disable-model-invocation: true
 ---
