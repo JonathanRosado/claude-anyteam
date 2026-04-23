@@ -62,6 +62,16 @@ def test_exec_injects_model_override_when_set():
     assert 'model="gpt-5.4"' in argv
 
 
+def test_exec_passes_through_gpt_5_5_slug():
+    """gpt-5.5 landed in Codex CLI 0.124.0 as the new recommended default.
+    The adapter doesn't allowlist slugs — it passes whatever the user gives
+    straight through to Codex — so this is a regression guard against anyone
+    accidentally adding model-slug validation."""
+    argv = _exec_argv(model="gpt-5.5", effort="xhigh")
+    assert 'model="gpt-5.5"' in argv
+    assert 'model_reasoning_effort="xhigh"' in argv
+
+
 def test_exec_injects_effort_override_when_set():
     argv = _exec_argv(effort="xhigh")
     assert 'model_reasoning_effort="xhigh"' in argv

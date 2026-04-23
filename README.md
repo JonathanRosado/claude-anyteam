@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](npm/package.json)
 [![Codex](https://img.shields.io/badge/codex-supported%20today-10a37f?style=flat-square&logo=openai&logoColor=white)](#supported-today--coming-next)
-[![Tests](https://img.shields.io/badge/tests-201%20passing-22c55e?style=flat-square)](tests)
+[![Tests](https://img.shields.io/badge/tests-202%20passing-22c55e?style=flat-square)](tests)
 
 [**Quickstart**](#quickstart) · [**Architecture**](docs/architecture.md) · [**Roadmap**](docs/roadmap.md)
 
@@ -79,7 +79,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 
 **Battle-tested parity**
 
-201 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
+202 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
 
 </td>
 </tr>
@@ -90,7 +90,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 | Supported today | Coming next |
 |---|---|
 | ✅ Codex via `codex-cli` (0.120+) | ⏳ Gemini CLI adapter |
-| ✅ gpt-5.x models, configurable effort | ⏳ Kimi adapter |
+| ✅ gpt-5.5 / gpt-5.4 / gpt-5.3-codex, configurable effort | ⏳ Kimi adapter |
 | ✅ App Server mode (mid-task steer) | ⏳ GLM adapter |
 | ✅ Fresh-exec mode (`codex exec resume`) | ⏳ DeepSeek adapter |
 | ✅ Claude Code hook + TUI presence | ⏳ Pluggable backend routing |
@@ -141,7 +141,7 @@ For headless and persistent background adapters (run across multiple Claude Code
 setsid nohup claude-anyteam \
   --team my-team --name codex-alice \
   --cwd /path/to/workspace \
-  --model gpt-5.4 --effort high \
+  --model gpt-5.5 --effort high \
   </dev/null >/tmp/codex-alice.stdout 2>/tmp/codex-alice.stderr & disown
 ```
 

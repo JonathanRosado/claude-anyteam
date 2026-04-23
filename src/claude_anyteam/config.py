@@ -52,7 +52,7 @@ class Settings:
     # `--no-app-server` (the two modes are orthogonal; see
     # docs/v7.2-notes.md §6).
     app_server: bool = True
-    # Codex model slug (e.g. "gpt-5.4", "gpt-5.3-codex") and reasoning effort
+    # Codex model slug (e.g. "gpt-5.5", "gpt-5.4", "gpt-5.3-codex") and reasoning effort
     # (low|medium|high|xhigh). Both optional: when unset the adapter passes
     # no override and Codex falls back to `~/.codex/config.toml` defaults,
     # preserving the pre-v7.3 behavior. When set they flow through both the

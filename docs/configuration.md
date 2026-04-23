@@ -9,7 +9,7 @@ claude-anyteam \
   --team <team-name>        # required — matches ~/.claude/teams/<team>/ directory
   --name <agent-name>       # required — unique within the team
   --cwd <path>              # working directory for model invocations (default: current)
-  --model <slug>            # e.g. gpt-5.4, gpt-5.3-codex (default: Codex's own default)
+  --model <slug>            # e.g. gpt-5.5, gpt-5.4, gpt-5.3-codex (default: Codex's own default)
   --effort <level>          # low | medium | high | xhigh (default: Codex's default)
   --plan-mode               # opt into plan approval mode
   --no-app-server           # opt out of App Server mode (use fresh-exec instead)
@@ -17,6 +17,28 @@ claude-anyteam \
   --color <name>            # display color in peer DMs (default: cyan)
   --log <level>             # debug | info | warn | error (default: info)
 ```
+
+## Codex models
+
+The adapter passes `--model` through verbatim as `-c model="…"` (fresh-exec) or as the `model` JSON-RPC param (App Server). claude-anyteam does not keep its own allowlist — any slug Codex accepts works. The table below reflects OpenAI's current catalog at the time of writing; check Codex's own `/model` picker for the live list.
+
+| Slug | Role | Effort values | Notes |
+|---|---|---|---|
+| `gpt-5.5` | Recommended default | `low`, `medium`, `high`, `xhigh` | Newest frontier model. Best for coding, tool use, long-horizon planning. |
+| `gpt-5.4` | Flagship (reasoning) | `low`, `medium`, `high`, `xhigh` | General-purpose reasoning + agentic workflows. |
+| `gpt-5.4-mini` | Fast, cheap | `low`, `medium`, `high`, `xhigh` | Snappy responses for small edits and shell work. |
+| `gpt-5.3-codex` | Codex-tuned | `low`, `medium`, `high`, `xhigh` | Coding-specialist; strong on multi-module refactors. |
+| `gpt-5.3-codex-spark` | Research preview | `low`, `medium`, `high`, `xhigh` | Text-only, optimized for tight iteration loops. |
+| `gpt-5.2` | Legacy | `low`, `medium`, `high`, `xhigh` | Kept for reproducibility of older runs. |
+
+`--effort` maps to Codex's `model_reasoning_effort` setting:
+
+- `low` — tiny edits, quick file ops, simple shell tasks
+- `medium` — day-to-day feature work, straightforward bug fixes
+- `high` — multi-module refactors, migrations, gnarly debugging
+- `xhigh` — large-scale refactors, security review, architectural decisions (slowest, highest cost)
+
+When `--model` or `--effort` is unset the adapter emits no override and Codex falls back to the model's own default from `~/.codex/config.toml`. You can mix model and effort per teammate — a `codex-tester` at `gpt-5.5 xhigh` and a `codex-alice` at `gpt-5.4-mini medium` is a supported setup.
 
 ## Environment variables
 
@@ -54,7 +76,7 @@ setsid nohup claude-anyteam \
   --team my-team --name codex-planner \
   --cwd /path/to/workspace \
   --plan-mode \
-  --model gpt-5.4 --effort high \
+  --model gpt-5.5 --effort high \
   </dev/null >/tmp/codex-planner.stdout 2>/tmp/codex-planner.stderr & disown
 ```
 

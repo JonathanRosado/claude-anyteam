@@ -67,9 +67,10 @@ def _build_run_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         help=(
-            "Codex model slug (e.g. gpt-5.4, gpt-5.3-codex). "
+            "Codex model slug (e.g. gpt-5.5, gpt-5.4, gpt-5.3-codex). "
             "Overrides CLAUDE_ANYTEAM_MODEL; when unset, Codex's "
-            "~/.codex/config.toml default applies."
+            "~/.codex/config.toml default applies. "
+            "See docs/configuration.md for the current model catalog."
         ),
     )
     p.add_argument(
