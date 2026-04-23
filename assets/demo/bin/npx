@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1-}" != "--yes" || "${2-}" != "--package" || "${3-}" != "claude-anyteam" || "${4-}" != "claude-anyteam-setup" ]]; then
+  printf 'mock npx for VHS demo only\n' >&2
+  exit 1
+fi
+
+reset=$'\033[0m'
+white=$'\033[97;1m'
+cyan=$'\033[36;1m'
+blue=$'\033[94;1m'
+magenta=$'\033[95;1m'
+green=$'\033[32;1m'
+yellow=$'\033[33;1m'
+gray=$'\033[90m'
+
+sleep_short() { sleep 0.35; }
+sleep_med() { sleep 0.55; }
+
+spin() {
+  local text="$1"
+  local cycles="${2:-16}"
+  local delay="${3:-0.11}"
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local i frame
+  for ((i = 0; i < cycles; i += 1)); do
+    frame="${frames[i % ${#frames[@]}]}"
+    printf '\r%b%s%b %s' "$cyan" "$frame" "$reset" "$text"
+    sleep "$delay"
+  done
+  printf '\r%b✔ done%b %b%s%b\n' "$green" "$reset" "$gray" "$text" "$reset"
+}
+
+success_box() {
+  local title='INSTALL COMPLETE'
+  local lines=(
+    'Claude settings updated: ~/.claude/settings.json'
+    'env.CLAUDE_CODE_TEAMMATE_COMMAND = ~/.local/bin/claude-anyteam-spawn-shim'
+    'env.CLAUDE_ANYTEAM_BINARY = ~/.local/bin/claude-anyteam'
+    'Tool status = installed with uv tool install'
+    'uv tool bin directory = ~/.local/bin'
+    ''
+    'Launch template:'
+    '    ~/.local/bin/claude-anyteam --team my-team --name codex-alice --cwd /path/to/workspace'
+    ''
+    'Restart Claude Code so it reloads ~/.claude/settings.json'
+  )
+
+  local width=${#title}
+  local line
+  for line in "${lines[@]}"; do
+    if (( ${#line} > width )); then
+      width=${#line}
+    fi
+  done
+
+  local border
+  border=$(printf '─%.0s' $(seq 1 $((width + 2))))
+
+  printf '%b╭%s╮%b\n' "$green" "$border" "$reset"
+  printf '%b│%b %-*s %b│%b\n' "$green" "$reset" "$width" "$title" "$green" "$reset"
+  printf '%b├%s┤%b\n' "$green" "$border" "$reset"
+  for line in "${lines[@]}"; do
+    printf '%b│%b %-*s %b│%b\n' "$green" "$reset" "$width" "$line" "$green" "$reset"
+  done
+  printf '%b╰%s╯%b\n' "$green" "$border" "$reset"
+}
+
+printf '%b\n' "${cyan} ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗${reset}"
+printf '%b\n' "${blue}██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝${reset}"
+printf '%b\n' "${cyan}██║     ██║   ██║██║  ██║█████╗   ╚███╔╝ ${reset}"
+printf '%b\n' "${blue}██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗ ${reset}"
+printf '%b\n' "${magenta}╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗${reset}"
+printf '%b\n' "${magenta} ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝${reset}"
+printf '\n'
+printf '%b\n' "${cyan}████████╗███████╗ █████╗ ███╗   ███╗███╗   ███╗ █████╗ ████████╗███████╗${reset}"
+printf '%b\n' "${blue}╚══██╔══╝██╔════╝██╔══██╗████╗ ████║████╗ ████║██╔══██╗╚══██╔══╝██╔════╝${reset}"
+printf '%b\n' "${cyan}   ██║   █████╗  ███████║██╔████╔██║██╔████╔██║███████║   ██║   █████╗  ${reset}"
+printf '%b\n' "${blue}   ██║   ██╔══╝  ██╔══██║██║╚██╔╝██║██║╚██╔╝██║██╔══██║   ██║   ██╔══╝  ${reset}"
+printf '%b\n' "${magenta}   ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║ ╚═╝ ██║██║  ██║   ██║   ███████╗${reset}"
+printf '%b\n' "${magenta}   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝   ╚═╝   ╚══════╝${reset}"
+printf '\n'
+printf '%b\n' "${white}Zero-friction claude-anyteam setup for Claude Code.${reset}"
+printf '%b\n\n' "${gray}We will check Python, install uv if needed, wire up claude-anyteam, and patch Claude settings.${reset}"
+sleep_med
+printf '%b\n' "${green}✔${reset} ${white}python3 detected${reset} ${gray}(Python 3.12.7)${reset} ${cyan}/usr/bin/python3${reset}"
+sleep_short
+spin 'Installing uv into ~/.local/bin' 14 0.10
+printf '%b\n' "${green}✔${reset} ${white}uv ready${reset} ${gray}uv 0.7.2${reset} ${cyan}~/.local/bin/uv${reset}"
+sleep_short
+spin 'Installing claude-anyteam with uv tool install' 18 0.10
+sleep_short
+spin 'Writing Claude settings' 14 0.10
+printf '\n'
+success_box
+printf '\n'
+printf '%b\n' "${green}✔${reset} ${white}Your claude-anyteam launcher is live.${reset} Codex-powered teammates use the ${cyan}codex-${reset} prefix today in Claude Code's external spawn flow."

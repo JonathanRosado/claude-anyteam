@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from codex_teammate.messages import (
+from claude_anyteam.messages import (
     PlanApprovalRequestIn,
     ShutdownRequestIn,
     ShutdownResponseOut,

@@ -5,8 +5,8 @@ import threading
 import time
 from pathlib import Path
 
-from codex_teammate.config import Settings
-from codex_teammate import registration as registration_mod
+from claude_anyteam.config import Settings
+from claude_anyteam import registration as registration_mod
 
 
 def _settings(team: str, name: str, cwd: Path) -> Settings:

@@ -1,17 +1,48 @@
 import { promises as fs, constants as fsConstants } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
-export const TOOL_NAME = process.env.CODEX_TEAMMATE_PYTHON_PACKAGE || 'codex-teammate';
-export const UV_INSTALL_DIR = process.env.CODEX_TEAMMATE_UV_INSTALL_DIR || defaultBinDir();
-export const UV_TOOL_BIN_DIR = process.env.CODEX_TEAMMATE_UV_TOOL_BIN_DIR || defaultBinDir();
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '..', '..');
+const PRIMARY_BINARY = 'claude-anyteam';
+const PRIMARY_SHIM = 'claude-anyteam-spawn-shim';
+const LEGACY_BINARY = 'codex-teammate';
+const LEGACY_SHIM = 'codex-teammate-spawn-shim';
+
+function envFirst(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export const TOOL_NAME = envFirst('CLAUDE_ANYTEAM_PYTHON_PACKAGE', 'CODEX_TEAMMATE_PYTHON_PACKAGE') || 'claude-anyteam';
+export const UV_INSTALL_DIR = envFirst('CLAUDE_ANYTEAM_UV_INSTALL_DIR', 'CODEX_TEAMMATE_UV_INSTALL_DIR') || defaultBinDir();
+export const UV_TOOL_BIN_DIR = envFirst('CLAUDE_ANYTEAM_UV_TOOL_BIN_DIR', 'CODEX_TEAMMATE_UV_TOOL_BIN_DIR') || defaultBinDir();
 
 function defaultBinDir() {
   if (process.platform === 'win32') {
-    return path.join(homedir(), 'AppData', 'Local', 'codex-teammate', 'bin');
+    return path.join(homedir(), 'AppData', 'Local', 'claude-anyteam', 'bin');
   }
   return path.join(homedir(), '.local', 'bin');
+}
+
+async function resolveInstallTarget() {
+  if (TOOL_NAME !== 'claude-anyteam') {
+    return TOOL_NAME;
+  }
+  const localPyproject = path.join(REPO_ROOT, 'pyproject.toml');
+  try {
+    await fs.access(localPyproject, fsConstants.F_OK);
+    return REPO_ROOT;
+  } catch {
+    return TOOL_NAME;
+  }
 }
 
 function executableNames(name) {
@@ -70,7 +101,7 @@ export function manualInstallLines({ includePython = false } = {}) {
       lines.push('Install Python 3: winget install Python.Python.3.12');
     }
     lines.push('Install uv: winget install Astral-sh.uv');
-    lines.push('Then rerun: npx --yes --package codex-teammate codex-teammate-setup');
+    lines.push('Then rerun: npx --yes --package claude-anyteam claude-anyteam-setup');
     return lines;
   }
   lines.push('macOS/Homebrew: brew install python uv');
@@ -80,7 +111,7 @@ export function manualInstallLines({ includePython = false } = {}) {
   lines.push('Official uv installer:');
   lines.push('  curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh');
   lines.push(`  UV_INSTALL_DIR=${UV_INSTALL_DIR} UV_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh`);
-  lines.push('Then rerun: npx --yes --package codex-teammate codex-teammate-setup');
+  lines.push('Then rerun: npx --yes --package claude-anyteam claude-anyteam-setup');
   return lines;
 }
 
@@ -137,7 +168,7 @@ export async function installUv() {
   if (process.platform === 'win32') {
     throw new Error('Automatic uv installation is only wired up for macOS/Linux shells right now.');
   }
-  const workingDir = await fs.mkdtemp(path.join(tmpdir(), 'codex-teammate-uv-'));
+  const workingDir = await fs.mkdtemp(path.join(tmpdir(), 'claude-anyteam-uv-'));
   const scriptPath = path.join(workingDir, 'install-uv.sh');
   try {
     const response = await fetch('https://astral.sh/uv/install.sh');
@@ -177,6 +208,22 @@ function toolWorkingDir() {
   return homedir();
 }
 
+async function resolveToolPaths(binDir) {
+  const primaryBinary = toolExecutablePath(binDir, PRIMARY_BINARY);
+  const primaryShim = toolExecutablePath(binDir, PRIMARY_SHIM);
+  if (await isExecutable(primaryBinary) && await isExecutable(primaryShim)) {
+    return { binaryPath: primaryBinary, shimPath: primaryShim };
+  }
+
+  const legacyBinary = toolExecutablePath(binDir, LEGACY_BINARY);
+  const legacyShim = toolExecutablePath(binDir, LEGACY_SHIM);
+  if (await isExecutable(legacyBinary) && await isExecutable(legacyShim)) {
+    return { binaryPath: legacyBinary, shimPath: legacyShim };
+  }
+
+  return null;
+}
+
 export async function resolveToolBinDir({ uvPath }) {
   const env = {
     ...process.env,
@@ -194,10 +241,9 @@ export async function resolveToolBinDir({ uvPath }) {
 
 export async function findInstalledTool({ uvPath }) {
   const { env, binDir } = await resolveToolBinDir({ uvPath });
-  const binaryPath = toolExecutablePath(binDir, 'codex-teammate');
-  const shimPath = toolExecutablePath(binDir, 'codex-teammate-spawn-shim');
-  if (await isExecutable(binaryPath) && await isExecutable(shimPath)) {
-    return { env, binDir, binaryPath, shimPath, installMode: 'existing' };
+  const resolvedPaths = await resolveToolPaths(binDir);
+  if (resolvedPaths) {
+    return { env, binDir, ...resolvedPaths, installMode: 'existing' };
   }
   return null;
 }
@@ -213,26 +259,24 @@ export async function installTool({ uvPath, pythonPath }) {
   if (pythonPath) {
     args.push('--python', pythonPath);
   }
-  args.push(TOOL_NAME);
+  const installTarget = await resolveInstallTarget();
+  args.push(installTarget);
   const result = await runCommand(uvPath, args, { env, cwd: toolWorkingDir() });
   if (result.code !== 0) {
     const fallback = await findInstalledTool({ uvPath }).catch(() => null);
     if (fallback) {
       return fallback;
     }
-    const error = new Error(`uv could not install ${TOOL_NAME}.`);
+    const error = new Error(`uv could not install ${installTarget}.`);
     error.details = (result.stderr || result.stdout).trim();
     error.command = formatCommand(uvPath, args);
     throw error;
   }
-  const binaryPath = toolExecutablePath(binDir, 'codex-teammate');
-  const shimPath = toolExecutablePath(binDir, 'codex-teammate-spawn-shim');
-  for (const filePath of [binaryPath, shimPath]) {
-    if (!(await isExecutable(filePath))) {
-      const error = new Error(`Expected tool executable missing: ${filePath}`);
-      error.details = `uv reported bin directory ${binDir}, but ${path.basename(filePath)} was not there.`;
-      throw error;
-    }
+  const resolvedPaths = await resolveToolPaths(binDir);
+  if (!resolvedPaths) {
+    const error = new Error(`Expected tool executables missing in ${binDir}`);
+    error.details = `uv reported bin directory ${binDir}, but neither the claude-anyteam nor legacy codex-teammate binaries were available.`;
+    throw error;
   }
-  return { env, binDir, binaryPath, shimPath, installMode: 'installed' };
+  return { env, binDir, ...resolvedPaths, installMode: 'installed' };
 }

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from codex_teammate.app_server import AppServerClient, AppServerError
+from claude_anyteam.app_server import AppServerClient, AppServerError
 
 
 class _FakeProcess:
@@ -112,7 +112,7 @@ def _launch_client_with(responder):
 def test_initialize_roundtrip():
     def respond(msg):
         assert msg["method"] == "initialize"
-        assert msg["params"]["clientInfo"]["name"] == "codex-teammate-adapter"
+        assert msg["params"]["clientInfo"]["name"] == "claude-anyteam-adapter"
         yield json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"server": "ok"}})
 
     client, _ = _launch_client_with(respond)

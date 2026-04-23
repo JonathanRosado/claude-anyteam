@@ -23,9 +23,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codex_teammate import codex as codex_mod
-from codex_teammate.app_server import AppServerClient
-from codex_teammate.config import from_env
+from claude_anyteam import codex as codex_mod
+from claude_anyteam.app_server import AppServerClient
+from claude_anyteam.config import from_env
 
 
 # ---- fresh-exec path --------------------------------------------------------
@@ -171,18 +171,18 @@ def test_from_env_reads_model_and_effort_from_overrides(tmp_path):
 
 
 def test_from_env_reads_model_and_effort_from_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("CODEX_TEAMMATE_TEAM", "t")
-    monkeypatch.setenv("CODEX_TEAMMATE_NAME", "a")
-    monkeypatch.setenv("CODEX_TEAMMATE_CWD", str(tmp_path))
-    monkeypatch.setenv("CODEX_TEAMMATE_MODEL", "gpt-5.3-codex")
-    monkeypatch.setenv("CODEX_TEAMMATE_EFFORT", "high")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "t")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "a")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_CWD", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_ANYTEAM_MODEL", "gpt-5.3-codex")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_EFFORT", "high")
     settings = from_env()
     assert settings.model == "gpt-5.3-codex"
     assert settings.effort == "high"
 
 
 def test_from_env_defaults_model_and_effort_to_none(tmp_path, monkeypatch):
-    for var in ("CODEX_TEAMMATE_MODEL", "CODEX_TEAMMATE_EFFORT"):
+    for var in ("CLAUDE_ANYTEAM_MODEL", "CLAUDE_ANYTEAM_EFFORT"):
         monkeypatch.delenv(var, raising=False)
     settings = from_env(
         overrides={"team_name": "t", "agent_name": "a", "cwd": str(tmp_path)}

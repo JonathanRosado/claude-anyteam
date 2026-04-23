@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_teammate import app_server as app_server_mod
-from codex_teammate import codex as codex_mod
+from claude_anyteam import app_server as app_server_mod
+from claude_anyteam import codex as codex_mod
 
 
 def _capture_thread_start_config(*, settings_team: str, settings_agent: str) -> dict:
@@ -77,27 +77,27 @@ def test_mcp_config_wrapper_args_include_team_and_name():
     """Identity must be in args, not env. Regression guard for the App
     Server env-forwarding gap."""
     config = _capture_thread_start_config(
-        settings_team="codex-teammate", settings_agent="codex-alice"
+        settings_team="claude-anyteam", settings_agent="codex-alice"
     )
-    mcp = config["mcp_servers"]["codex_teammate_wrapper"]
+    mcp = config["mcp_servers"]["claude_anyteam_wrapper"]
     assert "--team" in mcp["args"]
-    assert "codex-teammate" in mcp["args"]
+    assert "claude-anyteam" in mcp["args"]
     assert "--name" in mcp["args"]
     assert "codex-alice" in mcp["args"]
     team_idx = mcp["args"].index("--team")
-    assert mcp["args"][team_idx + 1] == "codex-teammate"
+    assert mcp["args"][team_idx + 1] == "claude-anyteam"
     name_idx = mcp["args"].index("--name")
     assert mcp["args"][name_idx + 1] == "codex-alice"
 
 
 def test_mcp_config_wrapper_command_is_resolved_path():
     """Absolute path (via shutil.which) or the bare name; either way,
-    there's a command field and it ends with `codex-teammate-wrapper`."""
+    there's a command field and it ends with `claude-anyteam-wrapper`."""
     config = _capture_thread_start_config(
         settings_team="t", settings_agent="a"
     )
-    cmd = config["mcp_servers"]["codex_teammate_wrapper"]["command"]
-    assert cmd.endswith("codex-teammate-wrapper")
+    cmd = config["mcp_servers"]["claude_anyteam_wrapper"]["command"]
+    assert cmd.endswith("claude-anyteam-wrapper")
 
 
 def test_mcp_config_has_no_env_field():
@@ -108,7 +108,7 @@ def test_mcp_config_has_no_env_field():
     config = _capture_thread_start_config(
         settings_team="t", settings_agent="a"
     )
-    mcp = config["mcp_servers"]["codex_teammate_wrapper"]
+    mcp = config["mcp_servers"]["claude_anyteam_wrapper"]
     assert "env" not in mcp, (
         "If you added an env key, you're mixing Fix A and Fix B. "
         "Fix B (CLI args) is what ships; either remove env or update "

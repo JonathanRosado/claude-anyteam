@@ -1,10 +1,10 @@
 {
-  "name": "codex-teammate",
+  "name": "claude-anyteam",
   "version": "0.1.0",
-  "description": "Beautiful zero-friction installer for codex-teammate in Claude Code.",
+  "description": "Beautiful zero-friction installer for claude-anyteam in Claude Code.",
   "type": "module",
   "bin": {
-    "codex-teammate-setup": "./bin/setup.js"
+    "claude-anyteam-setup": "./bin/setup.js"
   },
   "scripts": {
     "postinstall": "node ./bin/setup.js --postinstall"

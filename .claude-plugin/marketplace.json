@@ -1,17 +1,17 @@
 {
-  "name": "codex-teammate",
+  "name": "claude-anyteam",
   "owner": {
     "name": "friction-research"
   },
   "metadata": {
-    "description": "Self-hosted marketplace for the codex-teammate Claude Code plugin.",
+    "description": "Self-hosted marketplace for the claude-anyteam Claude Code plugin.",
     "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "codex-teammate",
+      "name": "claude-anyteam",
       "source": "./",
-      "description": "Auto-configures Claude Code to route codex-* teammates through the codex-teammate spawn shim.",
+      "description": "Auto-configures Claude Code to route codex-* teammates through the claude-anyteam spawn shim.",
       "version": "0.1.0",
       "author": {
         "name": "friction-research"

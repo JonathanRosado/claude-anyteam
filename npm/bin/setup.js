@@ -46,9 +46,9 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Usage: codex-teammate-setup [--settings-path <path>] [--postinstall]',
+    'Usage: claude-anyteam-setup [--settings-path <path>] [--postinstall]',
     '',
-    'Installs uv if needed, installs the Python codex-teammate tool, and writes',
+    'Installs uv if needed, installs the Python claude-anyteam tool, and writes',
     '~/.claude/settings.json with absolute launcher paths for Claude Code.',
   ].join('\n');
 }
@@ -97,7 +97,7 @@ function trimmedDetails(error) {
 
 function postinstallHint(error) {
   const reason = trimmedDetails(error) || error.message;
-  console.warn(`codex-teammate: automatic setup skipped (${reason.split(/\r?\n/, 1)[0]}). Run npx --yes --package codex-teammate codex-teammate-setup to finish.`);
+  console.warn(`claude-anyteam: automatic setup skipped (${reason.split(/\r?\n/, 1)[0]}). Run npx --yes --package claude-anyteam claude-anyteam-setup to finish.`);
 }
 
 async function main() {
@@ -113,8 +113,8 @@ async function main() {
 
   if (!silent) {
     console.log(renderBanner());
-    console.log(theme.heading('Zero-friction Codex teammate setup for Claude Code.'));
-    console.log(theme.muted('We will check Python, install uv if needed, wire up codex-teammate, and patch Claude settings.'));
+    console.log(theme.heading('Zero-friction claude-anyteam setup for Claude Code.'));
+    console.log(theme.muted('We will check Python, install uv if needed, wire up claude-anyteam, and patch Claude settings.'));
     console.log('');
   }
 
@@ -126,8 +126,8 @@ async function main() {
       return 0;
     }
     printFailure('PYTHON 3 REQUIRED', [
-      `${theme.symbols.error} ${theme.heading('codex-teammate needs python3 before anything else can happen.')}`,
-      `${theme.symbols.info} Install Python 3, then rerun ${theme.accent('npx --yes --package codex-teammate codex-teammate-setup')}.`,
+      `${theme.symbols.error} ${theme.heading('claude-anyteam needs python3 before anything else can happen.')}`,
+      `${theme.symbols.info} Install Python 3, then rerun ${theme.accent('npx --yes --package claude-anyteam claude-anyteam-setup')}.`,
       '',
       ...instructions.map((line) => `${theme.symbols.info} ${line}`),
     ]);
@@ -147,8 +147,8 @@ async function main() {
         return 0;
       }
       printFailure('UV NOT INSTALLED', [
-        `${theme.symbols.warn} ${theme.heading('uv is required to install the Python codex-teammate tool.')}`,
-        `${theme.symbols.info} Install it manually, then rerun ${theme.accent('npx --yes --package codex-teammate codex-teammate-setup')}.`,
+        `${theme.symbols.warn} ${theme.heading('uv is required to install the Python claude-anyteam tool.')}`,
+        `${theme.symbols.info} Install it manually, then rerun ${theme.accent('npx --yes --package claude-anyteam claude-anyteam-setup')}.`,
         '',
         ...manualInstallLines().map((line) => `${theme.symbols.info} ${line}`),
       ]);
@@ -181,7 +181,7 @@ async function main() {
   if (existingTool) {
     tool = existingTool;
     if (!silent) {
-      console.log(`${theme.symbols.success} ${theme.heading('existing codex-teammate tool detected')} ${theme.accent(tool.binaryPath)}`);
+      console.log(`${theme.symbols.success} ${theme.heading('existing claude-anyteam tool detected')} ${theme.accent(tool.binaryPath)}`);
     }
   } else {
     try {
@@ -239,7 +239,7 @@ async function main() {
     '',
     `${theme.symbols.warn} Restart Claude Code so it reloads ${theme.accent('~/.claude/settings.json')}.`,
   ]);
-  console.log(`${theme.symbols.success} ${theme.heading('Your Codex teammate launcher is live.')} Name teammates with a ${theme.accent('codex-')} prefix in Claude Code's external spawn flow.`);
+  console.log(`${theme.symbols.success} ${theme.heading('Your claude-anyteam launcher is live.')} Codex-powered teammates use the ${theme.accent('codex-')} prefix today in Claude Code's external spawn flow.`);
   return 0;
 }
 

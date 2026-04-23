@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 export const TEAMMATE_COMMAND_KEY = 'CLAUDE_CODE_TEAMMATE_COMMAND';
-export const TEAMMATE_BINARY_KEY = 'CODEX_TEAMMATE_BINARY';
+export const TEAMMATE_BINARY_KEY = 'CLAUDE_ANYTEAM_BINARY';
+export const LEGACY_TEAMMATE_BINARY_KEY = 'CODEX_TEAMMATE_BINARY';
 
 export function defaultSettingsPath() {
   return path.resolve(homedir(), '.claude', 'settings.json');
@@ -82,7 +83,12 @@ export async function writeClaudeSettings({ settingsPath = defaultSettingsPath()
       changed[key] = value;
     }
   }
-  if (!existed || Object.keys(changed).length > 0) {
+  let removedLegacy = false;
+  if (env[LEGACY_TEAMMATE_BINARY_KEY]) {
+    delete env[LEGACY_TEAMMATE_BINARY_KEY];
+    removedLegacy = true;
+  }
+  if (!existed || Object.keys(changed).length > 0 || removedLegacy) {
     await writeSettings(resolvedSettings, settings);
   }
   return {
@@ -91,6 +97,6 @@ export async function writeClaudeSettings({ settingsPath = defaultSettingsPath()
     binaryPath: resolvedBinary,
     createdFile: !existed,
     changed,
-    changedAnything: !existed || Object.keys(changed).length > 0,
+    changedAnything: !existed || Object.keys(changed).length > 0 || removedLegacy,
   };
 }

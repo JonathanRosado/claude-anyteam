@@ -1,6 +1,6 @@
 """Live-filesystem integration tests for registration.
 
-These target the real `~/.claude/teams/codex-teammate/` location when it
+These target the real `~/.claude/teams/claude-anyteam/` location when it
 exists, but bootstrap a minimal fixture team when it does not so the suite
 remains self-contained. Each test adds a uniquely-named fixture, asserts
 state, then removes it. Existing team members (including `test-peer`) are not
@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from codex_teammate.config import Settings
-from codex_teammate.registration import (
+from claude_anyteam.config import Settings
+from claude_anyteam.registration import (
     config_path,
     deregister,
     inbox_path,
     register,
 )
 
-TEAM = "codex-teammate"
+TEAM = "claude-anyteam"
 
 
 def _seed_team_config() -> dict:

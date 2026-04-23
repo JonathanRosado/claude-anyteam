@@ -131,6 +131,37 @@ wheels = [
 ]
 
 [[package]]
+name = "claude-anyteam"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "claude-teams" },
+    { name = "fastmcp" },
+    { name = "jsonschema" },
+    { name = "pydantic" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "claude-teams", directory = "/tmp/cs50victor-teams" },
+    { name = "fastmcp", specifier = "==3.0.0b1" },
+    { name = "jsonschema", specifier = ">=4.20" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+]
+
+[[package]]
 name = "claude-teams"
 version = "0.1.1"
 source = { directory = "/tmp/cs50victor-teams" }
@@ -161,37 +192,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/57/75/31212c6bf2503fdf920d87fee5d7a86a2e3bcf444984126f13d8e4016804/click-8.3.2.tar.gz", hash = "sha256:14162b8b3b3550a7d479eafa77dfd3c38d9dc8951f6f69c78913a8f9a7540fd5", size = 302856, upload-time = "2026-04-03T19:14:45.118Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/20/71885d8b97d4f3dde17b1fdb92dbd4908b00541c5a3379787137285f602e/click-8.3.2-py3-none-any.whl", hash = "sha256:1924d2c27c5653561cd2cae4548d1406039cb79b858b747cfea24924bbc1616d", size = 108379, upload-time = "2026-04-03T19:14:43.505Z" },
-]
-
-[[package]]
-name = "codex-teammate"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "claude-teams" },
-    { name = "fastmcp" },
-    { name = "jsonschema" },
-    { name = "pydantic" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "claude-teams", directory = "/tmp/cs50victor-teams" },
-    { name = "fastmcp", specifier = "==3.0.0b1" },
-    { name = "jsonschema", specifier = ">=4.20" },
-    { name = "pydantic", specifier = ">=2.10" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]

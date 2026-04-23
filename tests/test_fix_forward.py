@@ -19,9 +19,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from codex_teammate import codex as codex_mod
-from codex_teammate import loop as loop_mod
-from codex_teammate.config import Settings
+from claude_anyteam import codex as codex_mod
+from claude_anyteam import loop as loop_mod
+from claude_anyteam.config import Settings
 
 
 # ---- fix-forward #1: stdin DEVNULL ----------------------------------------

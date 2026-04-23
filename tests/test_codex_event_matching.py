@@ -8,7 +8,7 @@ because Codex's version emits an unexpected type name.
 
 from __future__ import annotations
 
-from codex_teammate.codex import _is_tool_call_event, _tool_name_from_event
+from claude_anyteam.codex import _is_tool_call_event, _tool_name_from_event
 
 
 def test_mcp_tool_call_matches():
@@ -98,6 +98,6 @@ def test_backstop_ignores_non_wrapper_tool_names():
 
 
 def test_backstop_recognises_all_wrapper_tools():
-    from codex_teammate.codex import _WRAPPER_TOOL_NAMES
+    from claude_anyteam.codex import _WRAPPER_TOOL_NAMES
     for tool in _WRAPPER_TOOL_NAMES:
         assert _is_tool_call_event("whatever", {"type": "whatever", "name": tool})

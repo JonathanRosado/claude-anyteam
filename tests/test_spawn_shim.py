@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from codex_teammate import spawn_shim
+from claude_anyteam import spawn_shim
 
 
 def _record_execv(monkeypatch):
@@ -18,14 +18,19 @@ def _record_execv(monkeypatch):
     return calls
 
 
+def _clear_binary_env(monkeypatch) -> None:
+    monkeypatch.delenv("CLAUDE_ANYTEAM_BINARY", raising=False)
+    monkeypatch.delenv("CODEX_TEAMMATE_BINARY", raising=False)
+
+
 def test_codex_dispatch(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
-    monkeypatch.delenv("CODEX_TEAMMATE_BINARY", raising=False)
+    _clear_binary_env(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "/usr/local/bin/codex-teammate-spawn-shim",
+            "/usr/local/bin/claude-anyteam-spawn-shim",
             "--agent-name",
             "codex-alice",
             "--team-name",
@@ -36,7 +41,7 @@ def test_codex_dispatch(monkeypatch, capsys):
         spawn_shim.shutil,
         "which",
         lambda name: {
-            "codex-teammate": "/usr/local/bin/codex-teammate",
+            "claude-anyteam": "/usr/local/bin/claude-anyteam",
             "claude": "/usr/local/bin/claude",
         }.get(name),
     )
@@ -45,9 +50,9 @@ def test_codex_dispatch(monkeypatch, capsys):
 
     assert calls == [
         (
-            "/usr/local/bin/codex-teammate",
+            "/usr/local/bin/claude-anyteam",
             [
-                "/usr/local/bin/codex-teammate",
+                "/usr/local/bin/claude-anyteam",
                 "--name",
                 "codex-alice",
                 "--team",
@@ -58,7 +63,7 @@ def test_codex_dispatch(monkeypatch, capsys):
     stderr = capsys.readouterr().err.strip()
     assert json.loads(stderr) == {
         "agent_name": "codex-alice",
-        "binary": "/usr/local/bin/codex-teammate",
+        "binary": "/usr/local/bin/claude-anyteam",
         "event": "spawn_shim.dispatch",
         "route": "codex",
     }
@@ -66,8 +71,9 @@ def test_codex_dispatch(monkeypatch, capsys):
 
 def test_native_passthrough_for_non_codex_agent(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
+    monkeypatch.delenv("CLAUDE_ANYTEAM_BINARY", raising=False)
     argv = [
-        "/usr/local/bin/codex-teammate-spawn-shim",
+        "/usr/local/bin/claude-anyteam-spawn-shim",
         "--agent-name",
         "claude-worker",
         "--team-name",
@@ -81,7 +87,7 @@ def test_native_passthrough_for_non_codex_agent(monkeypatch, capsys):
         "which",
         lambda name: {
             "claude": "/usr/local/bin/claude",
-            "codex-teammate": "/usr/local/bin/codex-teammate",
+            "claude-anyteam": "/usr/local/bin/claude-anyteam",
         }.get(name),
     )
 
@@ -94,8 +100,9 @@ def test_native_passthrough_for_non_codex_agent(monkeypatch, capsys):
 
 def test_no_identity_flags_falls_back_to_native(monkeypatch):
     calls = _record_execv(monkeypatch)
+    monkeypatch.delenv("CLAUDE_ANYTEAM_BINARY", raising=False)
     argv = [
-        "/usr/local/bin/codex-teammate-spawn-shim",
+        "/usr/local/bin/claude-anyteam-spawn-shim",
         "--plan-mode-required",
         "--agent-id",
         "agent-123",
@@ -114,13 +121,13 @@ def test_env_overrides_pattern_and_codex_binary(monkeypatch):
         sys,
         "argv",
         [
-            "/usr/local/bin/codex-teammate-spawn-shim",
+            "/usr/local/bin/claude-anyteam-spawn-shim",
             "--agent-name=helper-bob",
             "--team-name=shim-build",
         ],
     )
-    monkeypatch.setenv("CODEX_TEAMMATE_SHIM_MATCH", r"^helper-")
-    monkeypatch.setenv("CODEX_TEAMMATE_BINARY", "/custom/bin/codex-launcher")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_SHIM_MATCH", r"^helper-")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_BINARY", "/custom/bin/codex-launcher")
     monkeypatch.setattr(
         spawn_shim.shutil,
         "which",
@@ -148,21 +155,22 @@ def test_env_overrides_pattern_and_codex_binary(monkeypatch):
 
 def test_env_override_native_claude_binary(monkeypatch):
     calls = _record_execv(monkeypatch)
+    monkeypatch.delenv("CLAUDE_ANYTEAM_BINARY", raising=False)
     argv = [
-        "/usr/local/bin/codex-teammate-spawn-shim",
+        "/usr/local/bin/claude-anyteam-spawn-shim",
         "--agent-name",
         "alice",
         "--team-name",
         "shim-build",
     ]
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setenv("CODEX_TEAMMATE_NATIVE_CLAUDE", "/custom/bin/claude-real")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NATIVE_CLAUDE", "/custom/bin/claude-real")
     monkeypatch.setattr(
         spawn_shim.shutil,
         "which",
         lambda name: {
             "/custom/bin/claude-real": "/custom/bin/claude-real",
-            "codex-teammate": "/usr/local/bin/codex-teammate",
+            "claude-anyteam": "/usr/local/bin/claude-anyteam",
         }.get(name),
     )
 
@@ -173,12 +181,12 @@ def test_env_override_native_claude_binary(monkeypatch):
 
 def test_plan_mode_flag_is_forwarded(monkeypatch):
     calls = _record_execv(monkeypatch)
-    monkeypatch.delenv("CODEX_TEAMMATE_BINARY", raising=False)
+    _clear_binary_env(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "/usr/local/bin/codex-teammate-spawn-shim",
+            "/usr/local/bin/claude-anyteam-spawn-shim",
             "--agent-name",
             "codex-planner",
             "--team-name",
@@ -196,9 +204,9 @@ def test_plan_mode_flag_is_forwarded(monkeypatch):
 
     assert calls == [
         (
-            "/usr/local/bin/codex-teammate",
+            "/usr/local/bin/claude-anyteam",
             [
-                "/usr/local/bin/codex-teammate",
+                "/usr/local/bin/claude-anyteam",
                 "--name",
                 "codex-planner",
                 "--team",
@@ -211,12 +219,12 @@ def test_plan_mode_flag_is_forwarded(monkeypatch):
 
 def test_unknown_flags_are_stripped_on_codex_route(monkeypatch):
     calls = _record_execv(monkeypatch)
-    monkeypatch.delenv("CODEX_TEAMMATE_BINARY", raising=False)
+    _clear_binary_env(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "/usr/local/bin/codex-teammate-spawn-shim",
+            "/usr/local/bin/claude-anyteam-spawn-shim",
             "--agent-name",
             "codex-alice",
             "--team-name",
@@ -241,9 +249,9 @@ def test_unknown_flags_are_stripped_on_codex_route(monkeypatch):
 
     assert calls == [
         (
-            "/usr/local/bin/codex-teammate",
+            "/usr/local/bin/claude-anyteam",
             [
-                "/usr/local/bin/codex-teammate",
+                "/usr/local/bin/claude-anyteam",
                 "--name",
                 "codex-alice",
                 "--team",
@@ -255,9 +263,9 @@ def test_unknown_flags_are_stripped_on_codex_route(monkeypatch):
 
 def test_invalid_match_regex_raises_system_exit(monkeypatch):
     parsed = spawn_shim.ParsedArgs(agent_name="codex-alice")
-    monkeypatch.setenv("CODEX_TEAMMATE_SHIM_MATCH", "(")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_SHIM_MATCH", "(")
 
-    with pytest.raises(SystemExit, match="Invalid CODEX_TEAMMATE_SHIM_MATCH regex"):
+    with pytest.raises(SystemExit, match="Invalid CLAUDE_ANYTEAM_SHIM_MATCH regex"):
         spawn_shim._codex_route(parsed)
 
 

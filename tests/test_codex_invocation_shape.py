@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_teammate import codex as codex_mod
+from claude_anyteam import codex as codex_mod
 
 
 class _FakeCompletedProcess:
@@ -127,7 +127,7 @@ def test_resume_argv_keeps_bypass_and_output_last_message():
 def test_resume_argv_passes_extra_args_and_prompt_at_end():
     argv = _build_argv(
         resume_session_id="sid-1",
-        extra_args=["-c", 'mcp_servers.codex_teammate_wrapper.command="foo"'],
+        extra_args=["-c", 'mcp_servers.claude_anyteam_wrapper.command="foo"'],
     )
     c_idx = argv.index("-c")
     prompt_idx = argv.index("noop")

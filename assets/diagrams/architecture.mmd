@@ -1,0 +1,29 @@
+flowchart TB
+    U[You — Claude Code leader]
+    U -->|Agent Teams spawn| SHIM{claude-anyteam-spawn-shim}
+    SHIM -->|name matches codex-*| ADAPTER[claude-anyteam adapter]
+    SHIM -->|default| CLAUDE[native claude]
+    ADAPTER -->|JSON-RPC| CODEX[(codex app-server)]
+    ADAPTER -.->|registers in| CFG[(~/.claude/teams/*/config.json)]
+    ADAPTER -.->|reads/writes| INBOX[(team inboxes)]
+
+    subgraph NEXT[Coming next on the same architecture]
+      direction LR
+      GEM[gemini-*]
+      KIMI[kimi-*]
+      GLM[glm-*]
+      DS[deepseek-*]
+    end
+
+    SHIM -.->|routing planned| NEXT
+
+    style ADAPTER fill:#22d3ee,stroke:#0f172a,stroke-width:2px,color:#0f172a
+    style CODEX fill:#10a37f,stroke:#0f172a,stroke-width:2px,color:#ffffff
+    style SHIM fill:#f472b6,stroke:#0f172a,stroke-width:2px,color:#0f172a
+    style U fill:#e5e7eb,stroke:#0f172a,stroke-width:1px
+    style CLAUDE fill:#fef3c7,stroke:#92400e
+    style NEXT fill:#f5f5f5,stroke:#9ca3af,stroke-dasharray: 5 5
+    style GEM fill:#ffffff,stroke:#9ca3af,stroke-dasharray: 3 3
+    style KIMI fill:#ffffff,stroke:#9ca3af,stroke-dasharray: 3 3
+    style GLM fill:#ffffff,stroke:#9ca3af,stroke-dasharray: 3 3
+    style DS fill:#ffffff,stroke:#9ca3af,stroke-dasharray: 3 3

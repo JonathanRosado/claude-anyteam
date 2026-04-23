@@ -30,7 +30,7 @@ if not isinstance(env, dict):
     raise SystemExit(1)
 
 command = env.get("CLAUDE_CODE_TEAMMATE_COMMAND", "")
-binary = env.get("CODEX_TEAMMATE_BINARY", "")
+binary = env.get("CLAUDE_ANYTEAM_BINARY", "")
 
 def valid_executable(value: object) -> bool:
     if not isinstance(value, str) or not value.strip():
@@ -44,14 +44,14 @@ PY
   fi
 
   grep -Eq '"CLAUDE_CODE_TEAMMATE_COMMAND"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
-    && grep -Eq '"CODEX_TEAMMATE_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH"
+    && grep -Eq '"CLAUDE_ANYTEAM_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH"
 }
 
 if has_configured_command; then
   exit 0
 fi
 
-if "$PLUGIN_ROOT/bin/codex-teammate" install >/dev/null; then
+if "$PLUGIN_ROOT/bin/claude-anyteam" install >/dev/null; then
   exit 0
 else
   status=$?

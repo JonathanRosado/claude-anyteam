@@ -21,3 +21,6 @@ build/
 # Spike/scratch dirs (not production code)
 /spike-m0/
 /scrap-ts/
+
+# Node dependencies
+node_modules/

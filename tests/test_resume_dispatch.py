@@ -15,10 +15,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from codex_teammate import codex as codex_mod
-from codex_teammate import loop as loop_mod
-from codex_teammate.config import Settings
-from codex_teammate.loop import LoopState, _invoke_codex_for_task
+from claude_anyteam import codex as codex_mod
+from claude_anyteam import loop as loop_mod
+from claude_anyteam.config import Settings
+from claude_anyteam.loop import LoopState, _invoke_codex_for_task
 
 
 def _settings(app_server: bool = False) -> Settings:

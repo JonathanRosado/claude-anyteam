@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from codex_teammate import cli as cli_mod
-from codex_teammate import installer as installer_mod
+from claude_anyteam import cli as cli_mod
+from claude_anyteam import installer as installer_mod
 
 
 def _make_executable(path: Path) -> Path:
@@ -21,8 +21,8 @@ def test_install_creates_settings_and_sets_required_env_keys(
 ):
     settings_path = tmp_path / "home" / ".claude" / "settings.json"
     bin_dir = tmp_path / "venv" / "bin"
-    codex_binary = _make_executable(bin_dir / "codex-teammate")
-    shim_binary = _make_executable(bin_dir / "codex-teammate-spawn-shim")
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    shim_binary = _make_executable(bin_dir / "claude-anyteam-spawn-shim")
 
     monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
@@ -64,8 +64,8 @@ def test_install_preserves_other_settings_and_env_entries(tmp_path: Path, monkey
         installer_mod.shutil,
         "which",
         lambda name: {
-            installer_mod.SHIM_BASENAME: "/opt/tools/codex-teammate-spawn-shim",
-            installer_mod.BINARY_BASENAME: "/opt/tools/codex-teammate",
+            installer_mod.SHIM_BASENAME: "/opt/tools/claude-anyteam-spawn-shim",
+            installer_mod.BINARY_BASENAME: "/opt/tools/claude-anyteam",
         }.get(name),
     )
 
@@ -75,8 +75,8 @@ def test_install_preserves_other_settings_and_env_entries(tmp_path: Path, monkey
     assert payload["theme"] == "dark"
     assert payload["env"] == {
         "KEEP_ME": "yes",
-        installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/codex-teammate-spawn-shim",
-        installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/codex-teammate",
+        installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
+        installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
     }
     assert result.paths.settings_path == settings_path.resolve()
 
@@ -93,8 +93,8 @@ def test_uninstall_removes_only_target_env_keys(
                 "theme": "dark",
                 "env": {
                     "KEEP_ME": "yes",
-                    installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/codex-teammate-spawn-shim",
-                    installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/codex-teammate",
+                    installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
+                    installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
                 },
             }
         ),
@@ -113,15 +113,15 @@ def test_uninstall_removes_only_target_env_keys(
 
     stdout = capsys.readouterr().out
     assert f"Updated {settings_path.resolve()}" in stdout
-    assert "Removed env.CLAUDE_CODE_TEAMMATE_COMMAND, env.CODEX_TEAMMATE_BINARY" in stdout
+    assert "Removed env.CLAUDE_CODE_TEAMMATE_COMMAND, env.CLAUDE_ANYTEAM_BINARY" in stdout
     assert "Restart Claude Code for the changes to take effect." in stdout
 
 
 def test_main_install_uses_subcommand_path(tmp_path: Path, monkeypatch):
     settings_path = tmp_path / "home" / ".claude" / "settings.json"
     bin_dir = tmp_path / "venv" / "bin"
-    codex_binary = _make_executable(bin_dir / "codex-teammate")
-    _make_executable(bin_dir / "codex-teammate-spawn-shim")
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
 
     monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])

@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codex_teammate import app_server as app_server_mod
-from codex_teammate import codex as codex_mod
-from codex_teammate import loop as loop_mod
-from codex_teammate.app_server import AppServerClient, AppServerError
-from codex_teammate.config import Settings
-from codex_teammate.loop import LoopState
+from claude_anyteam import app_server as app_server_mod
+from claude_anyteam import codex as codex_mod
+from claude_anyteam import loop as loop_mod
+from claude_anyteam.app_server import AppServerClient, AppServerError
+from claude_anyteam.config import Settings
+from claude_anyteam.loop import LoopState
 
 
 def _settings(*, model: str | None = None, effort: str | None = None) -> Settings:

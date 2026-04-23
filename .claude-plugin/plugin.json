@@ -1,7 +1,7 @@
 {
-  "name": "codex-teammate",
+  "name": "claude-anyteam",
   "version": "0.1.0",
-  "description": "Claude Code plugin that wires codex-teammate into agent teams with zero-friction session setup.",
+  "description": "Claude Code plugin that wires claude-anyteam into agent teams with zero-friction session setup.",
   "author": {
     "name": "friction-research"
   },

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
 
-from codex_teammate import protocol_io
+from claude_anyteam import protocol_io
 
 
 @pytest.fixture

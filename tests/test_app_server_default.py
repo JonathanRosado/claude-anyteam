@@ -1,7 +1,7 @@
 """Regression tests for task #21: App Server is the default mode.
 
 Without any flag or env var, `Settings.app_server` must be True. Explicit
-opt-out via `--no-app-server` or `CODEX_TEAMMATE_APP_SERVER=false` must
+opt-out via `--no-app-server` or `CLAUDE_ANYTEAM_APP_SERVER=false` must
 still work. The two opt-in paths (`--app-server`, env=true) must continue
 to be recognized for anyone who passes them explicitly.
 """
@@ -13,15 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from codex_teammate import cli as cli_mod
-from codex_teammate.config import Settings, from_env
+from claude_anyteam import cli as cli_mod
+from claude_anyteam.config import Settings, from_env
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Strip CODEX_TEAMMATE_* env vars so each test starts from defaults."""
+    """Strip CLAUDE_ANYTEAM_* env vars so each test starts from defaults."""
     for k in list(os.environ):
-        if k.startswith("CODEX_TEAMMATE_") or k == "CODEX_BINARY":
+        if k.startswith("CLAUDE_ANYTEAM_") or k == "CODEX_BINARY":
             monkeypatch.delenv(k, raising=False)
 
 
@@ -40,41 +40,41 @@ def test_default_app_server_is_on():
 
 
 def test_env_opt_out_honored():
-    os.environ["CODEX_TEAMMATE_APP_SERVER"] = "false"
+    os.environ["CLAUDE_ANYTEAM_APP_SERVER"] = "false"
     try:
         s = from_env(overrides=_baseline_overrides())
         assert s.app_server is False
     finally:
-        del os.environ["CODEX_TEAMMATE_APP_SERVER"]
+        del os.environ["CLAUDE_ANYTEAM_APP_SERVER"]
 
 
 def test_env_opt_in_still_works():
-    os.environ["CODEX_TEAMMATE_APP_SERVER"] = "true"
+    os.environ["CLAUDE_ANYTEAM_APP_SERVER"] = "true"
     try:
         s = from_env(overrides=_baseline_overrides())
         assert s.app_server is True
     finally:
-        del os.environ["CODEX_TEAMMATE_APP_SERVER"]
+        del os.environ["CLAUDE_ANYTEAM_APP_SERVER"]
 
 
 def test_override_false_beats_env_true():
-    os.environ["CODEX_TEAMMATE_APP_SERVER"] = "true"
+    os.environ["CLAUDE_ANYTEAM_APP_SERVER"] = "true"
     try:
         overrides = _baseline_overrides() | {"app_server": "false"}
         s = from_env(overrides=overrides)
         assert s.app_server is False
     finally:
-        del os.environ["CODEX_TEAMMATE_APP_SERVER"]
+        del os.environ["CLAUDE_ANYTEAM_APP_SERVER"]
 
 
 def test_override_true_beats_env_false():
-    os.environ["CODEX_TEAMMATE_APP_SERVER"] = "false"
+    os.environ["CLAUDE_ANYTEAM_APP_SERVER"] = "false"
     try:
         overrides = _baseline_overrides() | {"app_server": "true"}
         s = from_env(overrides=overrides)
         assert s.app_server is True
     finally:
-        del os.environ["CODEX_TEAMMATE_APP_SERVER"]
+        del os.environ["CLAUDE_ANYTEAM_APP_SERVER"]
 
 
 def test_settings_dataclass_default_is_true():

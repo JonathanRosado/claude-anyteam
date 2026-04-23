@@ -11,7 +11,7 @@ so this file stays focused on the MCP wiring.
 
 from __future__ import annotations
 
-from codex_teammate import codex as codex_mod
+from claude_anyteam import codex as codex_mod
 
 
 def test_wrapper_mcp_config_args_default_shape():
@@ -19,13 +19,13 @@ def test_wrapper_mcp_config_args_default_shape():
     # Two `-c key=value` pairs: command, args. No sandbox carve-out here —
     # that belongs to the codex.run invocation shape (tested separately).
     assert args[0] == "-c"
-    assert args[1].startswith("mcp_servers.codex_teammate_wrapper.command=")
+    assert args[1].startswith("mcp_servers.claude_anyteam_wrapper.command=")
     assert args[2] == "-c"
-    assert args[3] == "mcp_servers.codex_teammate_wrapper.args=[]"
-    # The resolved command should end with `codex-teammate-wrapper` and be
+    assert args[3] == "mcp_servers.claude_anyteam_wrapper.args=[]"
+    # The resolved command should end with `claude-anyteam-wrapper` and be
     # quoted so TOML parses it as a string.
-    assert args[1].endswith('codex-teammate-wrapper"') or args[1].endswith(
-        "codex-teammate-wrapper\""
+    assert args[1].endswith('claude-anyteam-wrapper"') or args[1].endswith(
+        "claude-anyteam-wrapper\""
     )
 
 
@@ -40,9 +40,9 @@ def test_wrapper_mcp_config_args_custom_server_name():
 def test_wrapper_mcp_config_args_custom_binary_absolute_path():
     """Explicit absolute path is preserved (shutil.which returns it as-is)."""
     args = codex_mod.wrapper_mcp_config_args(
-        "my-team", "codex-alice", wrapper_binary="/usr/local/bin/codex-teammate-wrapper"
+        "my-team", "codex-alice", wrapper_binary="/usr/local/bin/claude-anyteam-wrapper"
     )
-    assert 'command="/usr/local/bin/codex-teammate-wrapper"' in args[1]
+    assert 'command="/usr/local/bin/claude-anyteam-wrapper"' in args[1]
 
 
 def test_wrapper_mcp_config_args_unknown_binary_falls_through():

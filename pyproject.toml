@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codex-teammate"
+name = "claude-anyteam"
 version = "0.1.0"
-description = "OpenAI Codex CLI as a first-class teammate in Claude Code's agent-team protocol, without a Claude LLM wrapper."
+description = "Bring Codex-powered teammates into Claude Code today, with the claude-anyteam adapter built for multi-model expansion."
 requires-python = ">=3.12"
 license = "MIT"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
     "claude-teams",
     "pydantic>=2.10",
     # fastmcp is already a transitive dep of claude-teams; we use it directly
-    # for the narrowed v7 wrapper MCP server in `codex_teammate.wrapper_server`.
+    # for the narrowed v7 wrapper MCP server in `claude_anyteam.wrapper_server`.
     "fastmcp==3.0.0b1",
     # v7.2 uses jsonschema to validate `--output-last-message` contents in
     # Python because `codex exec resume` on codex-cli 0.122.0 does not
@@ -32,12 +32,15 @@ dev = [
 ]
 
 [project.scripts]
-codex-teammate = "codex_teammate.cli:main"
-codex-teammate-spawn-shim = "codex_teammate.spawn_shim:main"
-codex-teammate-wrapper = "codex_teammate.wrapper_server:main"
+claude-anyteam = "claude_anyteam.cli:main"
+claude-anyteam-spawn-shim = "claude_anyteam.spawn_shim:main"
+claude-anyteam-wrapper = "claude_anyteam.wrapper_server:main"
+codex-teammate = "claude_anyteam.cli:main"
+codex-teammate-spawn-shim = "claude_anyteam.spawn_shim:main"
+codex-teammate-wrapper = "claude_anyteam.wrapper_server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codex_teammate"]
+packages = ["src/claude_anyteam"]
 
 [tool.uv.sources]
 claude-teams = { path = "/tmp/cs50victor-teams", editable = false }

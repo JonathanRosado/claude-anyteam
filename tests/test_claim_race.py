@@ -15,7 +15,7 @@ import pytest
 
 from claude_teams import tasks as cs_tasks
 from claude_teams import teams as cs_teams
-from codex_teammate import protocol_io as pio
+from claude_anyteam import protocol_io as pio
 
 
 def _setup_team_and_task(tmp_path: Path) -> tuple[str, str]:

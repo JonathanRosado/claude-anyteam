@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codex_teammate.schema_validation import (
+from claude_anyteam.schema_validation import (
     inline_schema_prompt_fragment,
     load_schema,
     parse_and_validate,

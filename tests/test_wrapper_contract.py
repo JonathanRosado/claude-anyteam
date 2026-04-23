@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from claude_teams.models import TeammateMember
 
-from codex_teammate.wrapper_server import (
+from claude_anyteam.wrapper_server import (
     BLOCKED_TOOLS,
     EXPOSED_TOOLS,
     build_server,
@@ -25,8 +25,18 @@ from codex_teammate.wrapper_server import (
 
 @pytest.fixture
 def identity(monkeypatch):
-    monkeypatch.setenv("CODEX_TEAMMATE_TEAM", "codex-teammate")
-    monkeypatch.setenv("CODEX_TEAMMATE_NAME", "contract-test")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "claude-anyteam")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "contract-test")
+
+
+def _clear_identity_env(monkeypatch) -> None:
+    for key in (
+        "CLAUDE_ANYTEAM_TEAM",
+        "CLAUDE_ANYTEAM_NAME",
+        "CODEX_TEAMMATE_TEAM",
+        "CODEX_TEAMMATE_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _advertised_tool_names() -> list[str]:
@@ -43,7 +53,7 @@ def _call_tool(name: str, arguments: dict) -> dict:
 
 def _member(name: str, color: str) -> TeammateMember:
     return TeammateMember(
-        agentId=f"{name}@codex-teammate",
+        agentId=f"{name}@claude-anyteam",
         name=name,
         agentType="claude",
         model="test-model",
@@ -82,11 +92,9 @@ def test_exposed_count_is_six(identity):
 
 def test_identity_required_at_build_time(monkeypatch):
     """With neither env nor argv providing identity, build_server raises."""
-    monkeypatch.delenv("CODEX_TEAMMATE_TEAM", raising=False)
-    monkeypatch.delenv("CODEX_TEAMMATE_NAME", raising=False)
-    monkeypatch.setattr("sys.argv", ["codex-teammate-wrapper"])
+    _clear_identity_env(monkeypatch)
     with pytest.raises(RuntimeError, match="team and name are required"):
-        build_server()
+        build_server([])
 
 
 def test_identity_resolves_from_cli_args(monkeypatch):
@@ -94,9 +102,8 @@ def test_identity_resolves_from_cli_args(monkeypatch):
     identity even when env is empty. This is the fix for the observed
     'MCP handshake failed: connection closed' when App Server spawns
     the wrapper without forwarding our adapter's env."""
-    from codex_teammate.wrapper_server import _identity
-    monkeypatch.delenv("CODEX_TEAMMATE_TEAM", raising=False)
-    monkeypatch.delenv("CODEX_TEAMMATE_NAME", raising=False)
+    from claude_anyteam.wrapper_server import _identity
+    _clear_identity_env(monkeypatch)
     team, name = _identity(["--team", "my-team", "--name", "codex-alice"])
     assert team == "my-team"
     assert name == "codex-alice"
@@ -104,9 +111,8 @@ def test_identity_resolves_from_cli_args(monkeypatch):
 
 def test_identity_cli_args_equals_form(monkeypatch):
     """`--team=foo` form also works (argparse-compatible shape)."""
-    from codex_teammate.wrapper_server import _identity
-    monkeypatch.delenv("CODEX_TEAMMATE_TEAM", raising=False)
-    monkeypatch.delenv("CODEX_TEAMMATE_NAME", raising=False)
+    from claude_anyteam.wrapper_server import _identity
+    _clear_identity_env(monkeypatch)
     team, name = _identity(["--team=foo", "--name=bar"])
     assert team == "foo"
     assert name == "bar"
@@ -114,9 +120,9 @@ def test_identity_cli_args_equals_form(monkeypatch):
 
 def test_identity_cli_args_preferred_over_env(monkeypatch):
     """If both CLI and env are set, CLI wins (more specific; set per-spawn)."""
-    from codex_teammate.wrapper_server import _identity
-    monkeypatch.setenv("CODEX_TEAMMATE_TEAM", "env-team")
-    monkeypatch.setenv("CODEX_TEAMMATE_NAME", "env-name")
+    from claude_anyteam.wrapper_server import _identity
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "env-team")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "env-name")
     team, name = _identity(["--team", "cli-team", "--name", "cli-name"])
     assert team == "cli-team"
     assert name == "cli-name"
@@ -124,9 +130,9 @@ def test_identity_cli_args_preferred_over_env(monkeypatch):
 
 def test_identity_env_fallback_preserves_backward_compat(monkeypatch):
     """Old callers that only set env (no CLI args) must still work."""
-    from codex_teammate.wrapper_server import _identity
-    monkeypatch.setenv("CODEX_TEAMMATE_TEAM", "env-team")
-    monkeypatch.setenv("CODEX_TEAMMATE_NAME", "env-name")
+    from claude_anyteam.wrapper_server import _identity
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "env-team")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "env-name")
     team, name = _identity([])
     assert team == "env-team"
     assert name == "env-name"
@@ -134,9 +140,9 @@ def test_identity_env_fallback_preserves_backward_compat(monkeypatch):
 
 def test_identity_partial_cli_args_fall_back_to_env(monkeypatch):
     """If only --team is passed via CLI, --name falls back to env."""
-    from codex_teammate.wrapper_server import _identity
-    monkeypatch.setenv("CODEX_TEAMMATE_TEAM", "env-team")
-    monkeypatch.setenv("CODEX_TEAMMATE_NAME", "env-name")
+    from claude_anyteam.wrapper_server import _identity
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "env-team")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "env-name")
     team, name = _identity(["--team", "cli-only-team"])
     assert team == "cli-only-team"
     assert name == "env-name"
@@ -200,8 +206,8 @@ def test_task_update_forwards_owner_and_metadata(identity):
         metadata={"blocked_reason": "waiting on review"},
     )
     with (
-        patch("codex_teammate.wrapper_server._cs_tasks.get_task", return_value=existing),
-        patch("codex_teammate.wrapper_server._cs_tasks.update_task", return_value=updated) as m,
+        patch("claude_anyteam.wrapper_server._cs_tasks.get_task", return_value=existing),
+        patch("claude_anyteam.wrapper_server._cs_tasks.update_task", return_value=updated) as m,
     ):
         result = _call_tool(
             "task_update",
@@ -221,7 +227,7 @@ def test_task_update_forwards_owner_and_metadata(identity):
 
 def test_task_update_rejects_when_owned_by_other_teammate(identity):
     with patch(
-        "codex_teammate.wrapper_server._cs_tasks.get_task",
+        "claude_anyteam.wrapper_server._cs_tasks.get_task",
         return_value=SimpleNamespace(owner="someone-else"),
     ):
         with pytest.raises(Exception, match="owned by 'someone-else', not 'contract-test'"):
@@ -237,9 +243,9 @@ def test_send_message_accepts_broadcast_star(identity, monkeypatch, tmp_path):
     ]
     config = SimpleNamespace(members=members)
     team_root = tmp_path / "teams"
-    monkeypatch.setattr("codex_teammate.wrapper_server._cs_messaging.TEAMS_DIR", team_root)
+    monkeypatch.setattr("claude_anyteam.wrapper_server._cs_messaging.TEAMS_DIR", team_root)
 
-    with patch("codex_teammate.wrapper_server._cs_teams.read_config", return_value=config):
+    with patch("claude_anyteam.wrapper_server._cs_teams.read_config", return_value=config):
         result = _call_tool(
             "send_message",
             {
@@ -251,7 +257,7 @@ def test_send_message_accepts_broadcast_star(identity, monkeypatch, tmp_path):
 
     assert result == {"delivered_to": "*", "sender": "contract-test", "count": 3}
     for peer in ("team-lead", "peer-a", "peer-b"):
-        inbox = team_root / "codex-teammate" / "inboxes" / f"{peer}.json"
+        inbox = team_root / "claude-anyteam" / "inboxes" / f"{peer}.json"
         assert inbox.exists(), f"broadcast should create inbox entry for {peer}"
         payload = json.loads(inbox.read_text(encoding="utf-8"))
         assert len(payload) == 1
@@ -259,7 +265,7 @@ def test_send_message_accepts_broadcast_star(identity, monkeypatch, tmp_path):
         assert payload[0]["text"] == "heads up"
         assert payload[0]["summary"] == "broadcast"
 
-    own_inbox = team_root / "codex-teammate" / "inboxes" / "contract-test.json"
+    own_inbox = team_root / "claude-anyteam" / "inboxes" / "contract-test.json"
     assert not own_inbox.exists(), "broadcast must not send to the sender's own inbox"
 
 
@@ -271,9 +277,9 @@ def test_send_message_direct_message_uses_sender_color(identity, monkeypatch, tm
         ]
     )
     team_root = tmp_path / "teams"
-    monkeypatch.setattr("codex_teammate.wrapper_server._cs_messaging.TEAMS_DIR", team_root)
+    monkeypatch.setattr("claude_anyteam.wrapper_server._cs_messaging.TEAMS_DIR", team_root)
 
-    with patch("codex_teammate.wrapper_server._cs_teams.read_config", return_value=config):
+    with patch("claude_anyteam.wrapper_server._cs_teams.read_config", return_value=config):
         result = _call_tool(
             "send_message",
             {
@@ -284,7 +290,7 @@ def test_send_message_direct_message_uses_sender_color(identity, monkeypatch, tm
         )
 
     assert result == {"delivered_to": "peer-a", "sender": "contract-test"}
-    inbox = team_root / "codex-teammate" / "inboxes" / "peer-a.json"
+    inbox = team_root / "claude-anyteam" / "inboxes" / "peer-a.json"
     payload = json.loads(inbox.read_text(encoding="utf-8"))
     assert len(payload) == 1
     assert payload[0]["from"] == "contract-test"
