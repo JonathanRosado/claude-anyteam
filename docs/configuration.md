@@ -95,6 +95,46 @@ Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_M
 | `CODEX_TEAMMATE_SHIM_MATCH` | Regex for agent names to route to the Codex adapter. Default `^codex-`. Override if you want a different convention. |
 | `CODEX_TEAMMATE_NATIVE_CLAUDE` | Path to the native `claude` binary. Auto-detected; only set if the shim picks the wrong one. |
 
+## Teammate display mode
+
+Claude Code's `teammateMode` key (in `~/.claude.json`, not settings.json) controls how teammates are spawned:
+
+| Value | Behavior |
+|---|---|
+| `"tmux"` | Spawn teammates as real subprocesses inside a tmux/psmux session. **Required for Codex teammates** — the pane backend is what triggers the TUI presence line registration and lets `claude-anyteam` run as a full process with its own Codex session. |
+| `"auto"` | Choose based on environment. On a non-tmux terminal this typically falls back to in-process, which does not fire the shim → Codex teammates would never launch. |
+| `"in-process"` | Spawn teammates as coroutines inside the main Claude Code process. Valid for native Claude teammates only — the shim is never invoked, so `codex-*` names cannot route to this adapter. |
+
+### Installing a multiplexer
+
+`claude-anyteam install` verifies a multiplexer is on PATH before writing any config; if missing, install fails loudly with no side effects.
+
+| OS | Install command |
+|---|---|
+| Debian/Ubuntu | `sudo apt install tmux` |
+| Fedora/RHEL | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S tmux` |
+| macOS | `brew install tmux` |
+| Windows | `winget install psmux` (also: `choco install psmux`, `scoop install psmux`) |
+
+### Install flow
+
+`claude-anyteam install` sets `teammateMode` to `"tmux"` as part of the install flow:
+
+- Key absent → written with value `"tmux"`.
+- Key already `"tmux"` → no change.
+- Key is `"auto"` or `"in-process"` or anything else → installer prompts before overwriting. Pass `--assume-yes` / `-y` to auto-accept in scripted installs.
+
+The installer records what it did in `~/.claude/plugins/data/claude-anyteam-claude-anyteam/install-state.json`. `claude-anyteam uninstall` reads the state file and either restores the previous value or removes the key entirely, depending on how the install left things.
+
+### Viewing teammates
+
+With `teammateMode: "tmux"` and Claude Code launched from a non-tmux shell, teammate panes live inside a detached tmux session on an isolated socket (`claude-swarm-<pid>`). Your terminal sees nothing new. Claude Code will show `View teammates: tmux -L claude-swarm-<pid> a` in your prompt banner so you can attach to observe teammates at any time.
+
+### Inside-tmux caveat
+
+If you launch Claude Code from inside a tmux session, teammates split your current tmux window. To get detached behavior, run `env -u TMUX claude` to strip `$TMUX` before launch.
+
 ## Plan mode
 
 Launch with `--plan-mode` (or `CLAUDE_ANYTEAM_PLAN_MODE=true`) to register with `planModeRequired: true`. The adapter will then respond to inbound `plan_approval_request` messages by invoking Codex once with `--output-schema plan.schema.json` and replying with a structured plan.

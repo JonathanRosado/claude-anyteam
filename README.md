@@ -153,6 +153,7 @@ This mode is fully messageable (inbox, task claim, peer replies) but does NOT re
 - Node 18+ (for the npm installer; not required at runtime)
 - OpenAI Codex CLI 0.120+ on PATH
 - Claude Code 2.1+ with Agent Teams mode
+- Terminal multiplexer on PATH (tmux or psmux) — see [configuration.md](docs/configuration.md#teammate-display-mode)
 
 ## Docs
 
