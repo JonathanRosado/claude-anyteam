@@ -476,14 +476,14 @@ GEMINI_CLI_VERSION_TIMEOUT_S = 5
 
 # Accepts semver-ish tokens like "0.124.0", "0.124", or "0.124.0-rc1". Rejects
 # garbage ("12abc"), leading-v prefixes ("v0.124.0"), and trailing junk.
-_CODEX_VERSION_TOKEN_RE = re.compile(
+_CLI_VERSION_TOKEN_RE = re.compile(
     r"^(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?(?:[-+][A-Za-z0-9.\-]+)?$"
 )
 
 
-def _parse_codex_version(raw: str) -> str | None:
+def _parse_cli_version(raw: str) -> str | None:
     for token in raw.split():
-        if _CODEX_VERSION_TOKEN_RE.match(token):
+        if _CLI_VERSION_TOKEN_RE.match(token):
             return token
     return None
 
@@ -491,7 +491,7 @@ def _parse_codex_version(raw: str) -> str | None:
 def _parse_version_tuple(version: str | None) -> tuple[int, int, int] | None:
     if version is None:
         return None
-    match = _CODEX_VERSION_TOKEN_RE.match(version)
+    match = _CLI_VERSION_TOKEN_RE.match(version)
     if match is None:
         return None
     major = int(match.group("major"))
@@ -536,7 +536,7 @@ def _check_codex_cli() -> CodexCliCheck:
     if completed is not None and completed.returncode == 0:
         raw = (completed.stdout or "").strip() or None
         if raw:
-            version = _parse_codex_version(raw)
+            version = _parse_cli_version(raw)
 
     return CodexCliCheck(found=True, path=resolved, version=version, raw_output=raw)
 
@@ -597,7 +597,7 @@ def _check_gemini_cli() -> GeminiCliCheck:
         completed = None
     if completed is not None and completed.returncode == 0:
         raw = ((completed.stdout or "") or (completed.stderr or "")).strip() or None
-        version = _parse_codex_version(raw or "")
+        version = _parse_cli_version(raw or "")
     return GeminiCliCheck(found=True, path=resolved, version=version, raw_output=raw)
 
 

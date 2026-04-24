@@ -1298,7 +1298,7 @@ def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: 
     assert result.raw_output == "gemini 0.3.1"
 
 
-def test_parse_codex_version_rejects_garbage_tokens():
+def test_parse_cli_version_rejects_garbage_tokens():
     # Direct unit coverage for the reviewer-requested branch: weird strings
     # must parse to None rather than returning a bogus token.
     for bad in (
@@ -1310,10 +1310,10 @@ def test_parse_codex_version_rejects_garbage_tokens():
         "0",  # major-only, not semver-ish enough
         "codex-cli unknown",
     ):
-        assert installer_mod._parse_codex_version(bad) is None, f"expected None for {bad!r}"
+        assert installer_mod._parse_cli_version(bad) is None, f"expected None for {bad!r}"
 
 
-def test_parse_codex_version_accepts_various_valid_shapes():
+def test_parse_cli_version_accepts_various_valid_shapes():
     cases = {
         "codex-cli 0.124.0": "0.124.0",
         "codex-cli 0.120": "0.120",
@@ -1321,15 +1321,15 @@ def test_parse_codex_version_accepts_various_valid_shapes():
         "codex 10.20.30": "10.20.30",
     }
     for raw, expected in cases.items():
-        assert installer_mod._parse_codex_version(raw) == expected, f"{raw!r} → {expected!r}"
+        assert installer_mod._parse_cli_version(raw) == expected, f"{raw!r} → {expected!r}"
 
 
-def test_parse_codex_version_picks_correct_token_from_noisy_output():
+def test_parse_cli_version_picks_correct_token_from_noisy_output():
     # Regression: the v1 "first token starting with a digit" heuristic would
     # report "0" here. The tightened regex must skip "0" / "errors" / headings
     # and land on "0.124.0".
     noisy = "0 errors — codex-cli 0.124.0 (release build)"
-    assert installer_mod._parse_codex_version(noisy) == "0.124.0"
+    assert installer_mod._parse_cli_version(noisy) == "0.124.0"
 
 
 def test_check_codex_cli_falls_back_when_subprocess_stdout_unparseable(
