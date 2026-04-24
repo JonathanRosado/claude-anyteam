@@ -97,14 +97,14 @@ For restart resilience, persist `{team, agent, session_id}` to a small adapter s
 
 ### Architecture overview
 
-Plan B is the closest conceptual match to the Codex App Server path. The clean version is to split the transport code in `src/claude_anyteam/app_server.py` into a provider-neutral stdio JSON-RPC helper, keep `codex.py::app_server_invoke` as one backend implementation, and add `gemini_acp.py` / `gemini_acp_client.py` for Gemini's documented ACP methods (`initialize`, `authenticate`, `newSession`, `loadSession`, `prompt`, `cancel`). `loop.py` would then choose a backend implementation instead of directly assuming Codex, while still owning task claiming, shutdown, blocked-task behavior, and mailbox I/O.
+Plan B is the closest conceptual match to the Codex App Server path. The clean version is to split the transport code in `src/claude_anyteam/app_server.py` into a provider-neutral stdio JSON-RPC helper, keep `codex.py::app_server_invoke` as one backend implementation, and add `gemini_acp.py` / `gemini_acp_client.py` for Gemini's ACP wire methods (`initialize`, `authenticate`, `session/new`, `session/load`, `session/prompt`, `session/cancel`). `loop.py` would then choose a backend implementation instead of directly assuming Codex, while still owning task claiming, shutdown, blocked-task behavior, and mailbox I/O.
 
-The important difference is that ACP does **not** expose Codex's documented `turn/start` + `turn/steer` model. So this plan gives us a long-lived Gemini process and session continuity, but not a drop-in mid-turn steer primitive. The best v1 mapping is: keep one ACP session per teammate, let `prompt` execute the current task, and treat interruptions as queued follow-up prompts or `cancel` + replay. That means `src/claude_anyteam/app_server.py` is reusable at the transport layer, but `src/claude_anyteam/codex.py::app_server_invoke` is **not** reusable as-is.
+The important difference is that ACP does **not** expose Codex's documented `turn/start` + `turn/steer` model. So this plan gives us a long-lived Gemini process and session continuity, but not a drop-in mid-turn steer primitive. The best v1 mapping is: keep one ACP session per teammate, let `session/prompt` execute the current task, and treat interruptions as queued follow-up prompts or `session/cancel` + replay. That means `src/claude_anyteam/app_server.py` is reusable at the transport layer, but `src/claude_anyteam/codex.py::app_server_invoke` is **not** reusable as-is.
 
 ### Files to create/modify
 
 - `src/claude_anyteam/jsonrpc_stdio.py` — provider-neutral request/response + notification loop factored out of `app_server.py`.
-- `src/claude_anyteam/gemini_acp_client.py` — ACP client wrappers for `initialize`, `authenticate`, `newSession`, `loadSession`, `prompt`, `cancel`.
+- `src/claude_anyteam/gemini_acp_client.py` — ACP client wrappers for `initialize`, `authenticate`, `session/new`, `session/load`, `session/prompt`, `session/cancel`.
 - `src/claude_anyteam/gemini_acp.py` — high-level Gemini ACP invocation and result shaping.
 - `src/claude_anyteam/loop.py` — add a Gemini ACP execution path and ACP session state.
 - `src/claude_anyteam/config.py` — backend selector (`codex-app-server`, `gemini-acp`, etc.).
@@ -113,7 +113,7 @@ The important difference is that ACP does **not** expose Codex's documented `tur
 - `src/claude_anyteam/spawn_shim.py` — `gemini-*` route to ACP-capable binary.
 - `pyproject.toml` — publish `gemini-anyteam` or equivalent Gemini adapter script.
 - `tests/test_gemini_acp_client.py` — JSON-RPC request/response and notification dispatch.
-- `tests/test_gemini_acp_session_reload.py` — `newSession`/`loadSession` behavior.
+- `tests/test_gemini_acp_session_reload.py` — `session/new`/`session/load` behavior.
 - `tests/test_gemini_acp_cancel.py` — interruption/cancel fallback semantics.
 
 ### MCP injection approach
@@ -147,7 +147,7 @@ If later ACP releases expose a native JSON schema field, hide it behind a featur
 
 ### Session continuity strategy
 
-Create one ACP session per teammate and keep its session ID in adapter state, analogous to `LoopState.app_server_last_thread_id`. First boot calls `newSession`; normal task turns reuse that session; restart recovery calls `loadSession` from a persisted `state.json` under `~/.claude-anyteam/gemini/<team>/<agent>/`.
+Create one ACP session per teammate and keep its session ID in adapter state, analogous to `LoopState.app_server_last_thread_id`. First boot calls `session/new`; normal task turns reuse that session; restart recovery calls `session/load` from a persisted `state.json` under `~/.claude-anyteam/gemini/<team>/<agent>/`.
 
 Because ACP is long-lived, this plan can also keep tool metadata and filesystem context warm, reducing repeated CLI startup cost. The trade-off is harder crash recovery: if the ACP subprocess wedges, the adapter must detect it, restart Gemini, and reload the last saved session ID.
 
@@ -170,16 +170,16 @@ Because ACP is long-lived, this plan can also keep tool metadata and filesystem 
 - `tests/test_gemini_acp_client.py` — request IDs, notification queueing, timeout behavior.
 - `tests/test_gemini_acp_session_reload.py` — persist/reload ACP session IDs.
 - `tests/test_gemini_acp_prompt_flow.py` — task prompt in, structured result out.
-- `tests/test_gemini_acp_cancel.py` — interruption fallback via `cancel`.
+- `tests/test_gemini_acp_cancel.py` — interruption fallback via `session/cancel`.
 - `tests/test_gemini_mcp_settings.py` — wrapper config injected before ACP startup.
 - `tests/test_gemini_schema_retry.py` — same validation/retry semantics as Plan A.
 - `tests/test_spawn_shim.py` — `gemini-*` route selection.
 
 ### Risks with mitigations
 
-- **No documented `turn/steer` equivalent.** Mitigation: explicitly scope v1 ACP interruptions to `cancel` + replay or queued follow-up prompts.
+- **No documented `turn/steer` equivalent.** Mitigation: explicitly scope v1 ACP interruptions to `session/cancel` + replay or queued follow-up prompts.
 - **CLI/doc flag churn (`--acp` vs `--experimental-acp`).** Mitigation: startup feature probe against the actual binary, not docs alone.
-- **Persistent-process failure modes.** Mitigation: watchdog + restart + `loadSession` recovery.
+- **Persistent-process failure modes.** Mitigation: watchdog + restart + `session/load` recovery.
 - **Higher implementation cost than Plan A.** Mitigation: factor transport code once (`jsonrpc_stdio.py`) and keep the rest of the control loop unchanged.
 
 ---
