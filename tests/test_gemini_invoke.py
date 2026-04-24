@@ -18,10 +18,16 @@ def test_write_mcp_settings_uses_isolated_home_and_anyteam_alias(tmp_path, monke
     real_gemini = real_home / ".gemini"
     real_gemini.mkdir(parents=True)
     (real_gemini / "oauth_creds.json").write_text("{}")
+    (real_gemini / "settings.json").write_text(json.dumps({
+        "security": {"auth": {"selectedType": "oauth-personal"}},
+        "otherTopLevel": {"must": "not copy"},
+    }))
 
     settings_path = invoke.write_mcp_settings(tmp_path / "isolated", team="t", agent_name="gemini-a", real_home=str(real_home))
 
     data = json.loads(settings_path.read_text())
+    assert data["security"]["auth"] == {"selectedType": "oauth-personal"}
+    assert "otherTopLevel" not in data
     server = data["mcpServers"]["anyteam"]
     assert server["command"] == str(wrapper)
     assert server["args"] == ["--team", "t", "--name", "gemini-a"]

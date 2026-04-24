@@ -54,6 +54,28 @@ def _link_auth_cache(settings_dir: Path, real_home: str | None) -> None:
                 dst.write_bytes(src.read_bytes())
 
 
+def _real_auth_settings(real_home: str | None) -> dict[str, Any]:
+    """Return only the Gemini auth settings that must follow isolated HOME."""
+    if not real_home:
+        return {}
+    path = Path(real_home) / ".gemini" / "settings.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    security = data.get("security")
+    if not isinstance(security, dict):
+        return {}
+    auth = security.get("auth")
+    if not isinstance(auth, dict):
+        return {}
+    return {"security": {"auth": auth}}
+
+
 def write_mcp_settings(gemini_home: Path, *, team: str, agent_name: str, real_home: str | None = None) -> Path:
     """Write adapter-owned Gemini MCP config without mutating ~/.gemini."""
     settings_dir = gemini_home / ".gemini"
@@ -73,6 +95,7 @@ def write_mcp_settings(gemini_home: Path, *, team: str, agent_name: str, real_ho
             }
         }
     }
+    data.update(_real_auth_settings(real_home))
     path = settings_dir / "settings.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
