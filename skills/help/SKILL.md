@@ -23,13 +23,12 @@ claude-anyteam lets Claude Code route selected Agent Teams teammates to external
 Create a mixed team with explicit prefixes:
 
 ```text
-TeamCreate(
-  team_name="build-team",
-  agents=[
-    Agent(name="codex-implementer", prompt="Implement the patch."),
-    Agent(name="gemini-reviewer", prompt="Review the patch from a Gemini perspective."),
-  ],
-)
+TeamCreate(team_name="build-team")
+
+Agent(team_name="build-team", name="codex-implementer", prompt="Implement the patch.")
+Agent(team_name="build-team", name="gemini-reviewer", prompt="Review the patch from a Gemini perspective.")
+Agent(team_name="build-team", name="claude-planner", prompt="Plan the implementation approach.")
+Agent(team_name="build-team", name="reviewer", prompt="Review the final result as a native Claude teammate.")
 ```
 
 If the user asks why a teammate did not route through claude-anyteam, check the prefix first: `codex-` and `gemini-` are the default routing regexes.
