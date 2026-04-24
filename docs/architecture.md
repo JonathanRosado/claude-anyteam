@@ -1,5 +1,9 @@
 # Architecture
 
+claude-anyteam is now a multi-backend spawn-shim adapter. The same Claude Code teammate pane path provides TUI presence; backend routing is selected by teammate name (`codex-*` or `gemini-*`). Codex retains its app-server path for mid-turn steering. Gemini currently uses headless CLI Plan A and documents non-parity in `docs/gemini-adapter-limitations.md`.
+
+# Architecture
+
 claude-anyteam is a protocol adapter, not an LLM wrapper. It lets external coding agents participate in Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams) protocol as first-class teammates without routing their reasoning through a Claude instance.
 
 ## The core insight

@@ -1,5 +1,9 @@
 # Roadmap
 
+Shipped/partial: multi-backend routing now supports Codex (`codex-*`) and Gemini CLI (`gemini-*`). Remaining Gemini work is ACP exploration and closing documented parity gaps in `docs/gemini-adapter-limitations.md`.
+
+# Roadmap
+
 ## Shipped
 
 **Codex adapter** — OpenAI Codex CLI (0.120+, latest tested 0.124.0) as a first-class Claude Code teammate. gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex / gpt-5.2 with low/medium/high/xhigh reasoning effort. App Server mid-task `turn/steer` and `thread/fork` cross-task memory. Fresh-exec `codex exec resume` as opt-out. 198 passing tests including a live battle-test against native Claude agents.

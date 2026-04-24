@@ -1,3 +1,9 @@
+# claude-anyteam
+
+claude-anyteam routes Agent Teams teammates to external CLI backends. Teammate names matching `codex-*` use the Codex adapter; names matching `gemini-*` use the Gemini CLI adapter. Other names continue to launch native Claude teammates.
+
+Gemini support uses headless `gemini --prompt ... --output-format stream-json` with an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps, especially the lack of Codex app-server `turn/steer` parity.
+
 <div align="center">
 
 <img src="assets/logo/wordmark.svg" alt="claude-anyteam" width="420" />

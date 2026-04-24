@@ -1,5 +1,11 @@
 # Install
 
+`claude-anyteam install` writes the shared spawn shim once. After restart, `codex-*` teammate names route to Codex and `gemini-*` names route to Gemini CLI. The installer checks terminal-multiplexer support as a hard prerequisite and reports Codex/Gemini CLI availability as non-blocking warnings.
+
+Install/authenticate Codex for `codex-*` teammates and Gemini CLI for `gemini-*` teammates (`gemini` once for OAuth, or use `GEMINI_API_KEY`/Vertex auth for unattended runs).
+
+# Install
+
 The quickstart in the [README](../README.md#quickstart) is the normal path:
 
 ```bash

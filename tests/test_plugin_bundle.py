@@ -15,8 +15,8 @@ WRAPPER_SCRIPT = REPO_ROOT / "bin" / "claude-anyteam"
 HELP_SKILL = REPO_ROOT / "skills" / "help" / "SKILL.md"
 STATUS_SKILL = REPO_ROOT / "skills" / "status" / "SKILL.md"
 ORIENTATION_MESSAGE = (
-    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex. "
-    "Docs: https://github.com/JonathanRosado/claude-anyteam"
+    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex "
+    "and gemini-* route to Gemini CLI. Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
 
 
@@ -41,15 +41,17 @@ def test_plugin_manifests_exist_and_are_well_formed() -> None:
     assert marketplace["plugins"][0]["source"] == "./"
 
 
-def test_help_skill_exists_and_teaches_claude_about_codex_teammates() -> None:
+def test_help_skill_exists_and_teaches_claude_about_cli_teammates() -> None:
     content = HELP_SKILL.read_text(encoding="utf-8")
 
     assert "name: help" in content
     # Core intent of the skill (unchanged across rewrites): teach Claude Code
-    # to name Codex teammates with `codex-` prefix and call the Agent Teams
+    # to name CLI teammates with `codex-` / `gemini-` prefixes and call the Agent Teams
     # tools directly instead of explaining the mechanism.
     assert "codex-" in content
+    assert "gemini-" in content
     assert "^codex-" in content
+    assert "^gemini-" in content
     assert "TeamCreate" in content
     assert "Agent(" in content
     assert "when_to_use:" in content

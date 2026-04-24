@@ -4,7 +4,7 @@ set -eu
 PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
 SETTINGS_PATH=${HOME}/.claude/settings.json
 CONFIG_VALIDATED=0
-ORIENTATION_MESSAGE="claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex. Docs: https://github.com/JonathanRosado/claude-anyteam"
+ORIENTATION_MESSAGE="claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex and gemini-* route to Gemini CLI. Docs: https://github.com/JonathanRosado/claude-anyteam"
 
 has_configured_command() {
   if [ ! -f "$SETTINGS_PATH" ]; then

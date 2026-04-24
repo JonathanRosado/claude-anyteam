@@ -1,5 +1,11 @@
 # Configuration
 
+claude-anyteam now supports two routed backend prefixes by default: `codex-*` for Codex and `gemini-*` for Gemini CLI. Shared settings such as `CLAUDE_ANYTEAM_TEAM`, `CLAUDE_ANYTEAM_NAME`, `CLAUDE_ANYTEAM_CWD`, `CLAUDE_ANYTEAM_MODEL`, and per-agent `model` config apply to both. Codex-only settings include `CODEX_BINARY`, `CLAUDE_ANYTEAM_APP_SERVER`, and `CLAUDE_ANYTEAM_EFFORT`. Gemini-only settings include `CLAUDE_ANYTEAM_GEMINI_BINARY` and `CLAUDE_ANYTEAM_GEMINI_HOME`; Gemini has no reasoning-effort flag in this adapter.
+
+Gemini teammates use adapter-owned Gemini config/session state and do not mutate the user's real `~/.gemini/settings.json`. See `docs/gemini-adapter-limitations.md` for auth and app-server parity notes.
+
+# Configuration
+
 All configuration is via CLI flags or environment variables. The CLI flags win when both are set.
 
 ## Adapter CLI flags

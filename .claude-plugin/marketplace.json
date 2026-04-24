@@ -11,7 +11,7 @@
     {
       "name": "claude-anyteam",
       "source": "./",
-      "description": "Auto-configures Claude Code to route codex-* teammates through the claude-anyteam spawn shim.",
+      "description": "Auto-configures Claude Code to route codex-* and gemini-* teammates through the claude-anyteam spawn shim.",
       "version": "0.1.0",
       "author": {
         "name": "friction-research"
@@ -19,6 +19,7 @@
       "category": "developer-tools",
       "tags": [
         "codex",
+        "gemini",
         "agent-teams",
         "teammates"
       ]
