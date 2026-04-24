@@ -6,6 +6,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,30 +30,157 @@ def _wrapper_binary(wrapper_binary: str = "claude-anyteam-wrapper") -> str:
     return shutil.which(wrapper_binary) or wrapper_binary
 
 
-def _link_auth_cache(settings_dir: Path, real_home: str | None) -> None:
-    """Expose real Gemini auth cache inside isolated HOME without copying settings.
+_AUTH_CACHE_FILES = (
+    "oauth_creds.json",
+    "google_accounts.json",
+    "projects.json",
+    "state.json",
+)
 
-    Gemini reads ~/.gemini for OAuth/account files. The adapter isolates HOME so
-    its MCP settings do not mutate the user's real ~/.gemini/settings.json, but
-    symlinks credential/account files into that isolated home when present so
-    existing sign-in still works. Wrapper MCP subprocesses receive real HOME in
-    their env separately so team protocol tools see the user's normal config.
-    """
-    if not real_home:
+
+def _copy_if_absent(src: Path, dst: Path) -> None:
+    if dst.exists():
         return
-    source_dir = Path(real_home) / ".gemini"
-    if not source_dir.exists():
+    if not src.exists() or not src.is_file():
         return
-    for name in ("oauth_creds.json", "google_accounts.json", "projects.json", "trustedFolders.json", "installation_id"):
-        src = source_dir / name
-        dst = settings_dir / name
-        if not src.exists() or dst.exists():
-            continue
+    shutil.copy2(src, dst)
+
+
+def _write_atomic_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
         try:
-            dst.symlink_to(src)
+            os.unlink(tmp_name)
         except OSError:
-            if src.is_file():
-                dst.write_bytes(src.read_bytes())
+            pass
+        raise
+
+
+def _write_scoped_trusted_folders(settings_dir: Path, *, cwd: Path | None, include_dirs: list[Path] | None) -> None:
+    if cwd is None and not include_dirs:
+        return
+    trusted: dict[str, str] = {}
+    if cwd is not None:
+        trusted[str(cwd.resolve())] = "TRUST_FOLDER"
+    for directory in include_dirs or []:
+        trusted[str(directory.resolve())] = "TRUST_FOLDER"
+    _write_atomic_json(settings_dir / "trustedFolders.json", trusted)
+
+
+def prepare_isolated_gemini_home(
+    gemini_home: Path,
+    *,
+    real_home: str | None,
+    cwd: Path | None = None,
+    include_dirs: list[Path] | None = None,
+) -> Path:
+    """Prepare adapter-owned Gemini HOME without sharing mutable user state.
+
+    The adapter isolates Gemini's HOME so it can inject exactly one MCP server
+    and keep each teammate's transcript/session files separate. Auth/account
+    files are copied on first use (not symlinked) to avoid token-refresh races
+    and account/trust bleed between concurrent Gemini teammates. User tmp/ and
+    history/ are never copied.
+    """
+    settings_dir = gemini_home / ".gemini"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    source_dir = Path(real_home) / ".gemini" if real_home else None
+    if source_dir is not None and source_dir.exists():
+        for name in _AUTH_CACHE_FILES:
+            _copy_if_absent(source_dir / name, settings_dir / name)
+        installation_dst = settings_dir / "installation_id"
+        if not installation_dst.exists():
+            installation_src = source_dir / "installation_id"
+            if installation_src.exists() and installation_src.is_file():
+                shutil.copy2(installation_src, installation_dst)
+            else:
+                installation_dst.write_text(str(uuid.uuid4()) + "\n", encoding="utf-8")
+    else:
+        installation_dst = settings_dir / "installation_id"
+        if not installation_dst.exists():
+            installation_dst.write_text(str(uuid.uuid4()) + "\n", encoding="utf-8")
+    _write_scoped_trusted_folders(settings_dir, cwd=cwd, include_dirs=include_dirs)
+    ensure_adapter_state(gemini_home)
+    return settings_dir
+
+
+def _link_auth_cache(settings_dir: Path, real_home: str | None) -> None:
+    """Backward-compatible wrapper for older tests/imports.
+
+    Deprecated: use prepare_isolated_gemini_home(). Despite the legacy name,
+    this now copies mutable auth/account files instead of symlinking them.
+    """
+    prepare_isolated_gemini_home(settings_dir.parent, real_home=real_home)
+
+
+def _adapter_state_path(gemini_home: Path) -> Path:
+    return gemini_home / ".claude-anyteam" / "state.json"
+
+
+def ensure_adapter_state(gemini_home: Path) -> Path:
+    path = _adapter_state_path(gemini_home)
+    if not path.exists():
+        write_adapter_state(gemini_home, backend="headless")
+    return path
+
+
+def read_adapter_state(gemini_home: Path) -> dict[str, Any]:
+    path = _adapter_state_path(gemini_home)
+    if not path.exists():
+        return {
+            "headless_session_id": None,
+            "acp_session_id": None,
+            "backend": "headless",
+            "updated_at": None,
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "headless_session_id": None,
+            "acp_session_id": None,
+            "backend": "headless",
+            "updated_at": None,
+        }
+    if not isinstance(data, dict):
+        return {
+            "headless_session_id": None,
+            "acp_session_id": None,
+            "backend": "headless",
+            "updated_at": None,
+        }
+    data.setdefault("headless_session_id", None)
+    data.setdefault("acp_session_id", None)
+    data.setdefault("backend", "headless")
+    data.setdefault("updated_at", None)
+    return data
+
+
+def write_adapter_state(
+    gemini_home: Path,
+    *,
+    backend: str,
+    headless_session_id: str | None = None,
+    acp_session_id: str | None = None,
+) -> Path:
+    previous = read_adapter_state(gemini_home) if _adapter_state_path(gemini_home).exists() else {}
+    data = {
+        "headless_session_id": headless_session_id if headless_session_id is not None else previous.get("headless_session_id"),
+        "acp_session_id": acp_session_id if acp_session_id is not None else previous.get("acp_session_id"),
+        "backend": backend,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    path = _adapter_state_path(gemini_home)
+    _write_atomic_json(path, data)
+    return path
 
 
 def _real_auth_settings(real_home: str | None) -> dict[str, Any]:
@@ -76,11 +205,19 @@ def _real_auth_settings(real_home: str | None) -> dict[str, Any]:
     return {"security": {"auth": auth}}
 
 
-def write_mcp_settings(gemini_home: Path, *, team: str, agent_name: str, real_home: str | None = None) -> Path:
+def write_mcp_settings(
+    gemini_home: Path,
+    *,
+    team: str,
+    agent_name: str,
+    real_home: str | None = None,
+    cwd: Path | None = None,
+    include_dirs: list[Path] | None = None,
+) -> Path:
     """Write adapter-owned Gemini MCP config without mutating ~/.gemini."""
-    settings_dir = gemini_home / ".gemini"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-    _link_auth_cache(settings_dir, real_home)
+    settings_dir = prepare_isolated_gemini_home(
+        gemini_home, real_home=real_home, cwd=cwd, include_dirs=include_dirs
+    )
     env = identity_env(os.environ, team=team, name=agent_name)
     if real_home:
         env["HOME"] = real_home
@@ -144,7 +281,7 @@ def run(
     team, agent = wrapper_identity or ("default", "gemini")
     real_home = os.environ.get("HOME")
     home = gemini_home or _default_gemini_home(team, agent)
-    write_mcp_settings(home, team=team, agent_name=agent, real_home=real_home)
+    write_mcp_settings(home, team=team, agent_name=agent, real_home=real_home, cwd=cwd)
 
     args = [gemini_binary, "--prompt", prompt, "--output-format", "stream-json", "--approval-mode", "yolo"]
     if model:
@@ -166,7 +303,7 @@ def run(
     seen_non_init_event = False
     error: str | None = None
 
-    logger.info("gemini.invoke", cwd=str(cwd), schema=str(schema) if schema else None, resumed=bool(resume_session_id))
+    logger.info("gemini.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id))
     try:
         proc = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_s, check=False, env=sub_env, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
@@ -215,6 +352,9 @@ def run(
             exit_code = 1
     elif terminal.get("status") not in (None, "success") and not error:
         error = f"gemini result status {terminal.get('status')!r}"
+
+    if captured_session_id:
+        write_adapter_state(home, backend="headless", headless_session_id=captured_session_id)
 
     return CodexResult(
         exit_code=exit_code,

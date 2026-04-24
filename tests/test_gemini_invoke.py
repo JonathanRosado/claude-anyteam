@@ -147,3 +147,73 @@ def test_feature_test_requires_headless_flags(monkeypatch):
     monkeypatch.setattr(invoke.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="--approval-mode"):
         invoke.feature_test("gemini")
+
+
+def test_prepare_isolated_gemini_home_copies_mutable_auth_files_and_scopes_trust(tmp_path):
+    real_home = tmp_path / "real"
+    real_gemini = real_home / ".gemini"
+    real_gemini.mkdir(parents=True)
+    for name in ("oauth_creds.json", "google_accounts.json", "projects.json", "state.json", "installation_id"):
+        (real_gemini / name).write_text(f"{name}-real", encoding="utf-8")
+    (real_gemini / "trustedFolders.json").write_text(json.dumps({"/secret": "TRUST_FOLDER"}), encoding="utf-8")
+    (real_gemini / "tmp").mkdir()
+    (real_gemini / "history").mkdir()
+    cwd = tmp_path / "workspace"
+    include_dir = tmp_path / "include"
+    cwd.mkdir()
+    include_dir.mkdir()
+
+    home_a = tmp_path / "agent-a"
+    home_b = tmp_path / "agent-b"
+    invoke.prepare_isolated_gemini_home(home_a, real_home=str(real_home), cwd=cwd, include_dirs=[include_dir])
+    invoke.prepare_isolated_gemini_home(home_b, real_home=str(real_home), cwd=cwd, include_dirs=[include_dir])
+
+    for home in (home_a, home_b):
+        gemini_dir = home / ".gemini"
+        for name in ("oauth_creds.json", "google_accounts.json", "projects.json", "state.json", "installation_id"):
+            copied = gemini_dir / name
+            assert copied.exists()
+            assert not copied.is_symlink()
+        assert not (gemini_dir / "tmp").exists()
+        assert not (gemini_dir / "history").exists()
+        trusted = json.loads((gemini_dir / "trustedFolders.json").read_text(encoding="utf-8"))
+        assert trusted == {str(cwd.resolve()): "TRUST_FOLDER", str(include_dir.resolve()): "TRUST_FOLDER"}
+        assert (home / ".claude-anyteam" / "state.json").exists()
+
+    assert (home_a / ".gemini" / "oauth_creds.json").resolve() != (home_b / ".gemini" / "oauth_creds.json").resolve()
+
+
+def test_prepare_isolated_gemini_home_generates_installation_id_when_absent(tmp_path):
+    real_home = tmp_path / "real"
+    (real_home / ".gemini").mkdir(parents=True)
+    isolated = tmp_path / "isolated"
+
+    invoke.prepare_isolated_gemini_home(isolated, real_home=str(real_home))
+
+    installation_id = (isolated / ".gemini" / "installation_id").read_text(encoding="utf-8").strip()
+    assert installation_id
+    assert not (isolated / ".gemini" / "installation_id").is_symlink()
+
+
+def test_run_persists_headless_session_id_to_adapter_state(tmp_path, monkeypatch):
+    stdout = "\n".join([
+        json.dumps({"type": "init", "session_id": "s-persist"}),
+        json.dumps({"type": "message", "role": "assistant", "content": "ok"}),
+        json.dumps({"type": "result", "status": "success"}),
+    ])
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/" + name)
+    home = tmp_path / "home"
+
+    result = invoke.run("prompt", cwd=tmp_path, gemini_home=home)
+
+    assert result.session_id == "s-persist"
+    state = json.loads((home / ".claude-anyteam" / "state.json").read_text(encoding="utf-8"))
+    assert state["headless_session_id"] == "s-persist"
+    assert state["acp_session_id"] is None
+    assert state["backend"] == "headless"
+    assert state["updated_at"]
