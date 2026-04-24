@@ -12,6 +12,7 @@ That's the entire install. The npm installer:
 - Installs the `claude-anyteam` Python tool via `uv tool install`
 - Delegates the config writes to `claude-anyteam install --assume-yes`, which:
   - Verifies a terminal multiplexer (tmux or psmux) is on PATH — see [configuration.md](configuration.md#teammate-display-mode) for install commands
+  - Checks whether the OpenAI Codex CLI (`codex`) is on PATH and at version 0.120+. If it's missing or below the floor, prints a warning with install/upgrade instructions and a `codex` sign-in hint — but **does not** block the install (codex-* teammates need it at runtime, not at install time). If `codex` is present but its version can't be parsed, the installer falls back to a plain "Detected Codex CLI at …" line and proceeds without a warning. If both tmux and `codex` are missing, both warnings are emitted together before the tmux halt
   - Writes the Claude Code hook (`CLAUDE_CODE_TEAMMATE_COMMAND`) and binary path to `~/.claude/settings.json`
   - Sets `teammateMode="tmux"` in `~/.claude.json` (prompts before overwriting a non-default value)
   - Records what it changed in `~/.claude/plugins/data/claude-anyteam-claude-anyteam/install-state.json` so uninstall can cleanly reverse it

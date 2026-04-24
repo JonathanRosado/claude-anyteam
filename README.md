@@ -40,7 +40,7 @@ That's the entire install. The installer:
 
 - Detects `python3` and installs `uv` if missing (non-interactive, no shell profile edits)
 - Installs the `claude-anyteam` Python tool via `uv tool install`
-- Runs `claude-anyteam install` (verifies tmux/psmux, writes `~/.claude/settings.json` + `~/.claude.json`, records install-state for symmetric uninstall)
+- Runs `claude-anyteam install` (verifies tmux/psmux, probes for the OpenAI Codex CLI and warns if it's missing or below 0.120, writes `~/.claude/settings.json` + `~/.claude.json`, records install-state for symmetric uninstall)
 
 Restart Claude Code, enable Agent Teams mode, and create a teammate named `codex-<anything>`:
 

@@ -62,8 +62,8 @@ function usage() {
     '',
     'Installs uv if needed, installs the Python claude-anyteam tool, delegates',
     'the ~/.claude/settings.json + ~/.claude.json writes to the Python installer',
-    '(which also verifies tmux/psmux is on PATH), and registers the Claude Code',
-    'plugin when the claude CLI is available on PATH.',
+    '(which verifies tmux/psmux on PATH and probes for the Codex CLI 0.120+),',
+    'and registers the Claude Code plugin when the claude CLI is available on PATH.',
   ].join('\n');
 }
 
@@ -337,7 +337,7 @@ async function main() {
   // status lines to stdout, and overlaying a spinner would fight with that output.
   if (!silent) {
     console.log('');
-    console.log(`${theme.symbols.info} ${theme.heading('Running claude-anyteam install (Python)')} ${theme.muted('— tmux prereq check, ~/.claude/settings.json, ~/.claude.json, install-state.json')}`);
+    console.log(`${theme.symbols.info} ${theme.heading('Running claude-anyteam install (Python)')} ${theme.muted('— tmux + Codex CLI prereq checks, ~/.claude/settings.json, ~/.claude.json, install-state.json')}`);
   }
   let installerResult;
   try {

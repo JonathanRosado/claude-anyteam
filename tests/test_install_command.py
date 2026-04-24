@@ -283,6 +283,8 @@ def test_install_writes_teammate_mode_when_absent(tmp_path: Path, monkeypatch, c
         "teammateMode_set_by_anyteam": True,
         "settings_file_created_by_anyteam": True,
         "claude_json_created_by_anyteam": True,
+        "codex_cli_found": False,
+        "codex_cli_version": None,
     }
 
     stdout = capsys.readouterr().out
@@ -316,6 +318,8 @@ def test_install_is_noop_when_teammate_mode_already_tmux(tmp_path: Path, monkeyp
         "teammateMode_set_by_anyteam": False,
         "settings_file_created_by_anyteam": True,  # we did create settings.json
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
+        "codex_cli_found": False,
+        "codex_cli_version": None,
     }
 
     stdout = capsys.readouterr().out
@@ -363,6 +367,8 @@ def test_install_prompts_and_overwrites_auto_when_accepted(tmp_path: Path, monke
         "teammateMode_set_by_anyteam": True,
         "settings_file_created_by_anyteam": True,  # we created settings.json (no pre-existing)
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
+        "codex_cli_found": False,
+        "codex_cli_version": None,
     }
 
 
@@ -928,3 +934,355 @@ def test_uninstall_is_idempotent(tmp_path: Path, monkeypatch):
     assert cli_mod.main(_uninstall_argv(settings_path, claude_json_path, state_path)) == 0
     # Second uninstall: everything already gone; should still return 0, not raise.
     assert cli_mod.main(_uninstall_argv(settings_path, claude_json_path, state_path)) == 0
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI prereq check (informational — non-blocking)
+# ---------------------------------------------------------------------------
+
+def _install_with_codex_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    codex_cli: installer_mod.CodexCliCheck,
+) -> tuple[installer_mod.InstallResult, Path, Path]:
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(codex_binary),
+        prompt_fn=lambda _current: True,
+        codex_cli_check_fn=lambda: codex_cli,
+    )
+    return result, claude_json_path, state_path
+
+
+def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
+    codex_cli = installer_mod.CodexCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/codex"),
+        version="0.124.0",
+        raw_output="codex-cli 0.124.0",
+    )
+    result, _claude_json_path, state_path = _install_with_codex_stub(tmp_path, monkeypatch, codex_cli)
+
+    assert result.codex_cli is not None
+    assert result.codex_cli.found is True
+    assert result.codex_cli.version == "0.124.0"
+
+    message = installer_mod.format_install_message(result)
+    assert "Detected Codex CLI 0.124.0 at /usr/local/bin/codex" in message
+    assert "Warning" not in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["codex_cli_found"] is True
+    assert state["codex_cli_version"] == "0.124.0"
+
+
+def test_install_warns_when_codex_cli_missing_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    exit_code = cli_mod.main(
+        _install_argv(settings_path, claude_json_path, state_path, "--assume-yes")
+    )
+    assert exit_code == 0, "missing codex-cli must not block install"
+
+    stdout = capsys.readouterr().out
+    assert "Warning: the OpenAI Codex CLI (`codex`) was not found on PATH." in stdout
+    assert "npm i -g @openai/codex" in stdout
+    assert "https://github.com/openai/codex" in stdout
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["codex_cli_found"] is False
+    assert state["codex_cli_version"] is None
+
+
+def test_install_handles_codex_version_parse_failure(tmp_path: Path, monkeypatch):
+    """Parse-fail falls back to presence-only — no warning, don't block on a parse miss."""
+    codex_cli = installer_mod.CodexCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/codex"),
+        version=None,
+        raw_output="weird unexpected output",
+    )
+    result, _claude_json_path, state_path = _install_with_codex_stub(tmp_path, monkeypatch, codex_cli)
+
+    assert result.codex_cli is not None
+    assert result.codex_cli.found is True
+    assert result.codex_cli.version is None
+
+    message = installer_mod.format_install_message(result)
+    assert "Detected Codex CLI at /usr/local/bin/codex" in message
+    assert "Warning" not in message, "parse-fail must not emit a scary warning"
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["codex_cli_found"] is True
+    assert state["codex_cli_version"] is None
+
+
+def test_install_warns_when_codex_cli_below_floor(tmp_path: Path, monkeypatch):
+    codex_cli = installer_mod.CodexCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/codex"),
+        version="0.118.0",
+        raw_output="codex-cli 0.118.0",
+    )
+    result, _claude_json_path, state_path = _install_with_codex_stub(tmp_path, monkeypatch, codex_cli)
+
+    message = installer_mod.format_install_message(result)
+    assert "Warning: detected Codex CLI 0.118.0" in message
+    assert "requires 0.120" in message
+    assert installer_mod.CODEX_CLI_INSTALL_COMMAND in message
+    assert "run `codex` once to sign in" in message
+    assert installer_mod.CODEX_CLI_DOCS_URL in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["codex_cli_found"] is True
+    assert state["codex_cli_version"] == "0.118.0", (
+        "state records the detected fact, not the floor comparison"
+    )
+
+
+def test_install_accepts_codex_cli_exactly_at_floor(tmp_path: Path, monkeypatch):
+    codex_cli = installer_mod.CodexCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/codex"),
+        version="0.120.0",
+        raw_output="codex-cli 0.120.0",
+    )
+    result, _claude_json_path, _state_path = _install_with_codex_stub(tmp_path, monkeypatch, codex_cli)
+
+    message = installer_mod.format_install_message(result)
+    assert "Detected Codex CLI 0.120.0" in message
+    assert "Warning" not in message
+
+
+def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    """User missing BOTH tmux and codex-cli should see both warnings at once."""
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_missing(monkeypatch, platform="linux")
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(bin_dir / "claude-anyteam")])
+
+    exit_code = cli_mod.main(_install_argv(settings_path, claude_json_path, state_path))
+    assert exit_code != 0
+
+    err = capsys.readouterr().err
+    assert "requires a terminal multiplexer" in err
+    assert "sudo apt install tmux" in err
+    assert "Additionally:" in err
+    assert "Codex CLI (`codex`) was not found" in err
+
+
+def test_parse_codex_version_rejects_garbage_tokens():
+    # Direct unit coverage for the reviewer-requested branch: weird strings
+    # must parse to None rather than returning a bogus token.
+    for bad in (
+        "weird unexpected output",
+        "12abc",
+        "v0.124.0",  # leading-v prefix
+        "0..1",
+        "",
+        "0",  # major-only, not semver-ish enough
+        "codex-cli unknown",
+    ):
+        assert installer_mod._parse_codex_version(bad) is None, f"expected None for {bad!r}"
+
+
+def test_parse_codex_version_accepts_various_valid_shapes():
+    cases = {
+        "codex-cli 0.124.0": "0.124.0",
+        "codex-cli 0.120": "0.120",
+        "Codex 1.2.3-rc1": "1.2.3-rc1",
+        "codex 10.20.30": "10.20.30",
+    }
+    for raw, expected in cases.items():
+        assert installer_mod._parse_codex_version(raw) == expected, f"{raw!r} → {expected!r}"
+
+
+def test_parse_codex_version_picks_correct_token_from_noisy_output():
+    # Regression: the v1 "first token starting with a digit" heuristic would
+    # report "0" here. The tightened regex must skip "0" / "errors" / headings
+    # and land on "0.124.0".
+    noisy = "0 errors — codex-cli 0.124.0 (release build)"
+    assert installer_mod._parse_codex_version(noisy) == "0.124.0"
+
+
+def test_check_codex_cli_falls_back_when_subprocess_stdout_unparseable(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Real `_check_codex_cli()` parse-fail branch: returncode=0 + unparseable stdout.
+
+    Covers the branch the reviewer flagged as previously only exercised via a
+    pre-built `CodexCliCheck` fixture.
+    """
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_codex.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_codex))
+
+    class _Completed:
+        returncode = 0
+        stdout = "weird unexpected output\n"
+        stderr = ""
+
+    def _fake_run(*_args, **_kwargs):
+        return _Completed()
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_codex_cli()
+    assert result.found is True
+    assert result.version is None, "unparseable stdout must leave version=None"
+    assert result.raw_output == "weird unexpected output"
+
+
+def test_codex_meets_minimum_branches():
+    def _mk(version: str | None) -> installer_mod.CodexCliCheck:
+        return installer_mod.CodexCliCheck(
+            found=version is not None,
+            path=Path("/usr/local/bin/codex") if version is not None else None,
+            version=version,
+            raw_output=None,
+        )
+
+    assert installer_mod._codex_meets_minimum(_mk("0.120.0")) is True
+    assert installer_mod._codex_meets_minimum(_mk("0.124.0")) is True
+    assert installer_mod._codex_meets_minimum(_mk("1.0.0")) is True
+    assert installer_mod._codex_meets_minimum(_mk("0.119.999")) is False
+    assert installer_mod._codex_meets_minimum(_mk("0.0.1")) is False
+    assert installer_mod._codex_meets_minimum(_mk(None)) is None
+    # Not-found: meets_minimum returns None (there's nothing to compare).
+    assert (
+        installer_mod._codex_meets_minimum(
+            installer_mod.CodexCliCheck(found=False, path=None, version=None, raw_output=None)
+        )
+        is None
+    )
+
+
+def test_check_codex_cli_returns_missing_when_not_on_path(monkeypatch):
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: None)
+    result = installer_mod._check_codex_cli()
+    assert result.found is False
+    assert result.path is None
+    assert result.version is None
+    assert result.raw_output is None
+
+
+def test_check_codex_cli_parses_version_from_subprocess(monkeypatch, tmp_path: Path):
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_codex.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_codex))
+
+    class _Completed:
+        returncode = 0
+        stdout = "codex-cli 0.124.0\n"
+        stderr = ""
+
+    def _fake_run(*_args, **_kwargs):
+        return _Completed()
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_codex_cli()
+    assert result.found is True
+    assert result.version == "0.124.0"
+    assert result.raw_output == "codex-cli 0.124.0"
+
+
+def test_check_codex_cli_survives_subprocess_timeout(monkeypatch, tmp_path: Path):
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_codex.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_codex))
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise installer_mod.subprocess.TimeoutExpired(cmd="codex --version", timeout=5)
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _raise_timeout)
+
+    result = installer_mod._check_codex_cli()
+    assert result.found is True
+    assert result.version is None
+    assert result.raw_output is None
+
+
+def test_install_npx_flow_with_assume_yes_warns_on_missing_codex(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    """The npx flow passes --assume-yes; warning must still surface."""
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    # Simulate an existing claude.json so the --assume-yes branch of the
+    # prompt exercises too.
+    claude_json_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_json_path.write_text(
+        json.dumps({installer_mod.TEAMMATE_MODE_KEY: "auto"}) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = cli_mod.main(
+        _install_argv(settings_path, claude_json_path, state_path, "--assume-yes")
+    )
+    assert exit_code == 0
+
+    stdout = capsys.readouterr().out
+    assert "Warning: the OpenAI Codex CLI" in stdout

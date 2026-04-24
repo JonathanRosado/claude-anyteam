@@ -13,7 +13,9 @@ import contextlib
 import copy
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -67,6 +69,20 @@ class PrereqCheck:
 
 
 @dataclass(frozen=True)
+class CodexCliCheck:
+    """Result of probing for the OpenAI Codex CLI on PATH.
+
+    codex-cli is required at runtime for codex-* teammates but is NOT a hard
+    install prereq — users may install claude-anyteam first and add codex later.
+    """
+
+    found: bool
+    path: Path | None
+    version: str | None  # parsed version token (e.g. "0.124.0"); None if unparseable
+    raw_output: str | None  # raw `codex --version` stdout, retained for debugging
+
+
+@dataclass(frozen=True)
 class TeammateModeResult:
     """Outcome of install_teammate_mode()."""
 
@@ -102,6 +118,7 @@ class InstallResult:
     removed_legacy_keys: tuple[str, ...] = ()
     prereq: PrereqCheck | None = None
     teammate_mode: TeammateModeResult | None = None
+    codex_cli: CodexCliCheck | None = None
 
     @property
     def changed_anything(self) -> bool:
@@ -428,6 +445,126 @@ def _install_instructions(platform: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Codex CLI prereq check (informational — non-blocking)
+# ---------------------------------------------------------------------------
+
+CODEX_CLI_BINARY = "codex"
+CODEX_CLI_INSTALL_COMMAND = "npm i -g @openai/codex"
+CODEX_CLI_DOCS_URL = "https://github.com/openai/codex#getting-started"
+CODEX_CLI_MIN_VERSION: tuple[int, int, int] = (0, 120, 0)
+CODEX_CLI_VERSION_TIMEOUT_S = 5
+
+# Accepts semver-ish tokens like "0.124.0", "0.124", or "0.124.0-rc1". Rejects
+# garbage ("12abc"), leading-v prefixes ("v0.124.0"), and trailing junk.
+_CODEX_VERSION_TOKEN_RE = re.compile(
+    r"^(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?(?:[-+][A-Za-z0-9.\-]+)?$"
+)
+
+
+def _parse_codex_version(raw: str) -> str | None:
+    for token in raw.split():
+        if _CODEX_VERSION_TOKEN_RE.match(token):
+            return token
+    return None
+
+
+def _parse_version_tuple(version: str | None) -> tuple[int, int, int] | None:
+    if version is None:
+        return None
+    match = _CODEX_VERSION_TOKEN_RE.match(version)
+    if match is None:
+        return None
+    major = int(match.group("major"))
+    minor = int(match.group("minor"))
+    patch = int(match.group("patch") or 0)
+    return (major, minor, patch)
+
+
+def _min_version_str() -> str:
+    return ".".join(str(part) for part in CODEX_CLI_MIN_VERSION)
+
+
+def _codex_meets_minimum(check: CodexCliCheck) -> bool | None:
+    """True if detected version ≥ floor, False if below, None if unknown/unparseable."""
+    if not check.found:
+        return None
+    parsed = _parse_version_tuple(check.version)
+    if parsed is None:
+        return None
+    return parsed >= CODEX_CLI_MIN_VERSION
+
+
+def _check_codex_cli() -> CodexCliCheck:
+    found_path = shutil.which(CODEX_CLI_BINARY)
+    if not found_path:
+        return CodexCliCheck(found=False, path=None, version=None, raw_output=None)
+
+    resolved = Path(found_path).resolve()
+    raw: str | None = None
+    version: str | None = None
+    try:
+        completed = subprocess.run(
+            [str(resolved), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CODEX_CLI_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        completed = None
+
+    if completed is not None and completed.returncode == 0:
+        raw = (completed.stdout or "").strip() or None
+        if raw:
+            version = _parse_codex_version(raw)
+
+    return CodexCliCheck(found=True, path=resolved, version=version, raw_output=raw)
+
+
+def _codex_cli_warning(check: CodexCliCheck) -> str | None:
+    """Warning text for the codex-cli check, or None when no warning applies.
+
+    Two warning branches — missing and below-floor — each include the install
+    command, docs link, and the `codex` sign-in hint so users aren't blindsided
+    by an auth prompt the first time a codex-* teammate launches.
+
+    Returns None for both the "present and at-or-above floor" and "present but
+    version unparseable" cases. Parse-fail falls back to a presence-only line
+    (emitted by the caller); we don't synthesize a warning when we can't
+    actually confirm the floor was violated.
+    """
+    min_version = _min_version_str()
+    signin_hint = f"  After installing, run `{CODEX_CLI_BINARY}` once to sign in."
+    docs_line = f"  Setup guide: {CODEX_CLI_DOCS_URL}"
+
+    if not check.found:
+        return (
+            f"Warning: the OpenAI Codex CLI (`{CODEX_CLI_BINARY}`) was not found on PATH.\n"
+            f"  claude-anyteam is installed, but codex-* teammates will fail to launch\n"
+            f"  until Codex is installed. Add it with:\n"
+            f"    {CODEX_CLI_INSTALL_COMMAND}\n"
+            f"{signin_hint}\n"
+            f"{docs_line}"
+        )
+
+    meets = _codex_meets_minimum(check)
+    if meets is False:
+        return (
+            f"Warning: detected Codex CLI {check.version} at {check.path}, but\n"
+            f"  claude-anyteam requires {min_version} or newer. Upgrade with:\n"
+            f"    {CODEX_CLI_INSTALL_COMMAND}\n"
+            f"{signin_hint}\n"
+            f"{docs_line}"
+        )
+
+    # Found but version unparseable → fall back to presence-only acknowledgment;
+    # don't block on a parse miss, don't fabricate a scary warning when we can't
+    # confirm the floor either way.
+    return None
+
+
+
+# ---------------------------------------------------------------------------
 # teammateMode install/uninstall
 # ---------------------------------------------------------------------------
 
@@ -437,6 +574,7 @@ def install_teammate_mode(
     state_path: Path,
     prompt_fn: Callable[[str], bool],
     settings_file_created_by_anyteam: bool = False,
+    codex_cli: CodexCliCheck | None = None,
 ) -> TeammateModeResult:
     """Ensures ~/.claude.json has teammateMode='tmux', recording what we did in state.
 
@@ -460,7 +598,7 @@ def install_teammate_mode(
         )
 
     def _build_state(original: str | None, set_by: bool) -> dict[str, Any]:
-        return {
+        state: dict[str, Any] = {
             "schema_version": STATE_SCHEMA_VERSION,
             "teammateMode_original": original,
             "teammateMode_set_by_anyteam": set_by,
@@ -469,6 +607,10 @@ def install_teammate_mode(
             "settings_file_created_by_anyteam": bool(settings_file_created_by_anyteam),
             "claude_json_created_by_anyteam": bool(claude_json_created_by_anyteam),
         }
+        if codex_cli is not None:
+            state["codex_cli_found"] = bool(codex_cli.found)
+            state["codex_cli_version"] = codex_cli.version
+        return state
 
     # Case 1: absent.
     if current is None:
@@ -657,6 +799,7 @@ def install(
     state_path: Path | str | None = None,
     prompt_fn: Callable[[str], bool] | None = None,
     prereq_check_fn: Callable[[], PrereqCheck] | None = None,
+    codex_cli_check_fn: Callable[[], CodexCliCheck] | None = None,
 ) -> InstallResult:
     """Full install: prereq check → env block write → teammateMode update.
 
@@ -670,15 +813,25 @@ def install(
     does not pass --assume-yes will fail loudly rather than hang; real TTY
     prompting is handled in cli.py.
     """
+    # Collect BOTH prereqs before deciding to halt, so a user missing tmux AND
+    # codex-cli sees a single combined report instead of fixing tmux first then
+    # re-running only to hit a second surprise warning.
     checker = prereq_check_fn if prereq_check_fn is not None else _check_terminal_multiplexer
+    codex_checker = codex_cli_check_fn if codex_cli_check_fn is not None else _check_codex_cli
     prereq = checker()
+    codex_cli = codex_checker()
+
     if not prereq.found:
-        raise InstallError(
+        message = (
             "claude-anyteam requires a terminal multiplexer on PATH; none was found.\n"
             "Install one of:\n"
             f"{_install_instructions(prereq.platform)}\n"
             "After installing, re-run `claude-anyteam install`."
         )
+        codex_warning = _codex_cli_warning(codex_cli)
+        if codex_warning is not None:
+            message = f"{message}\n\nAdditionally:\n{codex_warning}"
+        raise InstallError(message)
 
     paths = discover_managed_paths(
         settings_path=settings_path,
@@ -729,6 +882,7 @@ def install(
             state_path=resolved_state_path,
             prompt_fn=effective_prompt,
             settings_file_created_by_anyteam=not existed,
+            codex_cli=codex_cli,
         )
     except InstallError:
         _rollback_env_block(
@@ -746,6 +900,7 @@ def install(
         removed_legacy_keys=tuple(removed_legacy),
         prereq=prereq,
         teammate_mode=mode_result,
+        codex_cli=codex_cli,
     )
 
 
@@ -921,6 +1076,18 @@ def format_install_message(result: InstallResult) -> str:
                 )
         else:
             lines.append(f"{TEAMMATE_MODE_KEY} already \"tmux\" in {mode.claude_json_path}; no change")
+
+    codex_cli = result.codex_cli
+    if codex_cli is not None:
+        warning = _codex_cli_warning(codex_cli)
+        if warning is not None:
+            lines.append(warning)
+        elif codex_cli.found:
+            if codex_cli.version:
+                lines.append(f"Detected Codex CLI {codex_cli.version} at {codex_cli.path}")
+            else:
+                # Parse-fail branch: presence-only acknowledgment.
+                lines.append(f"Detected Codex CLI at {codex_cli.path}")
 
     lines.append("Restart Claude Code for the changes to take effect.")
     if not result.changed_anything:
