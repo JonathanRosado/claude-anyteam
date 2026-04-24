@@ -6,17 +6,20 @@ The quickstart in the [README](../README.md#quickstart) is the normal path:
 npx --yes claude-anyteam
 ```
 
-That's the entire install. The installer:
+That's the entire install. The npm installer:
 
 - Detects `python3` and installs `uv` if missing (non-interactive, no shell profile edits)
 - Installs the `claude-anyteam` Python tool via `uv tool install`
-- Verifies a terminal multiplexer (tmux or psmux) is on PATH — see [configuration.md](configuration.md#teammate-display-mode) for install commands
-- Writes the Claude Code hook (`CLAUDE_CODE_TEAMMATE_COMMAND`) and binary path to `~/.claude/settings.json`
-- Sets `teammateMode="tmux"` in `~/.claude.json` (prompts before overwriting a non-default value)
+- Delegates the config writes to `claude-anyteam install --assume-yes`, which:
+  - Verifies a terminal multiplexer (tmux or psmux) is on PATH — see [configuration.md](configuration.md#teammate-display-mode) for install commands
+  - Writes the Claude Code hook (`CLAUDE_CODE_TEAMMATE_COMMAND`) and binary path to `~/.claude/settings.json`
+  - Sets `teammateMode="tmux"` in `~/.claude.json` (prompts before overwriting a non-default value)
+  - Records what it changed in `~/.claude/plugins/data/claude-anyteam-claude-anyteam/install-state.json` so uninstall can cleanly reverse it
+- Registers the Claude Code plugin (marketplace + install) when the `claude` CLI is on PATH
 
 ## How installation works
 
-One command writes two env vars to `~/.claude/settings.json`:
+The Python installer writes two env vars to `~/.claude/settings.json`:
 
 ```json
 {
@@ -32,7 +35,7 @@ When Agent Teams mode spawns a teammate, Claude Code invokes `$CLAUDE_CODE_TEAMM
 - `codex-*` → dispatches to the `claude-anyteam` adapter (Codex)
 - Anything else → forwards to native `claude` (unchanged)
 
-Every step is reversible. `claude-anyteam uninstall` cleanly removes the env vars and reverts `teammateMode` to whatever was there before (or removes it entirely if the install added it).
+Every step is reversible. `claude-anyteam uninstall` cleanly removes the env vars, reverts `teammateMode` to whatever was there before (or removes the key if install added it from scratch), and deletes the state file plus its plugin-data directory if they're now empty.
 
 ## Uninstall
 
