@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-anyteam"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bring Codex-powered teammates into Claude Code today, with the claude-anyteam adapter built for multi-model expansion."
 requires-python = ">=3.12"
 license = "MIT"

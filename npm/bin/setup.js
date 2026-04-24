@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from 'node:child_process';
 import readline from 'node:readline/promises';
 import process from 'node:process';
 import yoctoSpinner from 'yocto-spinner';
@@ -18,11 +19,6 @@ import {
   runCommand,
   which,
 } from '../lib/detect.js';
-import {
-  TEAMMATE_BINARY_KEY,
-  TEAMMATE_COMMAND_KEY,
-  writeClaudeSettings,
-} from '../lib/settings.js';
 import { renderBanner, renderBox, theme } from '../lib/art.js';
 
 const CLAUDE_PLUGIN_MARKETPLACE_SOURCE = 'JonathanRosado/claude-anyteam';
@@ -60,9 +56,10 @@ function usage() {
   return [
     'Usage: npx --yes claude-anyteam [--settings-path <path>] [--postinstall]',
     '',
-    'Installs uv if needed, installs the Python claude-anyteam tool, writes',
-    '~/.claude/settings.json with absolute launcher paths, and registers the',
-    'Claude Code plugin when the claude CLI is available on PATH.',
+    'Installs uv if needed, installs the Python claude-anyteam tool, delegates',
+    'the ~/.claude/settings.json + ~/.claude.json writes to the Python installer',
+    '(which also verifies tmux/psmux is on PATH), and registers the Claude Code',
+    'plugin when the claude CLI is available on PATH.',
   ].join('\n');
 }
 
@@ -144,6 +141,52 @@ function failedClaudePluginResult(error) {
     '',
     ...claudePluginManualLines(),
   ]);
+}
+
+// Delegate the three-file install (~/.claude/settings.json, ~/.claude.json,
+// install-state.json + plugin-data dir) to the Python installer. The Python
+// installer is the single source of truth for prereq check, tmux/psmux
+// install instructions, teammateMode handling, and state-file writes.
+//
+// Primary invocation is `uv tool run --from claude-anyteam claude-anyteam
+// install --assume-yes`: it resolves the tool's venv without depending on
+// the user's shell PATH being refreshed post-`uv tool install`.
+//
+// stdio is fully inherited so the Python installer's platform-aware
+// instructions ("sudo apt install tmux", "winget install psmux", etc.)
+// reach the user verbatim. We do not re-wrap Python's errors; its messages
+// are more actionable than any JS prose we could layer on top.
+//
+// The caller is expected to pass --settings-path only when explicitly
+// overridden by a user; the Python installer already defaults to
+// ~/.claude/settings.json.
+function runPythonInstaller({ uvPath, settingsPath, stdio = 'inherit' }) {
+  const args = [
+    '--no-config',
+    'tool',
+    'run',
+    '--from', TOOL_NAME,
+    TOOL_NAME,
+    'install',
+    '--assume-yes',
+  ];
+  if (settingsPath) {
+    args.push('--settings-path', settingsPath);
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(uvPath, args, {
+      env: process.env,
+      stdio,
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`Python installer terminated by signal ${signal}`));
+        return;
+      }
+      resolve({ code: code ?? 1 });
+    });
+  });
 }
 
 async function runClaudePluginCommand(claudePath, args, alreadyPattern) {
@@ -273,23 +316,46 @@ async function main() {
     }
   }
 
-  let settings;
+  // Delegate Claude settings + claude.json + state file to the Python installer.
+  // We do NOT wrap this in withSpinner — the Python installer writes its own
+  // status lines to stdout, and overlaying a spinner would fight with that output.
+  if (!silent) {
+    console.log('');
+    console.log(`${theme.symbols.info} ${theme.heading('Running claude-anyteam install (Python)')} ${theme.muted('— tmux prereq check, ~/.claude/settings.json, ~/.claude.json, install-state.json')}`);
+  }
+  let installerResult;
   try {
-    settings = await withSpinner(`Writing Claude settings`, !silent, () => writeClaudeSettings({
+    installerResult = await runPythonInstaller({
+      uvPath: uv.path,
       settingsPath: args.settingsPath,
-      shimPath: tool.shimPath,
-      binaryPath: tool.binaryPath,
-    }));
+      stdio: silent ? 'ignore' : 'inherit',
+    });
   } catch (error) {
     if (silent) {
       postinstallHint(error);
       return 0;
     }
-    printFailure('SETTINGS WRITE FAILED', [
-      `${theme.symbols.error} ${theme.heading('Claude settings could not be updated safely.')}`,
+    // Only fires when the Python installer could not be spawned at all
+    // (e.g. uv binary vanished mid-run). Real install errors arrive via
+    // non-zero exit code with inherited stderr already printed to the user.
+    printFailure('UNABLE TO RUN PYTHON INSTALLER', [
+      `${theme.symbols.error} ${theme.heading('Could not invoke the Python installer through uv.')}`,
       `${theme.symbols.info} Details: ${trimmedDetails(error) || error.message}`,
-      `${theme.symbols.info} Target file: ${theme.accent(args.settingsPath || '~/.claude/settings.json')}`,
+      `${theme.symbols.info} Retry with ${theme.accent(formatCommand(tool.binaryPath, ['install', '--assume-yes']))} after ensuring uv is on PATH.`,
     ]);
+    return 1;
+  }
+  if (installerResult.code !== 0) {
+    if (silent) {
+      postinstallHint(new Error(`Python installer exited with code ${installerResult.code}`));
+      return 0;
+    }
+    // Python installer already streamed its own actionable message (tmux
+    // install hints, teammateMode conflict explanation, etc.) through
+    // inherited stderr. Do not re-wrap; exit non-zero quietly.
+    if (installerResult.code === 3) {
+      console.error(`${theme.symbols.warn} Python installer aborted (exit code 3) despite --assume-yes. This is unexpected — please file a bug at https://github.com/JonathanRosado/claude-anyteam/issues`);
+    }
     return 1;
   }
 
@@ -320,14 +386,14 @@ async function main() {
     return 0;
   }
 
+  // The Python installer already printed the env-var and teammateMode changes
+  // to stdout. Success box avoids duplicating that — it covers only what Python
+  // doesn't know about (plugin registration status, launch template, restart
+  // reminder) so there's no noise.
   const launchTemplate = `${tool.binaryPath} --team my-team --name codex-alice --cwd /path/to/workspace`;
-  const settingsVerb = settings.createdFile ? 'created' : settings.changedAnything ? 'updated' : 'verified';
   const toolVerb = tool.installMode === 'existing' ? 'reused existing install' : 'installed with uv tool install';
   printSuccess([
-    `${theme.symbols.success} Claude settings ${settingsVerb}: ${theme.accent(settings.settingsPath)}`,
-    `${theme.symbols.info} env.${TEAMMATE_COMMAND_KEY} = ${theme.accent(tool.shimPath)}`,
-    `${theme.symbols.info} env.${TEAMMATE_BINARY_KEY} = ${theme.accent(tool.binaryPath)}`,
-    `${theme.symbols.info} Tool status = ${theme.accent(toolVerb)}`,
+    `${theme.symbols.success} Tool status = ${theme.accent(toolVerb)}`,
     `${theme.symbols.info} Claude Code plugin: ${theme.accent(claudePlugin.summary)}`,
     `${theme.symbols.info} uv tool bin directory = ${theme.accent(tool.binDir)}`,
     '',
