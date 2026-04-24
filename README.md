@@ -112,6 +112,7 @@ Codex is shipping. Everything in "coming next" is on the same architectural surf
 - [Architecture](docs/architecture.md) — how the adapter integrates with Claude Code's team protocol
 - [Roadmap](docs/roadmap.md) — supported today vs coming next, contribution pointers
 - [Configuration](docs/configuration.md) — CLI flags, env vars, advanced modes
+- [Releasing](docs/releasing.md) — maintainer-facing tag-triggered publish flow
 
 ## License
 
