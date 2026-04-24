@@ -33,6 +33,7 @@ if not isinstance(env, dict):
 
 command = env.get("CLAUDE_CODE_TEAMMATE_COMMAND", "")
 binary = env.get("CLAUDE_ANYTEAM_BINARY", "")
+gemini_binary = env.get("CLAUDE_ANYTEAM_GEMINI_BINARY", "")
 
 def valid_executable(value: object) -> bool:
     if not isinstance(value, str) or not value.strip():
@@ -40,7 +41,15 @@ def valid_executable(value: object) -> bool:
     candidate = Path(value)
     return candidate.exists() and os.access(candidate, os.X_OK)
 
-raise SystemExit(0 if valid_executable(command) and valid_executable(binary) else 1)
+raise SystemExit(
+    0
+    if (
+        valid_executable(command)
+        and valid_executable(binary)
+        and valid_executable(gemini_binary)
+    )
+    else 1
+)
 PY
     then
       CONFIG_VALIDATED=1
@@ -50,7 +59,8 @@ PY
   fi
 
   grep -Eq '"CLAUDE_CODE_TEAMMATE_COMMAND"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
-    && grep -Eq '"CLAUDE_ANYTEAM_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH"
+    && grep -Eq '"CLAUDE_ANYTEAM_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
+    && grep -Eq '"CLAUDE_ANYTEAM_GEMINI_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH"
 }
 
 if has_configured_command; then

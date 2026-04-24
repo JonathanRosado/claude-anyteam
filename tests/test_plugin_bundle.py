@@ -112,12 +112,14 @@ def test_session_start_hook_skips_install_when_command_is_already_configured(tmp
     configured_bin = tmp_path / "configured-bin"
     shim = _make_executable(configured_bin / "claude-anyteam-spawn-shim", "#!/bin/sh\nexit 0\n")
     binary = _make_executable(configured_bin / "claude-anyteam", "#!/bin/sh\nexit 0\n")
+    gemini_binary = _make_executable(configured_bin / "gemini-anyteam", "#!/bin/sh\nexit 0\n")
     settings_path.write_text(
         json.dumps(
             {
                 "env": {
                     "CLAUDE_CODE_TEAMMATE_COMMAND": str(shim),
                     "CLAUDE_ANYTEAM_BINARY": str(binary),
+                    "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
                 }
             }
         ),
@@ -155,11 +157,13 @@ def test_session_start_hook_repairs_missing_binary_entry(tmp_path: Path) -> None
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     configured_bin = tmp_path / "configured-bin"
     shim = _make_executable(configured_bin / "claude-anyteam-spawn-shim", "#!/bin/sh\nexit 0\n")
+    binary = _make_executable(configured_bin / "claude-anyteam", "#!/bin/sh\nexit 0\n")
     settings_path.write_text(
         json.dumps(
             {
                 "env": {
                     "CLAUDE_CODE_TEAMMATE_COMMAND": str(shim),
+                    "CLAUDE_ANYTEAM_BINARY": str(binary),
                 }
             }
         ),
@@ -201,6 +205,7 @@ def test_session_start_hook_repairs_missing_executable_paths(tmp_path: Path) -> 
                 "env": {
                     "CLAUDE_CODE_TEAMMATE_COMMAND": "/missing/claude-anyteam-spawn-shim",
                     "CLAUDE_ANYTEAM_BINARY": "/missing/claude-anyteam",
+                    "CLAUDE_ANYTEAM_GEMINI_BINARY": "/missing/gemini-anyteam",
                 }
             }
         ),
