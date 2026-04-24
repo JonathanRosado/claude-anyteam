@@ -88,6 +88,25 @@ def test_setup_delegates_to_python_installer() -> None:
     assert 'TEAMMATE_BINARY_KEY' not in setup_source
 
 
+def test_setup_refreshes_plugin_on_every_run() -> None:
+    """Re-running `npx --yes claude-anyteam` must pick up newer plugin versions.
+
+    Fails if someone drops the `claude plugin update` call in
+    registerClaudePlugin() — without it, a user who installed at v0.3.0 and
+    re-runs the installer after a new release is silently stuck on the old
+    cached manifest (the bug this test guards against).
+    """
+    setup_source = (NPM_DIR / 'bin' / 'setup.js').read_text(encoding='utf-8')
+
+    assert "'plugin', 'install', CLAUDE_PLUGIN_SPEC" in setup_source, (
+        'setup.js must still `claude plugin install` to cover the fresh-install path'
+    )
+    assert "'plugin', 'update', CLAUDE_PLUGIN_SPEC" in setup_source, (
+        'setup.js must `claude plugin update` on every run so re-runs pull the '
+        'latest manifest; without this, cached skills go stale'
+    )
+
+
 def test_npm_detect_logic_keeps_uv_tool_resolution_deterministic() -> None:
     detect_source = (NPM_DIR / 'lib' / 'detect.js').read_text(encoding='utf-8')
 

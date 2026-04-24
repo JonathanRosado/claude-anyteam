@@ -27,6 +27,10 @@ const CLAUDE_PLUGIN_SPEC = `${CLAUDE_PLUGIN_MARKETPLACE_NAME}@${CLAUDE_PLUGIN_MA
 const CLAUDE_PLUGIN_MANUAL_COMMANDS = [
   formatCommand('claude', ['plugin', 'marketplace', 'add', CLAUDE_PLUGIN_MARKETPLACE_SOURCE]),
   formatCommand('claude', ['plugin', 'install', CLAUDE_PLUGIN_SPEC]),
+  // Idempotent when already up-to-date; pulls the latest manifest otherwise.
+  // Running it on every install is how re-runs of the installer pick up new
+  // skill content without forcing the user to uninstall by hand.
+  formatCommand('claude', ['plugin', 'update', CLAUDE_PLUGIN_SPEC]),
 ];
 const CLAUDE_PLUGIN_MARKETPLACE_ALREADY_EXISTS = /\balready (?:on disk|exists)\b/i;
 const CLAUDE_PLUGIN_ALREADY_INSTALLED = /\balready installed\b/i;
@@ -201,19 +205,31 @@ async function runClaudePluginCommand(claudePath, args, alreadyPattern) {
   return { verified: alreadyPattern.test(combined) };
 }
 
+// Run `install` then `update` on every invocation so a re-run of
+// `npx --yes claude-anyteam` picks up the latest plugin manifest (and its
+// cached skills). `install` is a no-op when the plugin is already present;
+// `update` is idempotent when already on the latest version and pulls the
+// newer manifest otherwise. Together they cover fresh and upgrade paths
+// without a destructive uninstall step.
 async function registerClaudePlugin({ claudePath }) {
-  const marketplace = await runClaudePluginCommand(
+  await runClaudePluginCommand(
     claudePath,
     ['plugin', 'marketplace', 'add', CLAUDE_PLUGIN_MARKETPLACE_SOURCE],
     CLAUDE_PLUGIN_MARKETPLACE_ALREADY_EXISTS,
   );
-  const plugin = await runClaudePluginCommand(
+  await runClaudePluginCommand(
     claudePath,
     ['plugin', 'install', CLAUDE_PLUGIN_SPEC],
     CLAUDE_PLUGIN_ALREADY_INSTALLED,
   );
-  const status = marketplace.verified && plugin.verified ? 'verified' : 'installed';
-  return { status, summary: status };
+  await runClaudePluginCommand(
+    claudePath,
+    ['plugin', 'update', CLAUDE_PLUGIN_SPEC],
+    // Exits 0 on "already at the latest version" — no tolerance pattern
+    // needed. Any non-zero here is a genuine update failure.
+    /^$/,
+  );
+  return { status: 'refreshed', summary: 'installed + checked for updates' };
 }
 
 async function main() {
