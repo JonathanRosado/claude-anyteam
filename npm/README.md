@@ -27,7 +27,7 @@ If the Python tool is already present in uv's tool bin directory, setup reuses i
 
 The Python installer owns these files:
 
-- `~/.claude/settings.json` — adds `env.CLAUDE_CODE_TEAMMATE_COMMAND` + `env.CLAUDE_ANYTEAM_BINARY`
+- `~/.claude/settings.json` — adds `env.CLAUDE_CODE_TEAMMATE_COMMAND` + `env.CLAUDE_ANYTEAM_BINARY` + `env.CLAUDE_ANYTEAM_GEMINI_BINARY`
 - `~/.claude.json` — sets `teammateMode` to `"tmux"`
 - `~/.claude/plugins/data/claude-anyteam-claude-anyteam/install-state.json` — receipt so `claude-anyteam uninstall` reverses everything cleanly.
 
@@ -68,7 +68,8 @@ After a successful run, `~/.claude/settings.json` contains absolute paths like:
 {
   "env": {
     "CLAUDE_CODE_TEAMMATE_COMMAND": "/Users/you/.local/bin/claude-anyteam-spawn-shim",
-    "CLAUDE_ANYTEAM_BINARY": "/Users/you/.local/bin/claude-anyteam"
+    "CLAUDE_ANYTEAM_BINARY": "/Users/you/.local/bin/claude-anyteam",
+    "CLAUDE_ANYTEAM_GEMINI_BINARY": "/Users/you/.local/bin/gemini-anyteam"
   }
 }
 ```

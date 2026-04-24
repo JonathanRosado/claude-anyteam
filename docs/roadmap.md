@@ -8,19 +8,20 @@ Shipped/partial: multi-backend routing now supports Codex (`codex-*`) and Gemini
 
 **Codex adapter** — OpenAI Codex CLI (0.120+, latest tested 0.124.0) as a first-class Claude Code teammate. gpt-5.5 / gpt-5.4 / gpt-5.4-mini / gpt-5.3-codex / gpt-5.2 with low/medium/high/xhigh reasoning effort. App Server mid-task `turn/steer` and `thread/fork` cross-task memory. Fresh-exec `codex exec resume` as opt-out. 198 passing tests including a live battle-test against native Claude agents.
 
+**Gemini adapter** — Gemini CLI teammates through the `gemini-*` prefix. Shipped with documented limitations: headless `gemini --prompt ... --output-format stream-json` execution is supported, while ACP / mid-turn steering and Codex-style `thread/fork` parity remain tracked in [Gemini adapter limitations](gemini-adapter-limitations.md).
+
 **Install surfaces** — npm (`npx --yes --package claude-anyteam claude-anyteam-setup`), direct (`uv tool install`), and Claude Code plugin (marketplace install + self-healing SessionStart hook). All three write the same settings and interop.
 
-**TUI parity** — Codex teammates appear in Claude Code's Agent Teams presence line exactly like native teammates. Works in tmux and single-terminal modes. Peer messages, task claiming, idle signaling, shutdown lifecycle all behave identically.
+**TUI parity** — Codex and Gemini teammates appear in Claude Code's Agent Teams presence line exactly like native teammates. Works in tmux and single-terminal modes. Task claiming, idle signaling, and shutdown lifecycle share the same protocol path; Gemini peer-message steering has the documented limitations above.
 
 **Plan mode** — opt-in structured plan approval with JSON-schema-validated plan artifacts.
 
 ## Coming next
 
-These are the adapters planned on the same architecture. Each one is a Python adapter module + a line in the spawn shim's routing table.
+These are the adapters planned on the same architecture. Each one is a Python adapter module + a line in the spawn shim's routing table. Gemini has moved out of planned status and is shipping with [documented limitations](gemini-adapter-limitations.md).
 
 | Adapter | Model(s) | Backend CLI | Status |
 |---|---|---|---|
-| **Gemini** | Gemini 2.x family | `gemini` | Planned — targeting same App Server semantics via Google's CLI protocol |
 | **Kimi** | Kimi K2 family | Moonshot's CLI or API-direct | Planned |
 | **GLM** | GLM-4.x family | Zhipu's CLI | Planned |
 | **DeepSeek** | DeepSeek V3 / R1 | DeepSeek's CLI or API-direct | Planned |
