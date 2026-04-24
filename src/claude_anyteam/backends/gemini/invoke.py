@@ -111,7 +111,7 @@ def feature_test(gemini_binary: str = "gemini") -> None:
     except (subprocess.SubprocessError, OSError) as e:
         raise RuntimeError(f"could not probe Gemini CLI {gemini_binary!r}: {e}") from e
     help_text = (help_out.stdout or "") + (help_out.stderr or "")
-    missing = [flag for flag in ("--prompt", "--output-format", "--resume") if flag not in help_text]
+    missing = [flag for flag in ("--prompt", "--output-format", "--resume", "--approval-mode") if flag not in help_text]
     if missing:
         raise RuntimeError(f"Gemini CLI is missing required flags {missing}; found version {(version.stdout or version.stderr).strip()}")
     logger.info("gemini.version", binary=resolved, version=(version.stdout or version.stderr).strip())
@@ -163,6 +163,7 @@ def run(
     last_message_parts: list[str] = []
     tool_call_events = 0
     captured_session_id: str | None = None
+    seen_non_init_event = False
     error: str | None = None
 
     logger.info("gemini.invoke", cwd=str(cwd), schema=str(schema) if schema else None, resumed=bool(resume_session_id))
@@ -182,7 +183,14 @@ def run(
         events.append(ev)
         ev_type = str(ev.get("type", ""))
         if ev_type == "init" and isinstance(ev.get("session_id"), str):
-            captured_session_id = ev["session_id"]
+            if seen_non_init_event:
+                logger.warn("gemini.late_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
+            elif captured_session_id is None:
+                captured_session_id = ev["session_id"]
+            elif ev["session_id"] != captured_session_id:
+                logger.warn("gemini.duplicate_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
+        else:
+            seen_non_init_event = True
         if ev_type == "message" and ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
             last_message_parts.append(ev["content"])
         if ev_type == "tool_use":
@@ -197,13 +205,19 @@ def run(
         if err:
             error = f"gemini final message failed schema validation: {err}"
     terminal = next((ev for ev in reversed(events) if ev.get("type") == "result"), None)
+    exit_code = proc.returncode
     if proc.returncode != 0 and not error:
         error = f"gemini exited {proc.returncode}; stderr: {proc.stderr[:500]}"
-    elif isinstance(terminal, dict) and terminal.get("status") not in (None, "success") and not error:
+    elif terminal is None:
+        if not error:
+            error = "gemini stream ended without result event"
+        if exit_code == 0:
+            exit_code = 1
+    elif terminal.get("status") not in (None, "success") and not error:
         error = f"gemini result status {terminal.get('status')!r}"
 
     return CodexResult(
-        exit_code=proc.returncode,
+        exit_code=exit_code,
         structured=structured,
         last_message=last_message,
         events=events,

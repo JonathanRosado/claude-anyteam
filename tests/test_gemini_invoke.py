@@ -78,14 +78,72 @@ def test_run_parses_stream_json_and_validates_schema(tmp_path, monkeypatch):
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
 
 
+def test_run_fails_when_stream_ends_without_result(tmp_path, monkeypatch):
+    stdout = "\n".join([
+        json.dumps({"type": "init", "session_id": "s1"}),
+        json.dumps({"type": "message", "role": "assistant", "content": '{"files_changed":[],"summary":"done"}'}),
+    ])
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/" + name)
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        schema=invoke.TASK_COMPLETE_SCHEMA,
+        gemini_binary="gemini",
+        gemini_home=tmp_path / "home",
+    )
+
+    assert result.exit_code != 0
+    assert result.structured == {"files_changed": [], "summary": "done"}
+    assert result.error == "gemini stream ended without result event"
+
+
+def test_run_discards_late_init_and_logs_warning(tmp_path, monkeypatch):
+    stdout = "\n".join([
+        json.dumps({"type": "init", "session_id": "s1"}),
+        json.dumps({"type": "message", "role": "assistant", "content": '{"files_changed":[],"summary":"done"}'}),
+        json.dumps({"type": "init", "session_id": "s2"}),
+        json.dumps({"type": "result", "status": "success"}),
+    ])
+    warnings = []
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    def fake_warn(msg, **fields):
+        warnings.append((msg, fields))
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(invoke.logger, "warn", fake_warn)
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        schema=invoke.TASK_COMPLETE_SCHEMA,
+        gemini_binary="gemini",
+        gemini_home=tmp_path / "home",
+    )
+
+    assert result.exit_code == 0
+    assert result.error is None
+    assert result.session_id == "s1"
+    assert warnings == [("gemini.late_init", {"session_id": "s2", "captured_session_id": "s1"})]
+
+
 def test_feature_test_requires_headless_flags(monkeypatch):
     monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/gemini")
 
     def fake_run(args, **kwargs):
         if args[1] == "--version":
             return subprocess.CompletedProcess(args, 0, stdout="0.39.0", stderr="")
-        return subprocess.CompletedProcess(args, 0, stdout="--prompt --output-format", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="--prompt --output-format --resume", stderr="")
 
     monkeypatch.setattr(invoke.subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="--resume"):
+    with pytest.raises(RuntimeError, match="--approval-mode"):
         invoke.feature_test("gemini")
