@@ -1,16 +1,13 @@
-"""Python-side schema validation for v7.2's resume path.
+"""Backend-neutral schema validation helpers.
 
-`codex exec resume` on codex-cli 0.122.0 does not accept `--output-schema`
-(see `docs/v7.2-notes.md` or `v7.2-findings.md`). The adapter recovers
-the rigor in Python: read the subprocess's `--output-last-message` file,
-parse it as JSON, validate against our task-complete schema. Invalid
-output gets one retry with a firmer prompt before escalating to
-`task_blocked`.
+Some backends cannot enforce our JSON schemas at the CLI layer (for example,
+Codex resume mode and Gemini headless mode). The adapter recovers rigor in
+Python: parse the subprocess final text as JSON, validate against the shared
+team protocol schema, and let the caller retry with a firmer prompt before
+escalating to `task_blocked`.
 
 This module is deliberately narrow: one function per concern, no mutable
-module state, no side effects beyond raising for contract breaches. The
-retry loop lives in `loop.py` where it can orchestrate the actual Codex
-re-invocation.
+module state, and no side effects beyond raising for programmer errors.
 """
 
 from __future__ import annotations
@@ -39,7 +36,7 @@ def parse_and_validate(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any
 
     Accepts slightly-dirty JSON: strips surrounding whitespace and trims
     one trailing newline before parsing. Does NOT try to unwrap markdown
-    fences; that's deliberately firm — the prompt tells Codex not to
+    fences; that's deliberately firm — the prompt tells the backend not to
     emit them, and silent unwrapping would mask a prompt-discipline
     failure we'd want to see.
     """
@@ -64,12 +61,11 @@ def parse_and_validate(text: str, schema: dict[str, Any]) -> tuple[dict[str, Any
 
 
 def inline_schema_prompt_fragment(schema: dict[str, Any]) -> str:
-    """Render the inline schema preamble for the Codex prompt.
+    """Render the inline schema preamble for backend prompts.
 
-    v7.2's `codex exec resume` doesn't accept `--output-schema`, so the
-    schema lives in the prompt itself. This helper keeps the exact
-    wording in one place (so the stricter-retry prompt in `loop.py` can
-    reuse the same schema rendering).
+    Backends without a CLI-level schema flag receive the schema in the prompt
+    itself. This helper keeps the exact wording in one place so stricter
+    retry prompts can reuse the same schema rendering.
     """
     compact = json.dumps(schema, separators=(",", ":"))
     return (

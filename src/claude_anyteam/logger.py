@@ -1,8 +1,8 @@
 """Structured stderr logger.
 
 Emits one JSON object per log line to stderr so output is trivially greppable.
-Honours CLAUDE_ANYTEAM_LOG (legacy CODEX_TEAMMATE_LOG still works); defaults
- to INFO.
+Honours CLAUDE_ANYTEAM_LOG (legacy CODEX_TEAMMATE_LOG still works for Codex-era installs); defaults
+to INFO.
 """
 
 from __future__ import annotations

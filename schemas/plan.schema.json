@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Codex teammate plan",
+  "title": "Teammate plan",
   "type": "object",
   "additionalProperties": false,
   "required": ["steps", "risks"],
@@ -29,7 +29,7 @@
     },
     "risks": {
       "type": "array",
-      "description": "Known risks, unknowns, or places where Codex would need to make judgment calls. Empty array is acceptable if the task is mechanically straightforward.",
+      "description": "Known risks, unknowns, or places where the teammate would need to make judgment calls. Empty array is acceptable if the task is mechanically straightforward.",
       "items": { "type": "string" }
     },
     "estimated_time": {

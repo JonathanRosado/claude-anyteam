@@ -1,7 +1,8 @@
-"""Codex teammate adapter.
+"""Agent Teams adapter package.
 
-Makes an OpenAI Codex CLI process act as a first-class teammate inside Claude
-Code's agent-team protocol, without wrapping Codex inside a Claude LLM.
+Makes external CLI agents such as OpenAI Codex and Gemini CLI act as
+first-class teammates inside Claude Code's agent-team protocol, without
+wrapping those agents inside a Claude LLM.
 """
 
 __version__ = "0.1.0"

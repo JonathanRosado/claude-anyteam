@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Codex teammate task-complete response",
+  "title": "Teammate task-complete response",
   "type": "object",
   "additionalProperties": false,
   "required": ["files_changed", "summary"],
