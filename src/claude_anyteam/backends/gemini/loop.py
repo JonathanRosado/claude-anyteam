@@ -158,30 +158,97 @@ def _handle_plan_approval(state: GeminiLoopState, payload: PlanApprovalRequestIn
         logger.warn("gemini.plan.unexpected_request", request_id=payload.request_id)
         return
     req_id = payload.request_id
-    target = _target_task_for_plan(state, payload)
-    if not req_id or target is None:
+    if req_id is None:
+        logger.warn("gemini.plan.missing_request_id")
         return
+
+    target = _target_task_for_plan(state, payload)
+    if target is None:
+        logger.warn("gemini.plan.no_target_task", request_id=req_id)
+        try:
+            pio.send_prose_to_lead(
+                s.team_name,
+                s.agent_name,
+                json.dumps({
+                    "kind": "plan_blocked",
+                    "request_id": req_id,
+                    "reason": "no task_id in plan_approval_request and no claimable task in flight",
+                }),
+                summary=f"plan_blocked:{req_id}",
+            )
+        except Exception as e:
+            logger.warn("gemini.plan.block_msg_fail", error=str(e))
+        return
+
+    logger.info("gemini.plan.request_received", request_id=req_id, task_id=target.id)
+
     for attempt in (1, 2):
         schema = load_schema(invoke.PLAN_SCHEMA)
         prompt = prompts.plan_prompt(target, tighten=attempt == 2, agent_name=s.agent_name, team_name=s.team_name)
         prompt += "\n\n# Output contract\n" + inline_schema_prompt_fragment(schema)
-        result = invoke.run(prompt, cwd=s.cwd, schema=invoke.PLAN_SCHEMA, gemini_binary=s.gemini_binary, wrapper_identity=(s.team_name, s.agent_name), model=s.model, gemini_home=s.gemini_home)
-        if result.exit_code == 0 and result.structured is not None:
-            pio.send_plan_approval_request(s.team_name, s.agent_name, request_id=req_id, plan=result.structured)
+        try:
+            result = invoke.run(
+                prompt,
+                cwd=s.cwd,
+                schema=invoke.PLAN_SCHEMA,
+                gemini_binary=s.gemini_binary,
+                wrapper_identity=(s.team_name, s.agent_name),
+                model=s.model,
+                gemini_home=s.gemini_home,
+            )
+        except Exception as e:
+            logger.error("gemini.plan.crash", task_id=target.id, error=str(e))
+            result = None
+
+        if result is not None and result.exit_code == 0 and result.structured is not None:
+            try:
+                pio.send_plan_approval_request(s.team_name, s.agent_name, request_id=req_id, plan=result.structured)
+                logger.info(
+                    "gemini.plan.sent",
+                    request_id=req_id,
+                    task_id=target.id,
+                    steps=len(result.structured.get("steps", [])),
+                )
+            except Exception as e:
+                logger.warn("gemini.plan.send_fail", error=str(e))
             return
-    _mark_blocked(state, target, "Gemini plan generation failed schema validation twice")
+
+        if result is None:
+            logger.warn("gemini.plan.attempt_failed", attempt=attempt, task_id=target.id)
+        else:
+            logger.warn(
+                "gemini.plan.gemini_fail",
+                task_id=target.id,
+                exit_code=result.exit_code,
+                error=result.error,
+            )
+            logger.warn("gemini.plan.attempt_failed", attempt=attempt, task_id=target.id)
+
+    _mark_blocked(
+        state,
+        target,
+        "Gemini plan generation failed schema validation twice",
+    )
 
 
 def _target_task_for_plan(state: GeminiLoopState, payload: PlanApprovalRequestIn):
     s = state.settings
     try:
         all_tasks = pio.list_tasks(s.team_name)
-    except Exception:
+    except Exception as e:
+        logger.warn("gemini.plan.task_list_fail", error=str(e))
         return None
     by_id = {t.id: t for t in all_tasks}
     if payload.task_id and payload.task_id in by_id:
         return by_id[payload.task_id]
-    for t in sorted((t for t in all_tasks if (t.owner in (None, "", s.agent_name)) and t.status == "pending" and not _blocked(all_tasks, t)), key=lambda x: int(x.id)):
+
+    if state.in_flight_task and state.in_flight_task in by_id:
+        return by_id[state.in_flight_task]
+
+    for t in sorted((t for t in all_tasks if t.owner == s.agent_name and t.status == "pending" and not _blocked(all_tasks, t)), key=lambda x: int(x.id)):
+        return t
+
+    for t in sorted((t for t in all_tasks if t.owner in (None, "") and t.status == "pending" and not _blocked(all_tasks, t)), key=lambda x: int(x.id)):
         return t
     return None
 
