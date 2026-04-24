@@ -971,6 +971,36 @@ def _install_with_codex_stub(
     return result, claude_json_path, state_path
 
 
+
+def _install_with_gemini_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gemini_cli: installer_mod.GeminiCliCheck,
+) -> tuple[installer_mod.InstallResult, Path, Path]:
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(codex_binary),
+        prompt_fn=lambda _current: True,
+        codex_cli_check_fn=lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+        gemini_cli_check_fn=lambda: gemini_cli,
+    )
+    return result, claude_json_path, state_path
+
+
 def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
     codex_cli = installer_mod.CodexCliCheck(
         found=True,
@@ -1117,6 +1147,155 @@ def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
     assert "sudo apt install tmux" in err
     assert "Additionally:" in err
     assert "Codex CLI (`codex`) was not found" in err
+
+
+
+# ---------------------------------------------------------------------------
+# Gemini CLI prereq check (informational — non-blocking)
+# ---------------------------------------------------------------------------
+
+def test_install_detects_gemini_cli_when_present(tmp_path: Path, monkeypatch):
+    gemini_cli = installer_mod.GeminiCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/gemini"),
+        version="0.3.1",
+        raw_output="0.3.1",
+    )
+    result, _claude_json_path, state_path = _install_with_gemini_stub(
+        tmp_path, monkeypatch, gemini_cli
+    )
+
+    assert result.gemini_cli is not None
+    assert result.gemini_cli.found is True
+    assert result.gemini_cli.version == "0.3.1"
+
+    message = installer_mod.format_install_message(result)
+    assert "Detected Gemini CLI 0.3.1 at /usr/local/bin/gemini" in message
+    assert "Warning: the Gemini CLI" not in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is True
+    assert state["gemini_cli_version"] == "0.3.1"
+
+
+def test_install_warns_when_gemini_cli_missing_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+    )
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_gemini_cli",
+        lambda: installer_mod.GeminiCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    exit_code = cli_mod.main(
+        _install_argv(settings_path, claude_json_path, state_path, "--assume-yes")
+    )
+    assert exit_code == 0, "missing Gemini CLI must not block install"
+
+    stdout = capsys.readouterr().out
+    assert "Warning: the Gemini CLI (`gemini`) was not found on PATH." in stdout
+    assert "npm install -g @google/gemini-cli" in stdout
+    assert "https://github.com/google-gemini/gemini-cli" in stdout
+    assert "GEMINI_API_KEY/Vertex auth" in stdout
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is False
+    assert state["gemini_cli_version"] is None
+
+
+def test_install_combines_tmux_and_gemini_warnings_on_tmux_halt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    """User missing BOTH tmux and Gemini CLI should see both warnings at once."""
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_missing(monkeypatch, platform="linux")
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+    )
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_gemini_cli",
+        lambda: installer_mod.GeminiCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(bin_dir / "claude-anyteam")])
+
+    exit_code = cli_mod.main(_install_argv(settings_path, claude_json_path, state_path))
+    assert exit_code != 0
+
+    err = capsys.readouterr().err
+    assert "requires a terminal multiplexer" in err
+    assert "sudo apt install tmux" in err
+    assert "Additionally:" in err
+    assert "Gemini CLI (`gemini`) was not found" in err
+
+
+def test_check_gemini_cli_returns_missing_when_not_on_path(monkeypatch):
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: None)
+    result = installer_mod._check_gemini_cli()
+    assert result.found is False
+    assert result.path is None
+    assert result.version is None
+    assert result.raw_output is None
+
+
+def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: Path):
+    fake_gemini = tmp_path / "gemini"
+    fake_gemini.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_gemini.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_gemini))
+
+    class _Completed:
+        returncode = 0
+        stdout = "gemini 0.3.1\n"
+        stderr = ""
+
+    def _fake_run(*_args, **_kwargs):
+        return _Completed()
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_gemini_cli()
+    assert result.found is True
+    assert result.path == fake_gemini.resolve()
+    assert result.version == "0.3.1"
+    assert result.raw_output == "gemini 0.3.1"
 
 
 def test_parse_codex_version_rejects_garbage_tokens():
