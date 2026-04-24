@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from .env import (
     BINARY_ENV,
     LEGACY_BINARY_ENV,
+    GEMINI_BINARY_ENV,
+    GEMINI_SHIM_MATCH_ENV,
     LEGACY_NATIVE_CLAUDE_ENV,
     LEGACY_SHIM_MATCH_ENV,
     NATIVE_CLAUDE_ENV,
@@ -22,9 +24,11 @@ from .env import (
     env_first,
 )
 
-DEFAULT_MATCH = r"^codex-"
+DEFAULT_CODEX_MATCH = r"^codex-"
+DEFAULT_GEMINI_MATCH = r"^gemini-"
 PRIMARY_BINARY = "claude-anyteam"
 LEGACY_BINARY = "codex-teammate"
+GEMINI_BINARY = "gemini-anyteam"
 
 
 @dataclass
@@ -187,16 +191,23 @@ def _resolve_native_claude(argv0: str) -> str | None:
 
 
 
-def _codex_route(parsed: ParsedArgs) -> bool:
+def _route_match(parsed: ParsedArgs, *, env_name: str, legacy_env_name: str | None, default: str) -> bool:
     if not parsed.agent_name:
         return False
-    pattern = env_first(os.environ, SHIM_MATCH_ENV, LEGACY_SHIM_MATCH_ENV, default=DEFAULT_MATCH) or DEFAULT_MATCH
+    names = (env_name, legacy_env_name) if legacy_env_name else (env_name,)
+    pattern = env_first(os.environ, *names, default=default) or default
     try:
         return re.search(pattern, parsed.agent_name) is not None
     except re.error as exc:
-        raise SystemExit(
-            f"Invalid {SHIM_MATCH_ENV} regex: {pattern!r}: {exc}"
-        ) from exc
+        raise SystemExit(f"Invalid {env_name} regex: {pattern!r}: {exc}") from exc
+
+
+def _codex_route(parsed: ParsedArgs) -> bool:
+    return _route_match(parsed, env_name=SHIM_MATCH_ENV, legacy_env_name=LEGACY_SHIM_MATCH_ENV, default=DEFAULT_CODEX_MATCH)
+
+
+def _gemini_route(parsed: ParsedArgs) -> bool:
+    return _route_match(parsed, env_name=GEMINI_SHIM_MATCH_ENV, legacy_env_name=None, default=DEFAULT_GEMINI_MATCH)
 
 
 
@@ -226,6 +237,20 @@ def _require_binary(binary: str | None, label: str) -> str:
 
 
 
+
+def _adapter_argv(binary: str, parsed: ParsedArgs, *, include_effort: bool) -> tuple[list[str], dict[str, str]]:
+    argv = [binary, "--name", parsed.agent_name]
+    if parsed.team_name is not None:
+        argv.extend(["--team", parsed.team_name])
+    if parsed.plan_mode_required:
+        argv.append("--plan-mode")
+    agent_config = _load_agent_config(parsed.team_name, parsed.agent_name)
+    if "model" in agent_config:
+        argv.extend(["--model", agent_config["model"]])
+    if include_effort and "effort" in agent_config:
+        argv.extend(["--effort", agent_config["effort"]])
+    return argv, agent_config
+
 def main(argv: list[str] | None = None) -> int:
     full_argv = [sys.argv[0], *(list(argv) if argv is not None else sys.argv[1:])]
     parsed = _parse_args(full_argv[1:])
@@ -250,18 +275,16 @@ def main(argv: list[str] | None = None) -> int:
             _resolve_binary(PRIMARY_BINARY, BINARY_ENV, LEGACY_BINARY_ENV, fallback_name=LEGACY_BINARY),
             PRIMARY_BINARY,
         )
-        codex_argv = [binary, "--name", parsed.agent_name]
-        if parsed.team_name is not None:
-            codex_argv.extend(["--team", parsed.team_name])
-        if parsed.plan_mode_required:
-            codex_argv.append("--plan-mode")
-        agent_config = _load_agent_config(parsed.team_name, parsed.agent_name)
-        if "model" in agent_config:
-            codex_argv.extend(["--model", agent_config["model"]])
-        if "effort" in agent_config:
-            codex_argv.extend(["--effort", agent_config["effort"]])
+        adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=True)
         _log_dispatch("codex", parsed.agent_name, binary, agent_config or None)
-        os.execv(binary, codex_argv)
+        os.execv(binary, adapter_argv)
+        return 0
+
+    if _gemini_route(parsed):
+        binary = _require_binary(_resolve_binary(GEMINI_BINARY, GEMINI_BINARY_ENV), GEMINI_BINARY)
+        adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=False)
+        _log_dispatch("gemini", parsed.agent_name, binary, agent_config or None)
+        os.execv(binary, adapter_argv)
         return 0
 
     binary = _require_binary(_resolve_native_claude(full_argv[0]), "claude")

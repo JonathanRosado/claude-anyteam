@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 TEAMMATE_COMMAND_KEY = "CLAUDE_CODE_TEAMMATE_COMMAND"
 TEAMMATE_BINARY_KEY = "CLAUDE_ANYTEAM_BINARY"
+GEMINI_TEAMMATE_BINARY_KEY = "CLAUDE_ANYTEAM_GEMINI_BINARY"
 LEGACY_TEAMMATE_BINARY_KEY = "CODEX_TEAMMATE_BINARY"
 
 SHIM_BASENAME = "claude-anyteam-spawn-shim"
@@ -31,9 +32,9 @@ LEGACY_SHIM_BASENAME = "codex-teammate-spawn-shim"
 BINARY_BASENAME = "claude-anyteam"
 LEGACY_BINARY_BASENAME = "codex-teammate"
 
-MANAGED_BINARY_KEYS = (TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY)
+MANAGED_BINARY_KEYS = (TEAMMATE_BINARY_KEY, GEMINI_TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY)
 MANAGED_SHIM_BASENAMES = {SHIM_BASENAME, LEGACY_SHIM_BASENAME}
-MANAGED_BINARY_BASENAMES = {BINARY_BASENAME, LEGACY_BINARY_BASENAME}
+MANAGED_BINARY_BASENAMES = {BINARY_BASENAME, LEGACY_BINARY_BASENAME, "gemini-anyteam", "claude-anyteam-gemini"}
 
 TEAMMATE_MODE_KEY = "teammateMode"
 TEAMMATE_MODE_TARGET_VALUE = "tmux"
@@ -66,6 +67,20 @@ class PrereqCheck:
     binary: str | None
     path: Path | None
     platform: str  # "linux" | "darwin" | "windows" | <sys.platform fallback>
+
+
+@dataclass(frozen=True)
+class GeminiCliCheck:
+    """Result of probing for the Gemini CLI on PATH.
+
+    Gemini CLI is required at runtime for gemini-* teammates but is not a hard
+    install prereq.
+    """
+
+    found: bool
+    path: Path | None
+    version: str | None
+    raw_output: str | None
 
 
 @dataclass(frozen=True)
@@ -119,6 +134,7 @@ class InstallResult:
     prereq: PrereqCheck | None = None
     teammate_mode: TeammateModeResult | None = None
     codex_cli: CodexCliCheck | None = None
+    gemini_cli: GeminiCliCheck | None = None
 
     @property
     def changed_anything(self) -> bool:
@@ -453,6 +469,10 @@ CODEX_CLI_INSTALL_COMMAND = "npm i -g @openai/codex"
 CODEX_CLI_DOCS_URL = "https://github.com/openai/codex#getting-started"
 CODEX_CLI_MIN_VERSION: tuple[int, int, int] = (0, 120, 0)
 CODEX_CLI_VERSION_TIMEOUT_S = 5
+GEMINI_CLI_BINARY = "gemini"
+GEMINI_CLI_INSTALL_COMMAND = "npm install -g @google/gemini-cli"
+GEMINI_CLI_DOCS_URL = "https://github.com/google-gemini/gemini-cli"
+GEMINI_CLI_VERSION_TIMEOUT_S = 5
 
 # Accepts semver-ish tokens like "0.124.0", "0.124", or "0.124.0-rc1". Rejects
 # garbage ("12abc"), leading-v prefixes ("v0.124.0"), and trailing junk.
@@ -564,6 +584,36 @@ def _codex_cli_warning(check: CodexCliCheck) -> str | None:
 
 
 
+def _check_gemini_cli() -> GeminiCliCheck:
+    found_path = shutil.which(GEMINI_CLI_BINARY)
+    if not found_path:
+        return GeminiCliCheck(found=False, path=None, version=None, raw_output=None)
+    resolved = Path(found_path).resolve()
+    raw = None
+    version = None
+    try:
+        completed = subprocess.run([str(resolved), "--version"], capture_output=True, text=True, timeout=GEMINI_CLI_VERSION_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError):
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        raw = ((completed.stdout or "") or (completed.stderr or "")).strip() or None
+        version = _parse_codex_version(raw or "")
+    return GeminiCliCheck(found=True, path=resolved, version=version, raw_output=raw)
+
+
+def _gemini_cli_warning(check: GeminiCliCheck) -> str | None:
+    if check.found:
+        return None
+    return (
+        f"Warning: the Gemini CLI (`{GEMINI_CLI_BINARY}`) was not found on PATH.\n"
+        f"  claude-anyteam is installed, but gemini-* teammates will fail to launch\n"
+        f"  until Gemini CLI is installed and authenticated. Add it with:\n"
+        f"    {GEMINI_CLI_INSTALL_COMMAND}\n"
+        f"  After installing, run `{GEMINI_CLI_BINARY}` once to sign in, or configure GEMINI_API_KEY/Vertex auth.\n"
+        f"  Setup guide: {GEMINI_CLI_DOCS_URL}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # teammateMode install/uninstall
 # ---------------------------------------------------------------------------
@@ -575,6 +625,7 @@ def install_teammate_mode(
     prompt_fn: Callable[[str], bool],
     settings_file_created_by_anyteam: bool = False,
     codex_cli: CodexCliCheck | None = None,
+    gemini_cli: GeminiCliCheck | None = None,
 ) -> TeammateModeResult:
     """Ensures ~/.claude.json has teammateMode='tmux', recording what we did in state.
 
@@ -610,6 +661,9 @@ def install_teammate_mode(
         if codex_cli is not None:
             state["codex_cli_found"] = bool(codex_cli.found)
             state["codex_cli_version"] = codex_cli.version
+        if gemini_cli is not None:
+            state["gemini_cli_found"] = bool(gemini_cli.found)
+            state["gemini_cli_version"] = gemini_cli.version
         return state
 
     # Case 1: absent.
@@ -800,6 +854,7 @@ def install(
     prompt_fn: Callable[[str], bool] | None = None,
     prereq_check_fn: Callable[[], PrereqCheck] | None = None,
     codex_cli_check_fn: Callable[[], CodexCliCheck] | None = None,
+    gemini_cli_check_fn: Callable[[], GeminiCliCheck] | None = None,
 ) -> InstallResult:
     """Full install: prereq check → env block write → teammateMode update.
 
@@ -818,8 +873,10 @@ def install(
     # re-running only to hit a second surprise warning.
     checker = prereq_check_fn if prereq_check_fn is not None else _check_terminal_multiplexer
     codex_checker = codex_cli_check_fn if codex_cli_check_fn is not None else _check_codex_cli
+    gemini_checker = gemini_cli_check_fn if gemini_cli_check_fn is not None else _check_gemini_cli
     prereq = checker()
     codex_cli = codex_checker()
+    gemini_cli = gemini_checker()
 
     if not prereq.found:
         message = (
@@ -831,6 +888,9 @@ def install(
         codex_warning = _codex_cli_warning(codex_cli)
         if codex_warning is not None:
             message = f"{message}\n\nAdditionally:\n{codex_warning}"
+        gemini_warning = _gemini_cli_warning(gemini_cli)
+        if gemini_warning is not None:
+            message = f"{message}\n\nAdditionally:\n{gemini_warning}"
         raise InstallError(message)
 
     paths = discover_managed_paths(
@@ -847,6 +907,7 @@ def install(
     desired = {
         TEAMMATE_COMMAND_KEY: str(paths.shim_path),
         TEAMMATE_BINARY_KEY: str(paths.binary_path),
+        GEMINI_TEAMMATE_BINARY_KEY: str(paths.binary_path.with_name("gemini-anyteam")),
     }
     changed: dict[str, str] = {}
     for key, value in desired.items():
@@ -883,6 +944,7 @@ def install(
             prompt_fn=effective_prompt,
             settings_file_created_by_anyteam=not existed,
             codex_cli=codex_cli,
+            gemini_cli=gemini_cli,
         )
     except InstallError:
         _rollback_env_block(
@@ -901,6 +963,7 @@ def install(
         prereq=prereq,
         teammate_mode=mode_result,
         codex_cli=codex_cli,
+        gemini_cli=gemini_cli,
     )
 
 
@@ -1013,7 +1076,7 @@ def uninstall(
     removed: dict[str, str] = {}
     skipped: dict[str, str] = {}
 
-    for key in (TEAMMATE_COMMAND_KEY, TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY):
+    for key in (TEAMMATE_COMMAND_KEY, TEAMMATE_BINARY_KEY, GEMINI_TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY):
         value = env.get(key)
         if value is None:
             continue
@@ -1060,6 +1123,7 @@ def format_install_message(result: InstallResult) -> str:
         f"Updated {result.paths.settings_path}",
         f"Set env.{TEAMMATE_COMMAND_KEY}={result.paths.shim_path}",
         f"Set env.{TEAMMATE_BINARY_KEY}={result.paths.binary_path}",
+        f"Set env.{GEMINI_TEAMMATE_BINARY_KEY}={result.paths.binary_path.with_name('gemini-anyteam')}",
     ]
     if result.removed_legacy_keys:
         lines.append(f"Removed legacy env.{LEGACY_TEAMMATE_BINARY_KEY} entry.")
@@ -1089,7 +1153,18 @@ def format_install_message(result: InstallResult) -> str:
                 # Parse-fail branch: presence-only acknowledgment.
                 lines.append(f"Detected Codex CLI at {codex_cli.path}")
 
-    lines.append("Restart Claude Code for the changes to take effect.")
+    gemini_cli = result.gemini_cli
+    if gemini_cli is not None:
+        warning = _gemini_cli_warning(gemini_cli)
+        if warning is not None:
+            lines.append(warning)
+        elif gemini_cli.found:
+            if gemini_cli.version:
+                lines.append(f"Detected Gemini CLI {gemini_cli.version} at {gemini_cli.path}")
+            else:
+                lines.append(f"Detected Gemini CLI at {gemini_cli.path}")
+
+    lines.append("Restart Claude Code for the changes to take effect. Use codex-* or gemini-* teammate names to route to the matching backend.")
     if not result.changed_anything:
         lines.insert(1, "The existing settings already matched this install.")
     return "\n".join(lines)

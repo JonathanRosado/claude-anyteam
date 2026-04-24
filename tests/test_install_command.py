@@ -111,6 +111,7 @@ def test_install_creates_settings_and_sets_required_env_keys(
         "env": {
             installer_mod.TEAMMATE_COMMAND_KEY: str(shim_binary.resolve()),
             installer_mod.TEAMMATE_BINARY_KEY: str(codex_binary.resolve()),
+            installer_mod.GEMINI_TEAMMATE_BINARY_KEY: str(codex_binary.resolve().with_name("gemini-anyteam")),
         }
     }
 
@@ -159,6 +160,7 @@ def test_install_preserves_other_settings_and_env_entries(tmp_path: Path, monkey
         "KEEP_ME": "yes",
         installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
         installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
+        installer_mod.GEMINI_TEAMMATE_BINARY_KEY: "/opt/tools/gemini-anyteam",
     }
     assert result.paths.settings_path == settings_path.resolve()
 
@@ -285,6 +287,8 @@ def test_install_writes_teammate_mode_when_absent(tmp_path: Path, monkeypatch, c
         "claude_json_created_by_anyteam": True,
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
     }
 
     stdout = capsys.readouterr().out
@@ -320,6 +324,8 @@ def test_install_is_noop_when_teammate_mode_already_tmux(tmp_path: Path, monkeyp
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
     }
 
     stdout = capsys.readouterr().out
@@ -369,6 +375,8 @@ def test_install_prompts_and_overwrites_auto_when_accepted(tmp_path: Path, monke
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
     }
 
 
@@ -978,7 +986,7 @@ def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI 0.124.0 at /usr/local/bin/codex" in message
-    assert "Warning" not in message
+    assert "Warning: detected Codex" not in message
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["codex_cli_found"] is True
@@ -1036,7 +1044,7 @@ def test_install_handles_codex_version_parse_failure(tmp_path: Path, monkeypatch
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI at /usr/local/bin/codex" in message
-    assert "Warning" not in message, "parse-fail must not emit a scary warning"
+    assert "Warning: detected Codex" not in message, "parse-fail must not emit a scary warning"
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["codex_cli_found"] is True
@@ -1077,7 +1085,7 @@ def test_install_accepts_codex_cli_exactly_at_floor(tmp_path: Path, monkeypatch)
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI 0.120.0" in message
-    assert "Warning" not in message
+    assert "Warning: detected Codex" not in message
 
 
 def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
