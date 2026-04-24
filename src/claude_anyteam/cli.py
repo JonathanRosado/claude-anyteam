@@ -216,7 +216,7 @@ def _uninstall_command(
         )
     except InstallError as exc:
         print(str(exc), file=sys.stderr)
-        return 2
+        return getattr(exc, "cli_exit_code", 2)
 
     print(format_uninstall_message(result), file=stream)
     return 0

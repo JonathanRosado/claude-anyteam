@@ -35,10 +35,18 @@ MANAGED_BINARY_BASENAMES = {BINARY_BASENAME, LEGACY_BINARY_BASENAME}
 
 TEAMMATE_MODE_KEY = "teammateMode"
 TEAMMATE_MODE_TARGET_VALUE = "tmux"
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2  # v2 adds settings_file_created_by_anyteam + claude_json_created_by_anyteam
 
 PLUGIN_DATA_DIR_NAME = "claude-anyteam-claude-anyteam"
 STATE_FILE_NAME = "install-state.json"
+
+# CLI exit codes carried on InstallError via the cli_exit_code attribute:
+#   2 = generic install failure (default, when cli_exit_code is unset)
+#   3 = install aborted by user (teammateMode overwrite prompt declined)
+#   4 = uninstall refuses to mutate files due to corrupted/malformed state
+INSTALL_ERROR_EXIT_GENERIC = 2
+INSTALL_ERROR_EXIT_PROMPT_DECLINED = 3
+INSTALL_ERROR_EXIT_CORRUPTED_STATE = 4
 
 
 @dataclass(frozen=True)
@@ -68,6 +76,7 @@ class TeammateModeResult:
     new_value: str  # what the key holds now ("tmux" in every success branch)
     wrote_value: bool  # True if we mutated claude.json; False on the already-"tmux" no-op
     state_written: bool  # True if a state file was created/overwritten
+    claude_json_created_by_anyteam: bool = False  # v2: True if install() created the file from scratch
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,8 @@ class TeammateModeRevertResult:
     restored_value: str | None  # value put back (None = key removed)
     claude_json_touched: bool  # True if we mutated claude.json
     state_file_removed: bool
+    claude_json_removed: bool = False  # v2: True if the now-empty file was unlinked
+    plugin_data_dir_removed: bool = False  # v2: True if our plugin-data dir was rmdir'd
 
 
 @dataclass(frozen=True)
@@ -109,11 +120,15 @@ class UninstallResult:
     skipped: dict[str, str]
     file_present: bool
     teammate_mode: TeammateModeRevertResult | None = None
+    settings_file_removed: bool = False  # v2: True if the now-empty file was unlinked
 
     @property
     def changed_anything(self) -> bool:
-        return bool(self.removed) or (
-            self.teammate_mode is not None and self.teammate_mode.claude_json_touched
+        return (
+            bool(self.removed)
+            or self.settings_file_removed
+            or (self.teammate_mode is not None and self.teammate_mode.claude_json_touched)
+            or (self.teammate_mode is not None and self.teammate_mode.claude_json_removed)
         )
 
 
@@ -421,6 +436,7 @@ def install_teammate_mode(
     claude_json_path: Path,
     state_path: Path,
     prompt_fn: Callable[[str], bool],
+    settings_file_created_by_anyteam: bool = False,
 ) -> TeammateModeResult:
     """Ensures ~/.claude.json has teammateMode='tmux', recording what we did in state.
 
@@ -430,25 +446,35 @@ def install_teammate_mode(
       * key in {'auto', 'in-process', other} → call prompt_fn(current_value).
           - True  → overwrite to 'tmux'; state records original=current, set_by=True.
           - False → raise InstallError with cli_exit_code=3 (no state, no mutation).
+
+    ``settings_file_created_by_anyteam`` is plumbed through from install() so the
+    state-file record is a complete receipt (both v2 created-flags in one place).
     """
     claude_json, existed = _load_claude_json(claude_json_path)
     current = claude_json.get(TEAMMATE_MODE_KEY)
+    claude_json_created_by_anyteam = not existed
 
     if current is not None and not isinstance(current, str):
         raise InstallError(
             f"{claude_json_path} has a non-string {TEAMMATE_MODE_KEY!r} value; refusing to touch it."
         )
 
+    def _build_state(original: str | None, set_by: bool) -> dict[str, Any]:
+        return {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "teammateMode_original": original,
+            "teammateMode_set_by_anyteam": set_by,
+            # v2 created-flags: mark every file we brought into existence so uninstall
+            # can remove exactly those if and only if they end up empty later.
+            "settings_file_created_by_anyteam": bool(settings_file_created_by_anyteam),
+            "claude_json_created_by_anyteam": bool(claude_json_created_by_anyteam),
+        }
+
     # Case 1: absent.
     if current is None:
         claude_json[TEAMMATE_MODE_KEY] = TEAMMATE_MODE_TARGET_VALUE
         _write_claude_json(claude_json_path, claude_json)
-        state = {
-            "schema_version": STATE_SCHEMA_VERSION,
-            "teammateMode_original": None,
-            "teammateMode_set_by_anyteam": True,
-        }
-        _write_state(state_path, state)
+        _write_state(state_path, _build_state(None, True))
         return TeammateModeResult(
             claude_json_path=claude_json_path,
             state_path=state_path,
@@ -456,16 +482,12 @@ def install_teammate_mode(
             new_value=TEAMMATE_MODE_TARGET_VALUE,
             wrote_value=True,
             state_written=True,
+            claude_json_created_by_anyteam=claude_json_created_by_anyteam,
         )
 
     # Case 2: already tmux.
     if current == TEAMMATE_MODE_TARGET_VALUE:
-        state = {
-            "schema_version": STATE_SCHEMA_VERSION,
-            "teammateMode_original": TEAMMATE_MODE_TARGET_VALUE,
-            "teammateMode_set_by_anyteam": False,
-        }
-        _write_state(state_path, state)
+        _write_state(state_path, _build_state(TEAMMATE_MODE_TARGET_VALUE, False))
         return TeammateModeResult(
             claude_json_path=claude_json_path,
             state_path=state_path,
@@ -473,6 +495,7 @@ def install_teammate_mode(
             new_value=TEAMMATE_MODE_TARGET_VALUE,
             wrote_value=False,
             state_written=True,
+            claude_json_created_by_anyteam=claude_json_created_by_anyteam,
         )
 
     # Case 3: something else. Prompt before overwriting.
@@ -482,17 +505,12 @@ def install_teammate_mode(
             "  claude-anyteam needs teammateMode=\"tmux\" to route teammates through the pane backend.\n"
             "  Re-run with --assume-yes to accept, or manually set teammateMode=\"tmux\" in ~/.claude.json."
         )
-        err.cli_exit_code = 3  # type: ignore[attr-defined]
+        err.cli_exit_code = INSTALL_ERROR_EXIT_PROMPT_DECLINED  # type: ignore[attr-defined]
         raise err
 
     claude_json[TEAMMATE_MODE_KEY] = TEAMMATE_MODE_TARGET_VALUE
     _write_claude_json(claude_json_path, claude_json)
-    state = {
-        "schema_version": STATE_SCHEMA_VERSION,
-        "teammateMode_original": current,
-        "teammateMode_set_by_anyteam": True,
-    }
-    _write_state(state_path, state)
+    _write_state(state_path, _build_state(current, True))
     return TeammateModeResult(
         claude_json_path=claude_json_path,
         state_path=state_path,
@@ -500,6 +518,7 @@ def install_teammate_mode(
         new_value=TEAMMATE_MODE_TARGET_VALUE,
         wrote_value=True,
         state_written=True,
+        claude_json_created_by_anyteam=claude_json_created_by_anyteam,
     )
 
 
@@ -511,10 +530,16 @@ def uninstall_teammate_mode(
     """Reverses whatever install_teammate_mode did, using the state file as ground truth.
 
     No state file (fresh install pre-feature, or user hand-deleted) → no-op.
-    State exists but set_by_anyteam=False → no-op on claude.json; state file is cleared.
-    State exists and set_by_anyteam=True → restore teammateMode_original (None = remove key).
+    State exists and parseable:
+      * set_by_anyteam=False → no-op on claude.json; state file is cleared.
+      * set_by_anyteam=True  → restore teammateMode_original (None = remove key).
+    State exists but malformed → raise InstallError(cli_exit_code=4); state file
+      stays on disk so the user can inspect it. We never silently delete state
+      we can't understand because it may encode data the user wants to recover.
 
-    Deleting the state file is best-effort; failure does not block env unwind.
+    After a successful revert of a file we created (claude_json_created_by_anyteam)
+    that now has no other keys, unlink it entirely. Same for the plugin-data dir
+    containing the state file — rmdir it only if empty, never recursively.
     """
     state = _load_state(state_path)
     if state is None:
@@ -530,18 +555,23 @@ def uninstall_teammate_mode(
 
     managed = bool(state.get("teammateMode_set_by_anyteam"))
     original = state.get("teammateMode_original")
+    # v2 created-flag. Missing on v1 state files → default False. Safety bias:
+    # never delete a file we are not CERTAIN we created. The v1→v2 migration
+    # direction is one-way; a user who ran install on the v1 installer and
+    # uninstalls on the v2 installer simply keeps the file we can't prove we
+    # brought into existence.
+    claude_json_was_ours = bool(state.get("claude_json_created_by_anyteam", False))
+
     if original is not None and not isinstance(original, str):
-        # Corrupted state. Don't mutate claude.json but do remove the state file.
-        state_removed = _delete_state(state_path)
-        return TeammateModeRevertResult(
-            claude_json_path=claude_json_path,
-            state_path=state_path,
-            state_was_present=True,
-            managed_by_us=False,
-            restored_value=None,
-            claude_json_touched=False,
-            state_file_removed=state_removed,
+        # Corrupted state: refuse to touch anything, keep state file on disk for
+        # the user to inspect. Bail with exit code 4 so scripts can differentiate.
+        err = InstallError(
+            f"{state_path} has a malformed 'teammateMode_original' value "
+            f"({type(original).__name__}: {original!r}); refusing to touch config.\n"
+            f"Inspect or delete the state file manually, then re-run uninstall."
         )
+        err.cli_exit_code = INSTALL_ERROR_EXIT_CORRUPTED_STATE  # type: ignore[attr-defined]
+        raise err
 
     if not managed:
         # We didn't own the value — leave claude.json alone, delete state.
@@ -567,15 +597,38 @@ def uninstall_teammate_mode(
             claude_json[TEAMMATE_MODE_KEY] = original
             touched = True
 
+    claude_json_removed = False
     if touched:
-        if not claude_json and not existed:
-            # Edge case: we'd be writing an empty object to a non-existent file.
-            # Leave claude.json uncreated.
-            touched = False
+        # "Leave no trace": if WE created the file AND it would now have no other
+        # keys, delete the file rather than write `{}`. Only applies when existed
+        # is True (we're mutating a file that's on disk right now) — but for the
+        # `original is None, key was in claude_json` branch, existed must be True
+        # since we loaded the key from it.
+        if claude_json_was_ours and not claude_json:
+            try:
+                claude_json_path.unlink()
+                claude_json_removed = True
+            except FileNotFoundError:
+                # Race with an external delete; treat as already-gone.
+                claude_json_removed = True
+            # touched remains True — the file WAS modified (by deletion).
         else:
             _write_claude_json(claude_json_path, claude_json)
 
     state_removed = _delete_state(state_path)
+
+    # Remove our plugin-data dir if now empty. rmdir (not rmtree) so Python
+    # refuses to recurse into a non-empty dir — safety by default. OSError
+    # covers ENOTEMPTY (user placed their own files in our dir) and ENOENT
+    # (dir never existed); both are treated as non-blocking best-effort.
+    plugin_data_dir_removed = False
+    plugin_data_dir = state_path.parent
+    try:
+        plugin_data_dir.rmdir()
+        plugin_data_dir_removed = True
+    except OSError:
+        pass
+
     return TeammateModeRevertResult(
         claude_json_path=claude_json_path,
         state_path=state_path,
@@ -584,6 +637,8 @@ def uninstall_teammate_mode(
         restored_value=original,
         claude_json_touched=touched,
         state_file_removed=state_removed,
+        claude_json_removed=claude_json_removed,
+        plugin_data_dir_removed=plugin_data_dir_removed,
     )
 
 
@@ -673,6 +728,7 @@ def install(
             claude_json_path=resolved_claude_json,
             state_path=resolved_state_path,
             prompt_fn=effective_prompt,
+            settings_file_created_by_anyteam=not existed,
         )
     except InstallError:
         _rollback_env_block(
@@ -738,6 +794,20 @@ def uninstall(
     claude_json_path: Path | str | None = None,
     state_path: Path | str | None = None,
 ) -> UninstallResult:
+    """Reverse install(), leaving no trace of the three files install() touches.
+
+    Specifically:
+      1. Strip our keys from ~/.claude/settings.json's env block (leaves
+         non-managed env keys and any other top-level keys alone).
+      2. Revert ~/.claude.json's teammateMode to whatever the state file says
+         was there before install, or remove the key if we added it from scratch.
+      3. Delete the install-state file and rmdir the plugin-data dir if empty.
+      4. "Leave no trace" escalation: if step 1 or 2 leaves a file that WE
+         created (per state-file flags) with no remaining keys, unlink it.
+
+    We read state BEFORE the settings.json unwind so we can apply the
+    settings_file_created_by_anyteam flag after stripping our env keys.
+    """
     raw_path = Path(settings_path) if settings_path is not None else default_settings_path()
     path = raw_path.expanduser().resolve()
     settings, existed = _load_settings(path)
@@ -753,8 +823,22 @@ def uninstall(
         else default_state_path()
     )
 
+    # Peek at the state file BEFORE uninstall_teammate_mode deletes it, so we
+    # can apply the settings_file_created_by_anyteam flag to the settings.json
+    # cleanup branch below. This is a read-only peek; the mode revert below
+    # handles the authoritative delete.
+    settings_file_was_ours = False
+    try:
+        peeked_state = _load_state(resolved_state_path)
+    except InstallError:
+        # Malformed state — let uninstall_teammate_mode surface the error below.
+        peeked_state = None
+    if peeked_state is not None:
+        settings_file_was_ours = bool(peeked_state.get("settings_file_created_by_anyteam", False))
+
     # teammateMode revert is independent of the env-block unwind and should
-    # proceed whether or not settings.json exists.
+    # proceed whether or not settings.json exists. May raise InstallError
+    # (cli_exit_code=4) on corrupted state; caller surfaces the message.
     mode_result = uninstall_teammate_mode(
         claude_json_path=resolved_claude_json,
         state_path=resolved_state_path,
@@ -767,6 +851,7 @@ def uninstall(
             skipped={},
             file_present=False,
             teammate_mode=mode_result,
+            settings_file_removed=False,
         )
 
     env = _env_block(settings, path=path, create=False)
@@ -783,10 +868,22 @@ def uninstall(
         else:
             skipped[key] = value
 
+    settings_file_removed = False
     if removed:
         if not env:
             settings.pop("env", None)
-        _write_settings(path, settings)
+
+        # "Leave no trace": if WE created settings.json AND it now has no
+        # remaining keys, unlink it rather than writing `{}`. Safer than
+        # comparing byte-length — we only care about logical emptiness.
+        if settings_file_was_ours and not settings:
+            try:
+                path.unlink()
+                settings_file_removed = True
+            except FileNotFoundError:
+                settings_file_removed = True
+        else:
+            _write_settings(path, settings)
 
     return UninstallResult(
         settings_path=path,
@@ -794,6 +891,7 @@ def uninstall(
         skipped=skipped,
         file_present=True,
         teammate_mode=mode_result,
+        settings_file_removed=settings_file_removed,
     )
 
 
@@ -836,6 +934,10 @@ def format_uninstall_message(result: UninstallResult) -> str:
 
     if not result.file_present:
         lines.append(f"No settings file found at {result.settings_path}; nothing to remove.")
+    elif result.settings_file_removed:
+        removed_keys = ", ".join(f"env.{key}" for key in result.removed)
+        lines.append(f"Removed {removed_keys}")
+        lines.append(f"Deleted {result.settings_path} (empty after removal)")
     elif result.removed:
         removed_keys = ", ".join(f"env.{key}" for key in result.removed)
         lines.append(f"Updated {result.settings_path}")
@@ -849,7 +951,9 @@ def format_uninstall_message(result: UninstallResult) -> str:
 
     mode = result.teammate_mode
     if mode is not None and mode.state_was_present:
-        if mode.managed_by_us and mode.claude_json_touched:
+        if mode.managed_by_us and mode.claude_json_removed:
+            lines.append(f"Deleted {mode.claude_json_path} (empty after removal)")
+        elif mode.managed_by_us and mode.claude_json_touched:
             if mode.restored_value is None:
                 lines.append(f"Removed {TEAMMATE_MODE_KEY} from {mode.claude_json_path}")
             else:
