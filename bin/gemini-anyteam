@@ -1,3 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
-python -m claude_anyteam.backends.gemini.cli "$@"
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec "$SCRIPT_DIR/_claude-anyteam-dispatch.sh" gemini-anyteam "$@"
