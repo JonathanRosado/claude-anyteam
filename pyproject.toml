@@ -46,3 +46,7 @@ packages = ["src/claude_anyteam", "src/claude_teams"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = ["-m", "not integration"]
+markers = [
+    "integration: real CLI smoke tests that are skipped by default",
+]
