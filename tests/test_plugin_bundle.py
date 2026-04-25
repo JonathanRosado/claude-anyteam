@@ -115,12 +115,15 @@ def _write_hook_settings(home: Path, env_block: dict[str, str]) -> Path:
 
 def test_session_start_hook_prints_orientation_when_settings_are_complete(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
+    binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
+    gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
     _write_hook_settings(
         home,
         {
-            "CLAUDE_CODE_TEAMMATE_COMMAND": "/configured/claude-anyteam-spawn-shim",
-            "CLAUDE_ANYTEAM_BINARY": "/configured/claude-anyteam",
-            "CLAUDE_ANYTEAM_GEMINI_BINARY": "/configured/gemini-anyteam",
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
         },
     )
 
@@ -184,6 +187,67 @@ def test_session_start_hook_warns_when_env_var_is_missing(tmp_path: Path) -> Non
     assert completed.stdout.strip() == DRIFT_WARNING
 
 
+def test_session_start_hook_warns_when_configured_paths_are_stale(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(tmp_path / "missing" / "claude-anyteam-spawn-shim"),
+            "CLAUDE_ANYTEAM_BINARY": str(tmp_path / "missing" / "claude-anyteam"),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(tmp_path / "missing" / "gemini-anyteam"),
+        },
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
+def test_session_start_hook_warns_when_configured_paths_are_not_executable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    command = tmp_path / "configured" / "claude-anyteam-spawn-shim"
+    binary = tmp_path / "configured" / "claude-anyteam"
+    gemini_binary = tmp_path / "configured" / "gemini-anyteam"
+    for path in (command, binary, gemini_binary):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o644)
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+        },
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
 def test_session_start_hook_warns_when_settings_are_missing(tmp_path: Path) -> None:
     home = tmp_path / "home"
     fake_bin = tmp_path / "fake-bin"
@@ -235,12 +299,15 @@ def test_session_start_hook_warns_when_settings_are_malformed(tmp_path: Path) ->
 
 def test_session_start_hook_uses_grep_fallback_when_python3_is_missing(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
+    binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
+    gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
     _write_hook_settings(
         home,
         {
-            "CLAUDE_CODE_TEAMMATE_COMMAND": "/already/configured/claude-anyteam-spawn-shim",
-            "CLAUDE_ANYTEAM_BINARY": "/already/configured/claude-anyteam",
-            "CLAUDE_ANYTEAM_GEMINI_BINARY": "/already/configured/gemini-anyteam",
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
         },
     )
 

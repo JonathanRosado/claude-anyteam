@@ -13,6 +13,7 @@ settings_has_required_env() {
   if command -v python3 >/dev/null 2>&1; then
     if python3 - "$SETTINGS_PATH" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -29,22 +30,19 @@ env = data.get("env")
 if not isinstance(env, dict):
     raise SystemExit(1)
 
-command = env.get("CLAUDE_CODE_TEAMMATE_COMMAND", "")
-binary = env.get("CLAUDE_ANYTEAM_BINARY", "")
-gemini_binary = env.get("CLAUDE_ANYTEAM_GEMINI_BINARY", "")
+required_paths = [
+    env.get("CLAUDE_CODE_TEAMMATE_COMMAND", ""),
+    env.get("CLAUDE_ANYTEAM_BINARY", ""),
+    env.get("CLAUDE_ANYTEAM_GEMINI_BINARY", ""),
+]
 
-raise SystemExit(
-    0
-    if (
-        isinstance(command, str)
-        and command.strip()
-        and isinstance(binary, str)
-        and binary.strip()
-        and isinstance(gemini_binary, str)
-        and gemini_binary.strip()
-    )
-    else 1
-)
+for value in required_paths:
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(1)
+    if not Path(value).is_file() or not os.access(value, os.X_OK):
+        raise SystemExit(1)
+
+raise SystemExit(0)
 PY
     then
       return 0
@@ -52,9 +50,20 @@ PY
     return 1
   fi
 
-  grep -Eq '"CLAUDE_CODE_TEAMMATE_COMMAND"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
-    && grep -Eq '"CLAUDE_ANYTEAM_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH" \
-    && grep -Eq '"CLAUDE_ANYTEAM_GEMINI_BINARY"[[:space:]]*:[[:space:]]*"[^[:space:]"][^"]*"' "$SETTINGS_PATH"
+  settings_env_path_ok() {
+    key=$1
+    line=$(grep -m 1 -E "\"$key\"[[:space:]]*:[[:space:]]*\"[^[:space:]\"][^\"]*\"" "$SETTINGS_PATH") || return 1
+    value=${line#*\"$key\"}
+    value=${value#*:}
+    value=${value#*\"}
+    value=${value%%\"*}
+
+    [ -n "$value" ] && [ -f "$value" ] && [ -x "$value" ]
+  }
+
+  settings_env_path_ok "CLAUDE_CODE_TEAMMATE_COMMAND" \
+    && settings_env_path_ok "CLAUDE_ANYTEAM_BINARY" \
+    && settings_env_path_ok "CLAUDE_ANYTEAM_GEMINI_BINARY"
 }
 
 if settings_has_required_env; then
