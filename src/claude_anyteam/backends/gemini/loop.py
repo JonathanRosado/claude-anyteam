@@ -17,7 +17,7 @@ from claude_anyteam.messages import PlanApprovalRequestIn, ShutdownRequestIn, pa
 from claude_anyteam.registration import BackendMetadata, deregister, register
 from claude_anyteam.schema_validation import inline_schema_prompt_fragment, load_schema
 
-from . import acp as acp_invoke, invoke as headless_invoke, prompts
+from . import acp as acp_invoke, crash_hygiene, invoke as headless_invoke, prompts
 from .config import GeminiSettings
 
 # Backwards-compatible alias for tests/extensions that monkeypatch loop.invoke.
@@ -36,6 +36,24 @@ class GeminiLoopState:
 
 def run(settings: GeminiSettings) -> int:
     _backend_feature_test(settings)
+    gemini_home = settings.gemini_home or headless_invoke._default_gemini_home(settings.team_name, settings.agent_name)
+    if settings.backend == "acp":
+        headless_invoke.ensure_adapter_state(gemini_home)
+        previous_state = headless_invoke.read_adapter_state(gemini_home)
+        crash_hygiene.run_startup_recovery(
+            gemini_home=gemini_home,
+            team=settings.team_name,
+            agent=settings.agent_name,
+            cwd=settings.cwd,
+            gemini_binary=settings.gemini_binary,
+            state=previous_state,
+        )
+        crash_hygiene.mark_adapter_start(
+            gemini_home,
+            team=settings.team_name,
+            agent=settings.agent_name,
+            cwd=settings.cwd,
+        )
     register(
         settings,
         BackendMetadata(
@@ -69,6 +87,8 @@ def run(settings: GeminiSettings) -> int:
             logger.info("gemini.loop.deregistered", name=settings.agent_name)
         else:
             logger.warn("gemini.loop.exit_without_deregister", in_flight_task=state.in_flight_task)
+        if settings.backend == "acp" and exit_code == 0:
+            crash_hygiene.mark_clean_shutdown(gemini_home)
     return exit_code
 
 

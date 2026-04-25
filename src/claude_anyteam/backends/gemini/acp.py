@@ -17,7 +17,7 @@ from claude_anyteam.codex import CodexResult, PLAN_SCHEMA, TASK_COMPLETE_SCHEMA
 from claude_anyteam.env import identity_env
 from claude_anyteam.schema_validation import load_schema, parse_and_validate
 
-from . import invoke
+from . import crash_hygiene, invoke
 
 TRUST_TO_ACP_MODE = {"trusted": "yolo", "default": "default", "plan": "plan"}
 from .acp_client import (
@@ -349,6 +349,7 @@ def run(
     try:
         client.start()
         register_active_client(client)
+        crash_hygiene.record_acp_child(home, pid=getattr(client, "pid", None), pgid=getattr(client, "pgid", None))
         initialize_result = client.initialize()
         _authenticate_if_required(client, initialize_result)
         stored = None if ephemeral else adapter_state.get("acp_session_id")
@@ -402,6 +403,7 @@ def run(
             client.close()
         finally:
             unregister_active_client(client)
+            crash_hygiene.clear_acp_child(home)
 
     last_message, tool_call_events = _assistant_text_and_tools(events, session_id)
     structured: dict[str, Any] | None = None
