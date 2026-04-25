@@ -104,3 +104,13 @@ def test_request_permission_plan_cancels_and_does_not_approve_writes():
     assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
     assert c.permission_blocked is not None
     assert c.permission_blocked["trust_mode"] == "plan"
+
+
+def test_gemini_acp_client_uses_process_group_flags(monkeypatch):
+    monkeypatch.setattr(acp_client, "detect_acp_flag", lambda _binary: "--acp")
+    monkeypatch.setattr(acp_client.os, "name", "posix")
+
+    c = GeminiAcpClient(gemini_binary="gemini")
+
+    assert c._start_new_session is True
+    assert c._terminate_process_group is True

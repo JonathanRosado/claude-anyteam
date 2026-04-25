@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,32 @@ from .acp_client import (
     detect_acp_flag,
     permission_request_label,
 )
+
+
+_ACTIVE_CLIENTS: set[GeminiAcpClient] = set()
+_ACTIVE_CLIENTS_LOCK = threading.Lock()
+
+
+def register_active_client(client: GeminiAcpClient) -> None:
+    with _ACTIVE_CLIENTS_LOCK:
+        _ACTIVE_CLIENTS.add(client)
+
+
+def unregister_active_client(client: GeminiAcpClient) -> None:
+    with _ACTIVE_CLIENTS_LOCK:
+        _ACTIVE_CLIENTS.discard(client)
+
+
+def terminate_active_acp_children(*, signum: int | None = None, reason: str = "shutdown") -> None:
+    with _ACTIVE_CLIENTS_LOCK:
+        clients = list(_ACTIVE_CLIENTS)
+    sig = signum or signal.SIGTERM
+    for client in clients:
+        try:
+            logger.warn("gemini_acp.terminate_active_child", pid=client.pid, pgid=client.pgid, signum=sig, reason=reason)
+            client.terminate_process_group(sig=sig, timeout=2.0)
+        except Exception as e:
+            logger.warn("gemini_acp.terminate_active_child_failed", error=str(e), reason=reason)
 
 
 def feature_test(gemini_binary: str = "gemini") -> None:
@@ -319,6 +347,7 @@ def run(
     client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env, trust_mode=trust_mode)
     try:
         client.start()
+        register_active_client(client)
         initialize_result = client.initialize()
         _authenticate_if_required(client, initialize_result)
         stored = None if ephemeral else adapter_state.get("acp_session_id")
@@ -358,7 +387,10 @@ def run(
             return _permission_block_result(getattr(client, "permission_blocked"), events=events, session_id=session_id)
         return CodexResult(exit_code=1, structured=None, last_message="", events=events, error=str(e), session_id=session_id)
     finally:
-        client.close()
+        try:
+            client.close()
+        finally:
+            unregister_active_client(client)
 
     last_message, tool_call_events = _assistant_text_and_tools(events, session_id)
     structured: dict[str, Any] | None = None

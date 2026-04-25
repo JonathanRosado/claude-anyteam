@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -38,11 +40,15 @@ class JsonRpcStdioClient:
         env: dict[str, str] | None = None,
         log_prefix: str = "jsonrpc_stdio",
         stderr_log_prefix: str | None = None,
+        start_new_session: bool = False,
+        terminate_process_group: bool = False,
     ) -> None:
         self._argv = list(argv)
         self._env = env
         self._log_prefix = log_prefix
         self._stderr_log_prefix = stderr_log_prefix or f"{log_prefix}.stderr"
+        self._start_new_session = start_new_session
+        self._terminate_process_group = terminate_process_group
         self._error_cls: type[JsonRpcStdioError] = JsonRpcStdioError
         self._timeout_error_cls: type[JsonRpcStdioError] | None = None
         self._proc: subprocess.Popen | None = None
@@ -69,6 +75,7 @@ class JsonRpcStdioClient:
             text=True,
             bufsize=1,
             env=self._env,
+            start_new_session=self._start_new_session,
         )
         self._reader = threading.Thread(
             target=self._read_loop, name=f"{self._log_prefix}-reader", daemon=True
@@ -90,12 +97,7 @@ class JsonRpcStdioClient:
                     proc.stdin.close()
                 except (BrokenPipeError, OSError):
                     pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=timeout)
+            self._terminate_process(proc, timeout=timeout)
         finally:
             self._proc = None
         with self._pending_lock:
@@ -107,6 +109,73 @@ class JsonRpcStdioClient:
                 pending.event.set()
             self._pending.clear()
         logger.info(f"{self._log_prefix}.closed")
+
+
+    @property
+    def pid(self) -> int | None:
+        proc = self._proc
+        pid = getattr(proc, "pid", None) if proc is not None else None
+        return pid if isinstance(pid, int) else None
+
+    @property
+    def pgid(self) -> int | None:
+        pid = self.pid
+        if pid is None or os.name != "posix":
+            return None
+        try:
+            return os.getpgid(pid)
+        except OSError:
+            return None
+
+    @property
+    def argv(self) -> list[str]:
+        return list(self._argv)
+
+    def terminate_process_group(self, *, sig: int = signal.SIGTERM, timeout: float = 5.0) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        if os.name != "posix":
+            self._terminate_process(proc, timeout=timeout)
+            return
+        self._signal_process_group_posix(proc, sig=sig)
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._signal_process_group_posix(proc, sig=signal.SIGKILL)
+            proc.wait(timeout=timeout)
+
+    def _signal_process_group_posix(self, proc: subprocess.Popen, *, sig: int) -> None:
+        pid = getattr(proc, "pid", None)
+        if not isinstance(pid, int):
+            return
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        except OSError as e:
+            logger.warn(f"{self._log_prefix}.killpg_failed", pgid=pgid, signum=sig, error=str(e))
+
+    def _terminate_process(self, proc: subprocess.Popen, *, timeout: float) -> None:
+        if self._terminate_process_group and os.name == "posix":
+            self._signal_process_group_posix(proc, sig=signal.SIGTERM)
+            try:
+                proc.wait(timeout=timeout)
+                return
+            except subprocess.TimeoutExpired:
+                self._signal_process_group_posix(proc, sig=signal.SIGKILL)
+                proc.wait(timeout=timeout)
+                return
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=timeout)
 
     def __enter__(self) -> "JsonRpcStdioClient":
         self.start()

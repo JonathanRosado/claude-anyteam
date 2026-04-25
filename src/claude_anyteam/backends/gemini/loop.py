@@ -51,6 +51,8 @@ def run(settings: GeminiSettings) -> int:
     def _sig_handler(signum: int, _frame: Any) -> None:
         logger.warn("gemini.signal.received", signum=signum)
         state.shutdown_requested = True
+        if settings.backend == "acp":
+            acp_invoke.terminate_active_acp_children(signum=signum, reason="adapter_signal")
 
     signal.signal(signal.SIGINT, _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)

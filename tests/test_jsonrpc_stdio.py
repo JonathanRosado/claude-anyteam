@@ -134,3 +134,31 @@ def test_request_timeout_unblocks_on_close():
         assert "closed" in got["error"].lower()
     finally:
         client.close()
+
+
+def test_process_group_close_sends_signal_to_group(monkeypatch):
+    fake = _FakeProcess(lambda msg: iter([]))
+    fake.pid = 4242
+    calls = []
+
+    def fake_popen(*args, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return fake
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("os.getpgid", lambda pid: 9001)
+    monkeypatch.setattr("os.killpg", lambda pgid, sig: calls.append((pgid, sig)))
+
+    client = JsonRpcStdioClient(
+        argv=["fake"],
+        log_prefix="test",
+        start_new_session=True,
+        terminate_process_group=True,
+    )
+    client.start()
+    assert client.pid == 4242
+    assert client.pgid == 9001
+    client.close()
+
+    assert calls
+    assert calls[0][0] == 9001

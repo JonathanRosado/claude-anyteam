@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 import shutil
 import subprocess
@@ -91,6 +92,8 @@ class GeminiAcpClient(JsonRpcStdioClient):
             env=env,
             log_prefix="gemini_acp",
             stderr_log_prefix="gemini_acp.stderr",
+            start_new_session=(os.name == "posix"),
+            terminate_process_group=(os.name == "posix"),
         )
         self._error_cls = GeminiAcpError
         self._timeout_error_cls = GeminiAcpTimeoutError
