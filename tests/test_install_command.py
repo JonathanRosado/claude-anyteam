@@ -63,6 +63,24 @@ def _gemini_cli_missing() -> installer_mod.GeminiCliCheck:
     return installer_mod.GeminiCliCheck(found=False, path=None, version=None, raw_output=None)
 
 
+def _kimi_cli_ready(
+    version: str | None = "1.39.0",
+    *,
+    signed_in: bool = False,
+) -> installer_mod.KimiCliCheck:
+    return installer_mod.KimiCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/kimi"),
+        version=version,
+        raw_output=f"kimi-cli version: {version}" if version else "kimi info unknown",
+        signed_in=signed_in,
+    )
+
+
+def _kimi_cli_missing() -> installer_mod.KimiCliCheck:
+    return installer_mod.KimiCliCheck(found=False, path=None, version=None, raw_output=None)
+
+
 def _auth(signed_in: bool) -> installer_mod.AuthCheck:
     return installer_mod.AuthCheck(signed_in=signed_in)
 
@@ -74,11 +92,15 @@ def _stub_provider_checks(
     codex_signed_in: bool = True,
     gemini_cli: installer_mod.GeminiCliCheck | None = None,
     gemini_signed_in: bool = False,
+    kimi_cli: installer_mod.KimiCliCheck | None = None,
+    kimi_signed_in: bool = False,
 ) -> None:
     monkeypatch.setattr(installer_mod, "_check_codex_cli", lambda: codex_cli or _codex_cli_ready())
     monkeypatch.setattr(installer_mod, "_check_codex_auth", lambda: _auth(codex_signed_in))
     monkeypatch.setattr(installer_mod, "_check_gemini_cli", lambda: gemini_cli or _gemini_cli_missing())
     monkeypatch.setattr(installer_mod, "_check_gemini_auth", lambda: _auth(gemini_signed_in))
+    monkeypatch.setattr(installer_mod, "_check_kimi_cli", lambda: kimi_cli or _kimi_cli_missing())
+    monkeypatch.setattr(installer_mod, "_check_kimi_auth", lambda: _auth(kimi_signed_in))
 
 
 def _stub_prereq_found(
@@ -310,13 +332,15 @@ def test_install_prints_provider_status_before_settings_update(
     assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
 
     stdout = capsys.readouterr().out
-    expected_status = installer_mod._render_provider_status(
-        _codex_cli_ready(signed_in=True),
-        _gemini_cli_missing(),
+    expected_status = installer_mod._format_provider_status_rows(
+        installer_mod._codex_render_status(_codex_cli_ready(signed_in=True)),
+        installer_mod._gemini_render_status(_gemini_cli_missing()),
+        installer_mod._kimi_render_status(_kimi_cli_missing()),
     )
-    expected_summary = installer_mod._render_provider_summary(
-        _codex_cli_ready(signed_in=True),
-        _gemini_cli_missing(),
+    expected_summary = installer_mod._aggregate_summary_line(
+        installer_mod._codex_render_status(_codex_cli_ready(signed_in=True)),
+        installer_mod._gemini_render_status(_gemini_cli_missing()),
+        installer_mod._kimi_render_status(_kimi_cli_missing()),
     )
     updated_line = f"Updated {settings_path.resolve()}"
 
@@ -325,6 +349,7 @@ def test_install_prints_provider_status_before_settings_update(
         stdout.index(expected_status)
         < stdout.index(expected_summary)
         < stdout.index("Gemini CLI:")
+        < stdout.index("Kimi CLI:")
         < stdout.index(updated_line)
     )
 
@@ -352,11 +377,13 @@ def test_install_with_no_providers_refuses_before_settings_mutation(
 
     captured = capsys.readouterr()
     assert exit_code == installer_mod.INSTALL_ERROR_EXIT_NO_PROVIDER
-    assert "Not ready: Codex (not installed) · Gemini (not installed)." in captured.out
+    assert "Not ready: Codex (not installed) · Gemini (not installed) · Kimi (not installed)." in captured.out
     assert "Codex CLI:" in captured.out
     assert "  1. Install:  npm install -g @openai/codex" in captured.out
     assert "Gemini CLI:" in captured.out
     assert "  1. Install:  npm install -g @google/gemini-cli" in captured.out
+    assert "Kimi CLI:" in captured.out
+    assert "  1. Install:  curl -LsSf https://code.kimi.com/install.sh | bash" in captured.out
     assert "Refusing to install — no provider is ready." in captured.out
     assert "claude-anyteam install --force-empty" in captured.out
     assert "Updated " not in captured.out
@@ -420,7 +447,7 @@ def test_install_with_both_providers_signed_in_updates_settings(
     assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex 0.124.0 · Gemini 0.39.0." in stdout
+    assert "Ready: Codex 0.124.0 · Gemini 0.39.0 · Kimi (not installed)." in stdout
     assert "Refusing to install" not in stdout
     assert settings_path.exists()
 
@@ -450,7 +477,7 @@ def test_install_no_input_with_ready_provider_updates_settings(
     ) == 0
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex 0.124.0 · Gemini (not installed)." in stdout
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi (not installed)." in stdout
     assert "Refusing to install" not in stdout
     assert settings_path.exists()
 
@@ -478,7 +505,7 @@ def test_install_with_codex_signed_in_only_prints_gemini_walkthrough_and_updates
     assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex 0.124.0 · Gemini (not installed)." in stdout
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi (not installed)." in stdout
     assert "Gemini CLI:" in stdout
     assert "  1. Install:  npm install -g @google/gemini-cli" in stdout
     assert "Refusing to install" not in stdout
@@ -508,7 +535,7 @@ def test_install_with_gemini_signed_in_only_prints_codex_walkthrough_and_updates
     assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex (not installed) · Gemini 0.39.0." in stdout
+    assert "Ready: Codex (not installed) · Gemini 0.39.0 · Kimi (not installed)." in stdout
     assert "Codex CLI:" in stdout
     assert "  1. Install:  npm install -g @openai/codex" in stdout
     assert "Refusing to install" not in stdout
@@ -538,7 +565,7 @@ def test_install_with_both_installed_but_not_signed_in_refuses(
 
     stdout = capsys.readouterr().out
     assert exit_code == installer_mod.INSTALL_ERROR_EXIT_NO_PROVIDER
-    assert "Almost ready: Codex (needs sign-in) · Gemini (needs sign-in)." in stdout
+    assert "Almost ready: Codex (needs sign-in) · Gemini (needs sign-in) · Kimi (not installed)." in stdout
     assert "  1. Sign in:  codex     (opens an OAuth flow on first run)" in stdout
     assert "  1. Sign in:  gemini    (or set GEMINI_API_KEY, or configure Vertex)" in stdout
     assert "Refusing to install — no provider is ready." in stdout
@@ -603,6 +630,7 @@ def test_install_creates_settings_and_sets_required_env_keys(
             installer_mod.TEAMMATE_COMMAND_KEY: str(shim_binary.resolve()),
             installer_mod.TEAMMATE_BINARY_KEY: str(codex_binary.resolve()),
             installer_mod.GEMINI_TEAMMATE_BINARY_KEY: str(codex_binary.resolve().with_name("gemini-anyteam")),
+            installer_mod.KIMI_TEAMMATE_BINARY_KEY: str(codex_binary.resolve().with_name("kimi-anyteam")),
         },
         "permissions": {
             "allow": list(installer_mod.RECOMMENDED_ALLOWLIST_ENTRIES),
@@ -613,6 +641,7 @@ def test_install_creates_settings_and_sets_required_env_keys(
     assert f"Updated {settings_path.resolve()}" in stdout
     assert f"Set env.{installer_mod.TEAMMATE_COMMAND_KEY}={shim_binary.resolve()}" in stdout
     assert f"Set env.{installer_mod.TEAMMATE_BINARY_KEY}={codex_binary.resolve()}" in stdout
+    assert f"Set env.{installer_mod.KIMI_TEAMMATE_BINARY_KEY}={codex_binary.resolve().with_name('kimi-anyteam')}" in stdout
     assert "Restart Claude Code for the changes to take effect." in stdout
     assert "Permission allowlist written so spawning teams won't prompt." in stdout
 
@@ -656,6 +685,7 @@ def test_install_preserves_other_settings_and_env_entries(tmp_path: Path, monkey
         installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
         installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
         installer_mod.GEMINI_TEAMMATE_BINARY_KEY: "/opt/tools/gemini-anyteam",
+        installer_mod.KIMI_TEAMMATE_BINARY_KEY: "/opt/tools/kimi-anyteam",
     }
     assert payload["permissions"] == {
         "allow": list(installer_mod.RECOMMENDED_ALLOWLIST_ENTRIES),
@@ -677,6 +707,7 @@ def test_uninstall_removes_only_target_env_keys(
                     "KEEP_ME": "yes",
                     installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
                     installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
+                    installer_mod.KIMI_TEAMMATE_BINARY_KEY: "/opt/tools/kimi-anyteam",
                 },
             }
         ),
@@ -695,7 +726,9 @@ def test_uninstall_removes_only_target_env_keys(
 
     stdout = capsys.readouterr().out
     assert f"Updated {settings_path.resolve()}" in stdout
-    assert "Removed env.CLAUDE_CODE_TEAMMATE_COMMAND, env.CLAUDE_ANYTEAM_BINARY" in stdout
+    assert "env.CLAUDE_CODE_TEAMMATE_COMMAND" in stdout
+    assert "env.CLAUDE_ANYTEAM_BINARY" in stdout
+    assert "env.CLAUDE_ANYTEAM_KIMI_BINARY" in stdout
     assert "Restart Claude Code for the changes to take effect." in stdout
 
 
@@ -795,6 +828,9 @@ def test_install_writes_teammate_mode_when_absent(tmp_path: Path, monkeypatch, c
         "gemini_cli_version": None,
         "gemini_cli_capabilities": {},
         "gemini_signed_in": False,
+        "kimi_cli_found": False,
+        "kimi_cli_version": None,
+        "kimi_signed_in": False,
     }
 
     stdout = capsys.readouterr().out
@@ -840,6 +876,9 @@ def test_install_is_noop_when_teammate_mode_already_tmux(tmp_path: Path, monkeyp
         "gemini_cli_version": None,
         "gemini_cli_capabilities": {},
         "gemini_signed_in": False,
+        "kimi_cli_found": False,
+        "kimi_cli_version": None,
+        "kimi_signed_in": False,
     }
 
     stdout = capsys.readouterr().out
@@ -899,6 +938,9 @@ def test_install_prompts_and_overwrites_auto_when_accepted(tmp_path: Path, monke
         "gemini_cli_version": None,
         "gemini_cli_capabilities": {},
         "gemini_signed_in": False,
+        "kimi_cli_found": False,
+        "kimi_cli_version": None,
+        "kimi_signed_in": False,
     }
 
 
@@ -1524,6 +1566,32 @@ def _install_with_gemini_stub(
     return result, claude_json_path, state_path
 
 
+def _install_with_kimi_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kimi_cli: installer_mod.KimiCliCheck,
+) -> tuple[installer_mod.InstallResult, Path, Path]:
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(codex_binary),
+        prompt_fn=lambda _current: True,
+        codex_cli_check_fn=lambda: _codex_cli_ready(signed_in=True),
+        codex_auth_check_fn=lambda: _auth(True),
+        kimi_cli_check_fn=lambda: kimi_cli,
+        kimi_auth_check_fn=lambda: _auth(kimi_cli.signed_in),
+    )
+    return result, claude_json_path, state_path
+
+
 def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
     codex_cli = installer_mod.CodexCliCheck(
         found=True,
@@ -1539,7 +1607,7 @@ def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
 
     message = installer_mod.format_install_message(result)
     assert "Codex CLI     ✅ 0.124.0" in message
-    assert "Ready: Codex 0.124.0 · Gemini (not installed)." in message
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi (not installed)." in message
     assert "Detected Codex CLI" not in message
     assert "Warning: detected Codex" not in message
 
@@ -1577,7 +1645,7 @@ def test_install_warns_when_codex_cli_missing_but_still_succeeds(
     assert exit_code == 0, "missing codex-cli must not block install"
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex (not installed) · Gemini 0.39.0." in stdout
+    assert "Ready: Codex (not installed) · Gemini 0.39.0 · Kimi (not installed)." in stdout
     assert "Codex CLI:" in stdout
     assert "1. Install:  npm install -g @openai/codex" in stdout
     assert "https://github.com/openai/codex" in stdout
@@ -1605,7 +1673,7 @@ def test_install_handles_codex_version_parse_failure(tmp_path: Path, monkeypatch
 
     message = installer_mod.format_install_message(result)
     assert "Codex CLI     ✅" in message
-    assert "Ready: Codex · Gemini (not installed)." in message
+    assert "Ready: Codex · Gemini (not installed) · Kimi (not installed)." in message
     assert "Detected Codex CLI" not in message
     assert "Warning: detected Codex" not in message, "parse-fail must not emit a scary warning"
 
@@ -1645,7 +1713,7 @@ def test_install_refuses_when_codex_cli_below_floor_and_no_provider_ready(
 
     assert getattr(excinfo.value, "cli_exit_code", None) == installer_mod.INSTALL_ERROR_EXIT_NO_PROVIDER
     message = str(excinfo.value)
-    assert "Not ready: Codex (upgrade — 0.118.0 < 0.120.0 floor) · Gemini (not installed)." in message
+    assert "Not ready: Codex (upgrade — 0.118.0 < 0.120.0 floor) · Gemini (not installed) · Kimi (not installed)." in message
     assert "Upgrade:  npm install -g @openai/codex (detected 0.118.0, need ≥ 0.120.0)" in message
     assert installer_mod.CODEX_CLI_DOCS_URL in message
     assert not settings_path.exists()
@@ -1663,7 +1731,7 @@ def test_install_accepts_codex_cli_exactly_at_floor(tmp_path: Path, monkeypatch)
     result, _claude_json_path, _state_path = _install_with_codex_stub(tmp_path, monkeypatch, codex_cli)
 
     message = installer_mod.format_install_message(result)
-    assert "Ready: Codex 0.120.0 · Gemini (not installed)." in message
+    assert "Ready: Codex 0.120.0 · Gemini (not installed) · Kimi (not installed)." in message
     assert "Warning: detected Codex" not in message
 
 
@@ -1721,7 +1789,7 @@ def test_install_detects_gemini_cli_when_present(tmp_path: Path, monkeypatch):
 
     message = installer_mod.format_install_message(result)
     assert "Gemini CLI    ✅ 0.3.1" in message
-    assert "Ready: Codex 0.124.0 · Gemini 0.3.1." in message
+    assert "Ready: Codex 0.124.0 · Gemini 0.3.1 · Kimi (not installed)." in message
     assert "Warning: the Gemini CLI" not in message
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1754,7 +1822,7 @@ def test_install_warns_on_missing_gemini_capabilities_but_still_succeeds(
     )
 
     message = installer_mod.format_install_message(result)
-    assert "Ready: Codex 0.124.0 · Gemini 0.3.1." in message
+    assert "Ready: Codex 0.124.0 · Gemini 0.3.1 · Kimi (not installed)." in message
     assert "Warning: detected Gemini CLI" not in message
     assert "Gemini CLI is missing required flag" not in message
 
@@ -1800,7 +1868,7 @@ def test_install_warns_when_gemini_cli_missing_but_still_succeeds(
     assert exit_code == 0, "missing Gemini CLI must not block install"
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex 0.124.0 · Gemini (not installed)." in stdout
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi (not installed)." in stdout
     assert "Gemini CLI:" in stdout
     assert "npm install -g @google/gemini-cli" in stdout
     assert "https://github.com/google-gemini/gemini-cli" in stdout
@@ -2081,6 +2149,298 @@ def test_check_gemini_cli_records_missing_capabilities(monkeypatch, tmp_path: Pa
     assert result.missing_capabilities == ("--resume", "--approval-mode yolo")
 
 
+# ---------------------------------------------------------------------------
+# Kimi CLI prereq check (informational — non-blocking)
+# ---------------------------------------------------------------------------
+
+def test_install_detects_kimi_cli_when_present(tmp_path: Path, monkeypatch):
+    kimi_cli = _kimi_cli_ready(version="1.39.0", signed_in=True)
+    result, _claude_json_path, state_path = _install_with_kimi_stub(
+        tmp_path, monkeypatch, kimi_cli
+    )
+
+    assert result.kimi_cli is not None
+    assert result.kimi_cli.found is True
+    assert result.kimi_cli.version == "1.39.0"
+
+    message = installer_mod.format_install_message(result)
+    assert "Kimi CLI      ✅ 1.39.0" in message
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi 1.39.0." in message
+    assert "Warning: the Kimi CLI" not in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["kimi_cli_found"] is True
+    assert state["kimi_cli_version"] == "1.39.0"
+    assert state["kimi_signed_in"] is True
+
+
+def test_install_warns_when_kimi_cli_missing_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(installer_mod, "_check_codex_cli", lambda: _codex_cli_ready(signed_in=True))
+    monkeypatch.setattr(installer_mod, "_check_codex_auth", lambda: _auth(True))
+    monkeypatch.setattr(installer_mod, "_check_gemini_cli", lambda: _gemini_cli_missing())
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_kimi_cli",
+        lambda: installer_mod.KimiCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    exit_code = cli_mod.main(
+        _install_argv(settings_path, claude_json_path, state_path, "--assume-yes")
+    )
+    assert exit_code == 0, "missing Kimi CLI must not block install"
+
+    stdout = capsys.readouterr().out
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi (not installed)." in stdout
+    assert "Kimi CLI:" in stdout
+    assert "curl -LsSf https://code.kimi.com/install.sh | bash" in stdout
+    assert "uv tool install --python 3.13 kimi-cli" in stdout
+    assert "kimi login" in stdout
+    assert "https://moonshotai.github.io/kimi-cli/" in stdout
+    assert "Warning: the Kimi CLI" not in stdout
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["kimi_cli_found"] is False
+    assert state["kimi_cli_version"] is None
+    assert state["kimi_signed_in"] is False
+
+
+def test_install_accepts_kimi_as_only_ready_provider(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch, stub_providers=False)
+    _stub_provider_checks(
+        monkeypatch,
+        codex_cli=_codex_cli_missing(),
+        codex_signed_in=False,
+        gemini_cli=_gemini_cli_missing(),
+        gemini_signed_in=False,
+        kimi_cli=_kimi_cli_ready(signed_in=True),
+        kimi_signed_in=True,
+    )
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(codex_binary),
+        prompt_fn=lambda _current: True,
+    )
+
+    assert result.kimi_status is not None
+    assert result.kimi_status.ready is True
+    assert settings_path.exists()
+    message = installer_mod.format_install_message(result)
+    assert "Ready: Codex (not installed) · Gemini (not installed) · Kimi 1.39.0." in message
+    assert "Refusing to install" not in message
+
+
+def test_install_reports_kimi_version_parse_failure_but_does_not_block(
+    tmp_path: Path,
+    monkeypatch,
+):
+    kimi_cli = _kimi_cli_ready(version=None, signed_in=True)
+    result, _claude_json_path, state_path = _install_with_kimi_stub(
+        tmp_path, monkeypatch, kimi_cli
+    )
+
+    assert result.kimi_cli is not None
+    assert result.kimi_cli.found is True
+    assert result.kimi_cli.version is None
+
+    message = installer_mod.format_install_message(result)
+    assert "Ready: Codex 0.124.0 · Gemini (not installed) · Kimi." in message
+    assert "Warning: detected Kimi CLI" not in message
+
+    warning = installer_mod._kimi_cli_warning(kimi_cli)
+    assert warning is not None
+    assert "kimi info" in warning
+    assert "kimi-cli version: X.Y.Z" in warning
+    assert "curl -LsSf https://code.kimi.com/install.sh | bash" in warning
+    assert installer_mod.KIMI_CLI_DOCS_URL in warning
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["kimi_cli_found"] is True
+    assert state["kimi_cli_version"] is None
+
+
+def test_install_combines_tmux_and_kimi_warnings_on_tmux_halt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_missing(monkeypatch, platform="linux")
+    monkeypatch.setattr(installer_mod, "_check_codex_cli", lambda: _codex_cli_ready(signed_in=True))
+    monkeypatch.setattr(installer_mod, "_check_codex_auth", lambda: _auth(True))
+    monkeypatch.setattr(installer_mod, "_check_gemini_cli", lambda: _gemini_cli_missing())
+    monkeypatch.setattr(installer_mod, "_check_kimi_cli", lambda: _kimi_cli_missing())
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(bin_dir / "claude-anyteam")])
+
+    exit_code = cli_mod.main(_install_argv(settings_path, claude_json_path, state_path))
+    assert exit_code != 0
+
+    err = capsys.readouterr().err
+    assert "requires a terminal multiplexer" in err
+    assert "sudo apt install tmux" in err
+    assert "Additionally:" in err
+    assert "Kimi CLI (`kimi`) was not found" in err
+    assert "kimi login" in err
+    assert "https://moonshotai.github.io/kimi-cli/" in err
+
+
+def test_check_kimi_cli_returns_missing_when_not_on_path(monkeypatch):
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: None)
+    result = installer_mod._check_kimi_cli()
+    assert result.found is False
+    assert result.path is None
+    assert result.version is None
+    assert result.raw_output is None
+    assert result.signed_in is False
+    assert "not found" in (result.signed_in_detail or "")
+
+
+def test_check_kimi_signin_accepts_valid_credentials_shape(tmp_path: Path):
+    credentials_path = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+    credentials_path.parent.mkdir(parents=True)
+    credentials_path.write_text(
+        json.dumps({"access_token": "token-value", "refresh_token": "refresh-value"}) + "\n",
+        encoding="utf-8",
+    )
+
+    signed_in, detail = installer_mod._check_kimi_signin(
+        tmp_path / "bin" / "kimi",
+        credentials_path=credentials_path,
+    )
+
+    assert signed_in is True
+    assert detail is None
+
+
+@pytest.mark.parametrize("token_key", ["access_token", "refresh_token"])
+def test_check_kimi_signin_rejects_credentials_missing_required_token(
+    tmp_path: Path,
+    token_key: str,
+):
+    credentials_path = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+    credentials_path.parent.mkdir(parents=True)
+    credentials_path.write_text(json.dumps({token_key: "token-value"}) + "\n", encoding="utf-8")
+
+    signed_in, detail = installer_mod._check_kimi_signin(
+        tmp_path / "bin" / "kimi",
+        credentials_path=credentials_path,
+    )
+
+    assert signed_in is False
+    assert detail is not None
+    assert "missing credentials" in detail.lower()
+
+
+@pytest.mark.parametrize(
+    ("contents", "expected_detail"),
+    [
+        ("", "empty"),
+        ("{", "malformed"),
+        (json.dumps({}), "missing credentials"),
+    ],
+)
+def test_check_kimi_signin_reports_unusable_credentials_file(
+    tmp_path: Path,
+    contents: str,
+    expected_detail: str,
+):
+    credentials_path = tmp_path / ".kimi" / "credentials" / "kimi-code.json"
+    credentials_path.parent.mkdir(parents=True)
+    credentials_path.write_text(contents, encoding="utf-8")
+
+    signed_in, detail = installer_mod._check_kimi_signin(
+        tmp_path / "bin" / "kimi",
+        credentials_path=credentials_path,
+    )
+
+    assert signed_in is False
+    assert detail is not None
+    assert expected_detail in detail.lower()
+
+
+def test_check_kimi_signin_reports_missing_credentials_file(tmp_path: Path):
+    signed_in, detail = installer_mod._check_kimi_signin(
+        tmp_path / "bin" / "kimi",
+        credentials_path=tmp_path / ".kimi" / "credentials" / "kimi-code.json",
+    )
+
+    assert signed_in is False
+    assert detail is not None
+    assert "missing" in detail.lower()
+
+
+def test_check_kimi_cli_parses_version_from_info(monkeypatch, tmp_path: Path):
+    fake_kimi = tmp_path / "kimi"
+    fake_kimi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_kimi.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_kimi))
+    monkeypatch.setattr(installer_mod, "_check_kimi_signin", lambda _path: (True, None))
+
+    class _Completed:
+        returncode = 0
+        stdout = "kimi-cli version: 1.39.0\nagent spec versions: 1\nwire protocol: 1.9\n"
+        stderr = ""
+
+    def _fake_run(args, **kwargs):
+        assert args == [str(fake_kimi.resolve()), "info"]
+        assert kwargs["timeout"] == installer_mod.KIMI_CLI_VERSION_TIMEOUT_S
+        return _Completed()
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_kimi_cli()
+    assert result.found is True
+    assert result.path == fake_kimi.resolve()
+    assert result.version == "1.39.0"
+    assert result.raw_output.startswith("kimi-cli version: 1.39.0")
+    assert result.signed_in is True
+    assert result.signed_in_detail is None
+
+
+def test_check_kimi_cli_survives_subprocess_timeout(monkeypatch, tmp_path: Path):
+    fake_kimi = tmp_path / "kimi"
+    fake_kimi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_kimi.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_kimi))
+    monkeypatch.setattr(installer_mod, "_check_kimi_signin", lambda _path: (False, "missing"))
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise installer_mod.subprocess.TimeoutExpired(cmd="kimi info", timeout=5)
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _raise_timeout)
+
+    result = installer_mod._check_kimi_cli()
+    assert result.found is True
+    assert result.version is None
+    assert result.raw_output is None
+    assert result.signed_in is False
+
+
 def test_parse_cli_version_rejects_garbage_tokens():
     # Direct unit coverage for the reviewer-requested branch: weird strings
     # must parse to None rather than returning a bogus token.
@@ -2357,6 +2717,6 @@ def test_install_npx_flow_with_assume_yes_warns_on_missing_codex(
     assert exit_code == 0
 
     stdout = capsys.readouterr().out
-    assert "Ready: Codex (not installed) · Gemini 0.39.0." in stdout
+    assert "Ready: Codex (not installed) · Gemini 0.39.0 · Kimi (not installed)." in stdout
     assert "Codex CLI:" in stdout
     assert "1. Install:  npm install -g @openai/codex" in stdout
