@@ -16,6 +16,9 @@ from claude_anyteam.env import (
 GEMINI_BINARY_ENV = "CLAUDE_ANYTEAM_GEMINI_BINARY"
 GEMINI_HOME_ENV = "CLAUDE_ANYTEAM_GEMINI_HOME"
 GEMINI_BACKEND_ENV = "CLAUDE_ANYTEAM_GEMINI_BACKEND"
+GEMINI_EFFORT_ENV = "CLAUDE_ANYTEAM_GEMINI_EFFORT"
+
+GEMINI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,7 @@ class GeminiSettings:
     plan_mode_required: bool
     gemini_binary: str = "gemini"
     model: str | None = None
+    effort: str | None = None
     gemini_home: Path | None = None
     backend: Literal["headless", "acp"] = "headless"
 
@@ -51,6 +55,12 @@ def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
     plan_raw = str(_pick(overrides, "plan_mode_required", env_first(os.environ, PLAN_MODE_ENV, LEGACY_PLAN_MODE_ENV, default="false")))
     plan_mode_required = plan_raw.lower() in {"1", "true", "yes", "on"}
     model_raw = _pick(overrides, "model", env_first(os.environ, MODEL_ENV, LEGACY_MODEL_ENV))
+    effort_raw = _pick(overrides, "effort", os.environ.get(GEMINI_EFFORT_ENV))
+    effort = str(effort_raw) if effort_raw else None
+    if effort is not None and effort not in GEMINI_EFFORTS:
+        raise ValueError(
+            f"Gemini effort must be one of minimal|low|medium|high|xhigh, got {effort!r}"
+        )
     home_raw = _pick(overrides, "gemini_home", os.environ.get(GEMINI_HOME_ENV))
     backend_raw = str(_pick(overrides, "backend", os.environ.get(GEMINI_BACKEND_ENV, "headless")))
     if backend_raw not in {"headless", "acp"}:
@@ -65,6 +75,7 @@ def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
         plan_mode_required=plan_mode_required,
         gemini_binary=str(_pick(overrides, "gemini_binary", os.environ.get(GEMINI_BINARY_ENV, "gemini"))),
         model=str(model_raw) if model_raw else None,
+        effort=effort,
         gemini_home=Path(str(home_raw)).expanduser().resolve() if home_raw else None,
         backend=backend_raw,  # type: ignore[arg-type]
     )

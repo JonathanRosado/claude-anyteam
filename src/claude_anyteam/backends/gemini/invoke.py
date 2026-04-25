@@ -19,6 +19,82 @@ from claude_anyteam.schema_validation import load_schema, parse_and_validate
 WRAPPER_SERVER_ALIAS = "anyteam"
 WRAPPER_TOOL_PREFIX = f"mcp_{WRAPPER_SERVER_ALIAS}_"
 
+GEMINI_EFFORT_ALIAS_PREFIX = "claude-anyteam-effort"
+GEMINI_25_THINKING_BUDGETS = {
+    "minimal": 0,
+    "low": 512,
+    "medium": 2048,
+    "high": 4096,
+    "xhigh": 8192,
+}
+GEMINI_3_THINKING_LEVELS = {
+    "minimal": "LOW",
+    "low": "LOW",
+    "medium": "MEDIUM",
+    "high": "HIGH",
+    "xhigh": "HIGH",
+}
+
+
+def gemini_effort_alias_name(effort: str) -> str:
+    return f"{GEMINI_EFFORT_ALIAS_PREFIX}-{effort}"
+
+
+def _effort_alias_entry(model: str, effort: str) -> dict[str, Any] | None:
+    if effort not in GEMINI_25_THINKING_BUDGETS:
+        raise ValueError(f"effort must be one of minimal|low|medium|high|xhigh, got {effort!r}")
+    thinking_config: dict[str, Any]
+    if model.startswith("gemini-2.5"):
+        thinking_config = {
+            "thinkingBudget": GEMINI_25_THINKING_BUDGETS[effort],
+            "includeThoughts": False,
+        }
+    elif model.startswith("gemini-3"):
+        thinking_config = {
+            "thinkingLevel": GEMINI_3_THINKING_LEVELS[effort],
+            "includeThoughts": False,
+        }
+    else:
+        return None
+    return {
+        "extends": model,
+        "modelConfig": {
+            "generateContentConfig": {
+                "thinkingConfig": thinking_config,
+            }
+        },
+    }
+
+
+def inject_effort_alias(settings_path: Path, *, model: str, effort: str) -> str | None:
+    """Inject a Gemini customAlias for an effort tier into isolated settings.
+
+    Returns the alias name to pass via ``--model``, or ``None`` when the model
+    family is unknown and the caller should pass through the raw model.
+    """
+    entry = _effort_alias_entry(model, effort)
+    if entry is None:
+        logger.warn("gemini.effort.unknown_model_family", model=model, effort=effort)
+        return None
+    alias = gemini_effort_alias_name(effort)
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    model_configs = data.setdefault("modelConfigs", {})
+    if not isinstance(model_configs, dict):
+        model_configs = {}
+        data["modelConfigs"] = model_configs
+    aliases = model_configs.setdefault("customAliases", {})
+    if not isinstance(aliases, dict):
+        aliases = {}
+        model_configs["customAliases"] = aliases
+    aliases[alias] = entry
+    _write_atomic_json(settings_path, data)
+    return alias
+
 
 def _default_gemini_home(team: str, agent_name: str) -> Path:
     safe_team = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in team)
@@ -219,6 +295,8 @@ def write_mcp_settings(
     real_home: str | None = None,
     cwd: Path | None = None,
     include_dirs: list[Path] | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> Path:
     """Write adapter-owned Gemini MCP config without mutating ~/.gemini."""
     settings_dir = prepare_isolated_gemini_home(
@@ -239,6 +317,13 @@ def write_mcp_settings(
         }
     }
     data.update(_real_auth_settings(real_home))
+    if effort:
+        entry = _effort_alias_entry(model or DEFAULT_EFFORT_BASE_MODEL, effort)
+        if entry is None:
+            logger.warn("gemini.effort.unknown_model_family", model=model, effort=effort)
+        else:
+            alias = gemini_effort_alias_name(effort, team=team, agent_name=agent_name)
+            data.setdefault("modelConfigs", {}).setdefault("customAliases", {})[alias] = entry
     path = settings_dir / "settings.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
@@ -282,16 +367,27 @@ def run(
     wrapper_identity: tuple[str, str] | None = None,
     resume_session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     gemini_home: Path | None = None,
 ) -> CodexResult:
     team, agent = wrapper_identity or ("default", "gemini")
     real_home = os.environ.get("HOME")
     home = gemini_home or _default_gemini_home(team, agent)
-    write_mcp_settings(home, team=team, agent_name=agent, real_home=real_home, cwd=cwd)
+    settings_path = write_mcp_settings(
+        home,
+        team=team,
+        agent_name=agent,
+        real_home=real_home,
+        cwd=cwd,
+    )
+
+    launch_model = model
+    if model and effort:
+        launch_model = inject_effort_alias(settings_path, model=model, effort=effort) or model
 
     args = [gemini_binary, "--prompt", prompt, "--output-format", "stream-json", "--approval-mode", "yolo"]
-    if model:
-        args.extend(["--model", model])
+    if launch_model:
+        args.extend(["--model", launch_model])
     if resume_session_id:
         args.extend(["--resume", resume_session_id])
 
@@ -309,7 +405,16 @@ def run(
     seen_non_init_event = False
     error: str | None = None
 
-    logger.info("gemini.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id))
+    logger.info(
+        "gemini.invoke",
+        cwd=str(cwd),
+        gemini_home=str(home),
+        schema=str(schema) if schema else None,
+        resumed=bool(resume_session_id),
+        model=model,
+        effort=effort,
+        effective_model=launch_model,
+    )
     try:
         proc = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_s, check=False, env=sub_env, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:

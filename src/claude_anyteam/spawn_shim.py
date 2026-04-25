@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if _gemini_route(parsed):
         binary = _require_binary(_resolve_binary(GEMINI_BINARY, GEMINI_BINARY_ENV), GEMINI_BINARY)
-        adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=False)
+        adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=True)
         _log_dispatch("gemini", parsed.agent_name, binary, agent_config or None)
         os.execv(binary, adapter_argv)
         return 0

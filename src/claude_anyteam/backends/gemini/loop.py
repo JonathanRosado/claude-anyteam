@@ -93,6 +93,7 @@ def _backend_run(
         "gemini_binary": s.gemini_binary,
         "wrapper_identity": (s.team_name, s.agent_name),
         "model": s.model,
+        "effort": s.effort,
         "gemini_home": s.gemini_home,
     }
     if s.backend == "acp":

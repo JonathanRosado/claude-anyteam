@@ -140,13 +140,23 @@ def run(
     wrapper_identity: tuple[str, str] | None = None,
     resume_session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     gemini_home: Path | None = None,
     ephemeral: bool = False,
 ) -> CodexResult:
     team, agent = wrapper_identity or ("default", "gemini")
     real_home = os.environ.get("HOME")
     home = gemini_home or invoke._default_gemini_home(team, agent)
-    invoke.write_mcp_settings(home, team=team, agent_name=agent, real_home=real_home, cwd=cwd)
+    settings_path = invoke.write_mcp_settings(
+        home,
+        team=team,
+        agent_name=agent,
+        real_home=real_home,
+        cwd=cwd,
+    )
+    effective_model = model
+    if model and effort:
+        effective_model = invoke.inject_effort_alias(settings_path, model=model, effort=effort) or model
     adapter_state = invoke.read_adapter_state(home)
     mcp_servers = _mcp_servers(team, agent, real_home)
 
@@ -162,7 +172,7 @@ def run(
     error: str | None = None
     session_id: str | None = None
     loaded = False
-    logger.info("gemini_acp.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id))
+    logger.info("gemini_acp.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id), model=model, effort=effort, effective_model=effective_model)
 
     client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env)
     try:
@@ -182,11 +192,11 @@ def run(
             client.set_session_mode(session_id=session_id, mode_id="yolo")
         except GeminiAcpError as e:
             logger.warn("gemini_acp.set_mode_failed", error=str(e))
-        if model:
+        if effective_model:
             try:
-                client.unstable_set_session_model(session_id=session_id, model_id=model)
+                client.unstable_set_session_model(session_id=session_id, model_id=effective_model)
             except GeminiAcpError as e:
-                logger.warn("gemini_acp.set_model_failed", model=model, error=str(e))
+                logger.warn("gemini_acp.set_model_failed", model=effective_model, raw_model=model, effort=effort, error=str(e))
         response = client.session_prompt(session_id=session_id, prompt=prompt, timeout=timeout_s)
         events = client.drain_notifications()
     except subprocess.TimeoutExpired:

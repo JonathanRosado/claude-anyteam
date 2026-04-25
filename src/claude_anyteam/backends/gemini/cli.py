@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .config import from_env
+from .config import GEMINI_EFFORTS, from_env
 from .loop import run
 
 
@@ -18,6 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan-mode", action="store_true", help="Register with planModeRequired=true")
     p.add_argument("--gemini-binary", help="Gemini CLI binary name (default: gemini)")
     p.add_argument("--model", help="Gemini model slug passed as --model. Overrides CLAUDE_ANYTEAM_MODEL.")
+    p.add_argument("--effort", choices=sorted(GEMINI_EFFORTS), help="Gemini thinking effort tier. Overrides CLAUDE_ANYTEAM_GEMINI_EFFORT.")
     p.add_argument("--gemini-home", help="Adapter-owned HOME root for Gemini config/session state")
     p.add_argument("--backend", choices=("headless", "acp"), help="Gemini backend transport (default: headless)")
     return p
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         "plan_mode_required": True if ns.plan_mode else None,
         "gemini_binary": ns.gemini_binary,
         "model": ns.model,
+        "effort": ns.effort,
         "gemini_home": ns.gemini_home,
         "backend": ns.backend,
     })

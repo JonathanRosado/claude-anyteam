@@ -64,6 +64,7 @@ def test_run_parses_stream_json_and_validates_schema(tmp_path, monkeypatch):
         wrapper_identity=("team", "gemini-a"),
         resume_session_id="old",
         model="gemini-2.5-pro",
+        effort="xhigh",
         gemini_home=tmp_path / "home",
     )
 
@@ -74,7 +75,11 @@ def test_run_parses_stream_json_and_validates_schema(tmp_path, monkeypatch):
     argv = calls[0][0]
     assert argv[:5] == ["gemini", "--prompt", "prompt", "--output-format", "stream-json"]
     assert "--resume" in argv and "old" in argv
-    assert "--model" in argv and "gemini-2.5-pro" in argv
+    assert "--model" in argv and "claude-anyteam-effort-xhigh" in argv
+    data = json.loads((tmp_path / "home" / ".gemini" / "settings.json").read_text())
+    alias_config = data["modelConfigs"]["customAliases"]["claude-anyteam-effort-xhigh"]
+    assert alias_config["extends"] == "gemini-2.5-pro"
+    assert alias_config["modelConfig"]["generateContentConfig"]["thinkingConfig"]["thinkingBudget"] == 8192
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
 
 

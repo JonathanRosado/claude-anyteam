@@ -459,7 +459,7 @@ def test_gemini_dispatch_for_gemini_prefix(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().err)["route"] == "gemini"
 
 
-def test_gemini_dispatch_forwards_model_but_not_effort(monkeypatch, tmp_path, capsys):
+def test_gemini_dispatch_forwards_model_and_effort(monkeypatch, tmp_path, capsys):
     _write_agent_config(tmp_path, "t", "gemini-pro", {"model": "gemini-2.5-pro", "effort": "xhigh"})
     calls = _record_execv(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -477,5 +477,14 @@ def test_gemini_dispatch_forwards_model_but_not_effort(monkeypatch, tmp_path, ca
 
     assert spawn_shim.main() == 0
     _, argv = calls[0]
-    assert argv == ["/custom/gemini-anyteam", "--name", "gemini-pro", "--team", "t", "--model", "gemini-2.5-pro"]
-    assert "--effort" not in argv
+    assert argv == [
+        "/custom/gemini-anyteam",
+        "--name",
+        "gemini-pro",
+        "--team",
+        "t",
+        "--model",
+        "gemini-2.5-pro",
+        "--effort",
+        "xhigh",
+    ]
