@@ -91,12 +91,19 @@ setsid nohup claude-anyteam \
   --model gpt-5.5 --effort high \
   </dev/null >/tmp/codex-alice.stdout 2>/tmp/codex-alice.stderr & disown
 
-# Gemini
+# Gemini (headless backend; add --effort to request a thinking tier)
 setsid nohup gemini-anyteam \
   --team my-team --name gemini-alice \
   --cwd /path/to/workspace \
-  --model gemini-2.5-pro \
+  --model gemini-2.5-pro --effort high \
   </dev/null >/tmp/gemini-alice.stdout 2>/tmp/gemini-alice.stderr & disown
+
+# Gemini ACP backend
+setsid nohup gemini-anyteam \
+  --team my-team --name gemini-acp \
+  --cwd /path/to/workspace \
+  --model gemini-2.5-pro --effort medium --backend acp \
+  </dev/null >/tmp/gemini-acp.stdout 2>/tmp/gemini-acp.stderr & disown
 ```
 
 This mode is fully messageable (inbox, task claim, peer replies) but does NOT render in Claude Code's TUI presence line — TUI visibility requires the leader-spawn path via the shim. Useful when you want the adapter running continuously regardless of the Claude Code session lifecycle.

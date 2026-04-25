@@ -33,7 +33,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 ## Installer
 
-- **CLI validation is shallow:** `_check_gemini_cli` only runs `gemini --version` and parses a semver-ish token. It does not enforce a minimum version or verify capability flags, unlike the Gemini-adjacent Codex check. A missing or outdated Gemini CLI surfaces as a non-blocking warning only.
+- **CLI validation is advisory:** `_check_gemini_cli` runs `gemini --version` and an adapter capability probe for required flags such as backend and effort support. It still does not enforce a minimum Gemini CLI version; missing or outdated Gemini CLI capability surfaces as a non-blocking warning.
 
 ## Auth and security
 

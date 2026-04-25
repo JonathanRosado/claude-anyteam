@@ -1,6 +1,6 @@
 # Configuration
 
-claude-anyteam now supports two routed backend prefixes by default: `codex-*` for Codex and `gemini-*` for Gemini CLI. Shared settings such as `CLAUDE_ANYTEAM_TEAM`, `CLAUDE_ANYTEAM_NAME`, `CLAUDE_ANYTEAM_CWD`, `CLAUDE_ANYTEAM_MODEL`, and per-agent `model` config apply to both. Codex-only settings include `CODEX_BINARY`, `CLAUDE_ANYTEAM_APP_SERVER`, and `CLAUDE_ANYTEAM_EFFORT`. Gemini-only settings include `CLAUDE_ANYTEAM_GEMINI_BINARY`, `CLAUDE_ANYTEAM_GEMINI_HOME`, and `CLAUDE_ANYTEAM_GEMINI_EFFORT`; Gemini effort is mapped through adapter-owned `modelConfigs.customAliases` when a Gemini model is configured.
+claude-anyteam now supports two routed backend prefixes by default: `codex-*` for Codex and `gemini-*` for Gemini CLI. Shared settings such as `CLAUDE_ANYTEAM_TEAM`, `CLAUDE_ANYTEAM_NAME`, `CLAUDE_ANYTEAM_CWD`, `CLAUDE_ANYTEAM_MODEL`, and per-agent `model` config apply to both. Codex-only settings include `CODEX_BINARY`, `CLAUDE_ANYTEAM_APP_SERVER`, and `CLAUDE_ANYTEAM_EFFORT`. Gemini-only settings include `CLAUDE_ANYTEAM_GEMINI_BINARY`, `CLAUDE_ANYTEAM_GEMINI_HOME`, `CLAUDE_ANYTEAM_GEMINI_BACKEND`, and `CLAUDE_ANYTEAM_GEMINI_EFFORT`; Gemini effort is mapped through adapter-owned `modelConfigs.customAliases` when a Gemini model is configured.
 
 Gemini teammates use adapter-owned Gemini config/session state and do not mutate the user's real `~/.gemini/settings.json`. See `docs/gemini-adapter-limitations.md` for auth and app-server parity notes.
 
@@ -63,6 +63,10 @@ Every flag has an equivalent env var:
 | `CLAUDE_ANYTEAM_COLOR` | `--color` |
 | `CLAUDE_ANYTEAM_LOG` | `--log` |
 | `CODEX_BINARY` | path to the `codex` binary (default: `codex` on PATH) |
+| `CLAUDE_ANYTEAM_GEMINI_BINARY` | path to the `gemini` CLI binary used by `gemini-anyteam` (default: `gemini` on PATH) |
+| `CLAUDE_ANYTEAM_GEMINI_HOME` | adapter-owned Gemini home for isolated config/session state |
+| `CLAUDE_ANYTEAM_GEMINI_BACKEND` | Gemini transport: `headless` (default) or `acp` |
+| `CLAUDE_ANYTEAM_GEMINI_EFFORT` | Gemini thinking effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 
 ## Per-teammate configuration (shim path)
 
@@ -81,7 +85,7 @@ Example:
 }
 ```
 
-When the shim dispatches a `codex-*` teammate, it reads this file (if present) and appends `--model` / `--effort` to the `claude-anyteam` invocation. The effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object.
+When the shim dispatches a `codex-*` or `gemini-*` teammate, it reads this file (if present) and appends `--model` / `--effort` to the adapter invocation. For Codex, the effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object. For Gemini, `--effort` maps through adapter-owned model aliases when supported by the selected Gemini model family.
 
 Behavior:
 
@@ -90,7 +94,7 @@ Behavior:
 - Unknown keys — ignored. Only `model` and `effort` are forwarded today; more keys may be added later.
 - Native (`claude-*`) teammates — the file is not consulted; native dispatch is always pass-through.
 
-Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT`) → adapter defaults → `~/.codex/config.toml`.
+Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT` for Codex, `CLAUDE_ANYTEAM_GEMINI_EFFORT` for Gemini) → adapter defaults → backend CLI defaults.
 
 ## Shim configuration
 

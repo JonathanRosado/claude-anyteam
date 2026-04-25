@@ -2,7 +2,7 @@
 
 claude-anyteam routes Agent Teams teammates to external CLI backends. Teammate names matching `codex-*` use the Codex adapter; names matching `gemini-*` use the Gemini CLI adapter. Other names continue to launch native Claude teammates.
 
-Gemini support uses headless `gemini --prompt ... --output-format stream-json` with an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps, especially the lack of Codex app-server `turn/steer` parity.
+Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP YOLO plus auto-approved permissions should be treated like a fully trusted code-execution agent.
 
 <div align="center">
 
@@ -16,7 +16,7 @@ Gemini support uses headless `gemini --prompt ... --output-format stream-json` w
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](npm/package.json)
 [![Backends](https://img.shields.io/badge/codex%20%2B%20gemini-supported%20today-10a37f?style=flat-square&logo=openai&logoColor=white)](#supported-backends)
-[![Tests](https://img.shields.io/badge/tests-202%20passing-22c55e?style=flat-square)](tests)
+[![Tests](https://img.shields.io/badge/tests-309%20passing-22c55e?style=flat-square)](tests)
 
 [**Quickstart**](#quickstart) · [**Architecture**](docs/architecture.md) · [**Roadmap**](docs/roadmap.md)
 
@@ -91,7 +91,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 
 **Battle-tested parity**
 
-202 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
+309 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
 
 </td>
 </tr>
@@ -102,7 +102,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 | Backend | Teammate prefix | Status | Notes |
 |---|---|---|---|
 | Codex via OpenAI Codex CLI 0.120+ | `codex-*` | ✅ Supported today | App Server mode for mid-task steer and `thread/fork`; fresh-exec fallback with `codex exec resume`. |
-| Gemini via Gemini CLI | `gemini-*` | ✅ Supported today | Headless `gemini --prompt ... --output-format stream-json`; see [Gemini adapter limitations](docs/gemini-adapter-limitations.md) for known gaps such as ACP / mid-turn steering parity. |
+| Gemini via Gemini CLI | `gemini-*` | ✅ Supported today | Default headless `gemini --prompt ... --output-format stream-json`, plus ACP via `gemini-anyteam --backend acp`; see [Gemini adapter limitations](docs/gemini-adapter-limitations.md) for known gaps and ACP trust-posture caveats. |
 
 ## Coming next
 
