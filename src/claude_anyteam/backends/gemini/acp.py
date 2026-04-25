@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -360,6 +361,16 @@ def run(
             stored_session_id=stored if isinstance(stored, str) else None,
             stored_storage_session_id=stored_storage if isinstance(stored_storage, str) else None,
         )
+        if not ephemeral:
+            invoke.merge_adapter_state(
+                home,
+                adapter_pid=os.getpid(),
+                adapter_start_time=time.time(),
+                team=team,
+                agent=agent,
+                cwd=str(cwd),
+                gemini_pid=getattr(client, "pid", None),
+            )
         try:
             client.set_session_mode(session_id=session_id, mode_id=TRUST_TO_ACP_MODE[trust_mode])
         except GeminiAcpError as e:

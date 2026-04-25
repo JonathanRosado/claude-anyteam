@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from claude_anyteam.backends.gemini import acp, invoke
 from claude_anyteam.backends.gemini.acp_client import GeminiAcpError, GeminiAcpTimeoutError
@@ -64,3 +65,25 @@ def test_jsonrpc_timeout_drops_persisted_acp_session(tmp_path, monkeypatch):
     state = json.loads((home / ".claude-anyteam" / "state.json").read_text())
     assert state["acp_session_id"] is None
     assert state["acp_storage_session_id"] is None
+
+
+class RuntimeStateClient(RecoveringClient):
+    pid = 43210
+    pgid = 43210
+
+    def session_load(self, **kwargs):
+        raise GeminiAcpError("no stored session")
+
+
+def test_successful_acp_session_persists_adapter_and_gemini_pids(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(acp, "GeminiAcpClient", RuntimeStateClient)
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=home, wrapper_identity=("team", "agent"))
+
+    assert result.exit_code == 0
+    state = invoke.read_adapter_state(home)
+    assert state["adapter_pid"] == os.getpid()
+    assert isinstance(state["adapter_start_time"], float)
+    assert state["gemini_pid"] == RuntimeStateClient.pid
+    assert state["team"] == "team"
+    assert state["agent"] == "agent"

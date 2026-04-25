@@ -201,6 +201,43 @@ def _adapter_state_path(gemini_home: Path) -> Path:
     return gemini_home / ".claude-anyteam" / "state.json"
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _default_adapter_state() -> dict[str, Any]:
+    return {
+        "headless_session_id": None,
+        "acp_session_id": None,
+        "acp_storage_session_id": None,
+        "backend": "headless",
+        "updated_at": None,
+        "adapter_pid": None,
+        "adapter_start_time": None,
+        "adapter_start_monotonic_ns": None,
+        "adapter_generation": None,
+        "adapter_exited_at": None,
+        "team": None,
+        "agent": None,
+        "cwd": None,
+        "gemini_pid": None,
+        "gemini_pgid": None,
+        "gemini_started_at": None,
+        "last_clean_shutdown_at": None,
+        "last_reaper_run_at": None,
+        "last_reaper_summary": None,
+    }
+
+
+def merge_adapter_state(gemini_home: Path, **updates: Any) -> Path:
+    data = read_adapter_state(gemini_home)
+    data.update(updates)
+    data["updated_at"] = _utc_now()
+    path = _adapter_state_path(gemini_home)
+    _write_atomic_json(path, data)
+    return path
+
+
 def ensure_adapter_state(gemini_home: Path) -> Path:
     path = _adapter_state_path(gemini_home)
     if not path.exists():
@@ -209,39 +246,19 @@ def ensure_adapter_state(gemini_home: Path) -> Path:
 
 
 def read_adapter_state(gemini_home: Path) -> dict[str, Any]:
+    defaults = _default_adapter_state()
     path = _adapter_state_path(gemini_home)
     if not path.exists():
-        return {
-            "headless_session_id": None,
-            "acp_session_id": None,
-            "acp_storage_session_id": None,
-            "backend": "headless",
-            "updated_at": None,
-        }
+        return dict(defaults)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {
-            "headless_session_id": None,
-            "acp_session_id": None,
-            "acp_storage_session_id": None,
-            "backend": "headless",
-            "updated_at": None,
-        }
+        return dict(defaults)
     if not isinstance(data, dict):
-        return {
-            "headless_session_id": None,
-            "acp_session_id": None,
-            "acp_storage_session_id": None,
-            "backend": "headless",
-            "updated_at": None,
-        }
-    data.setdefault("headless_session_id", None)
-    data.setdefault("acp_session_id", None)
-    data.setdefault("acp_storage_session_id", None)
-    data.setdefault("backend", "headless")
-    data.setdefault("updated_at", None)
-    return data
+        return dict(defaults)
+    merged = dict(defaults)
+    merged.update(data)
+    return merged
 
 
 def write_adapter_state(
@@ -252,31 +269,25 @@ def write_adapter_state(
     acp_session_id: str | None = None,
     acp_storage_session_id: str | None = None,
 ) -> Path:
-    previous = read_adapter_state(gemini_home) if _adapter_state_path(gemini_home).exists() else {}
-    data = {
-        "headless_session_id": headless_session_id if headless_session_id is not None else previous.get("headless_session_id"),
-        "acp_session_id": acp_session_id if acp_session_id is not None else previous.get("acp_session_id"),
-        "acp_storage_session_id": acp_storage_session_id if acp_storage_session_id is not None else previous.get("acp_storage_session_id"),
-        "backend": backend,
-        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-    }
-    path = _adapter_state_path(gemini_home)
-    _write_atomic_json(path, data)
-    return path
+    previous = read_adapter_state(gemini_home)
+    return merge_adapter_state(
+        gemini_home,
+        headless_session_id=headless_session_id if headless_session_id is not None else previous.get("headless_session_id"),
+        acp_session_id=acp_session_id if acp_session_id is not None else previous.get("acp_session_id"),
+        acp_storage_session_id=acp_storage_session_id if acp_storage_session_id is not None else previous.get("acp_storage_session_id"),
+        backend=backend,
+    )
 
 
 def reset_acp_adapter_state(gemini_home: Path, *, backend: str = "acp") -> Path:
-    previous = read_adapter_state(gemini_home) if _adapter_state_path(gemini_home).exists() else {}
-    data = {
-        "headless_session_id": previous.get("headless_session_id"),
-        "acp_session_id": None,
-        "acp_storage_session_id": None,
-        "backend": backend,
-        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-    }
-    path = _adapter_state_path(gemini_home)
-    _write_atomic_json(path, data)
-    return path
+    previous = read_adapter_state(gemini_home)
+    return merge_adapter_state(
+        gemini_home,
+        headless_session_id=previous.get("headless_session_id"),
+        acp_session_id=None,
+        acp_storage_session_id=None,
+        backend=backend,
+    )
 
 
 def _real_auth_settings(real_home: str | None) -> dict[str, Any]:
