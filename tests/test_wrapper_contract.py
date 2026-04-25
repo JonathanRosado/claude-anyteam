@@ -83,11 +83,9 @@ def test_exposed_and_blocked_do_not_overlap():
     assert not overlap, f"EXPOSED_TOOLS and BLOCKED_TOOLS overlap: {overlap}"
 
 
-def test_exposed_count_is_seven(identity):
-    """Canary: seven tools is the intentional count. Adding an eighth should
-    be a deliberate decision, not an accident — if this fails, update
-    EXPOSED_TOOLS explicitly and re-check the blast radius."""
-    assert len(_advertised_tool_names()) == 7
+def test_exposed_count_includes_protocol_and_shadow_tools(identity):
+    """Canary: thirteen tools is the intentional count (six protocol tools plus seven shadow tools)."""
+    assert len(_advertised_tool_names()) == 13
 
 
 def test_identity_required_at_build_time(monkeypatch):
@@ -161,6 +159,12 @@ def test_exposed_tools_covers_cs50victor_safe_subset():
     assert "task_list" in EXPOSED_TOOLS
     assert "read_config" in EXPOSED_TOOLS
     assert "mcp_anyteam_shell" in EXPOSED_TOOLS
+    assert "mcp_anyteam_read_file" in EXPOSED_TOOLS
+    assert "mcp_anyteam_write_file" in EXPOSED_TOOLS
+    assert "mcp_anyteam_list_directory" in EXPOSED_TOOLS
+    assert "mcp_anyteam_edit_file" in EXPOSED_TOOLS
+    assert "mcp_anyteam_search" in EXPOSED_TOOLS
+    assert "mcp_anyteam_web_fetch" in EXPOSED_TOOLS
 
 
 def test_mcp_anyteam_shell_exists_and_produces_output(identity):
@@ -168,6 +172,79 @@ def test_mcp_anyteam_shell_exists_and_produces_output(identity):
 
     assert result == {"stdout": "shell-ok", "stderr": "", "exit_code": 0}
 
+
+
+
+def test_shadow_file_tools_contract(identity, tmp_path):
+    file_path = tmp_path / "sample.txt"
+
+    write = _call_tool("mcp_anyteam_write_file", {"path": str(file_path), "content": "one\ntwo\none\n"})
+    assert write["mode"] == "overwrite"
+    assert write["chars_written"] == len("one\ntwo\none\n")
+
+    read = _call_tool("mcp_anyteam_read_file", {"path": str(file_path), "offset": 1, "limit": 1})
+    assert read["content"] == "two\n"
+    assert read["encoding"] == "utf-8"
+    assert read["truncated"] is True
+
+    edit = _call_tool("mcp_anyteam_edit_file", {"path": str(file_path), "old": "one", "new": "ONE", "replace_all": True})
+    assert edit["replacements"] == 2
+    assert file_path.read_text() == "ONE\ntwo\nONE\n"
+
+    append = _call_tool("mcp_anyteam_write_file", {"path": str(file_path), "content": "tail\n", "mode": "append"})
+    assert append["mode"] == "append"
+    assert file_path.read_text().endswith("tail\n")
+
+
+def test_shadow_list_and_search_contract(identity, tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "b.py").write_text("print('alpha')\n", encoding="utf-8")
+
+    listed = _call_tool("mcp_anyteam_list_directory", {"path": str(tmp_path), "recursive": True, "glob": "*.py"})
+    assert [entry["path"] for entry in listed["entries"]] == ["nested/b.py"]
+
+    literal = _call_tool("mcp_anyteam_search", {"pattern": "alpha", "path": str(tmp_path), "glob": "*.txt"})
+    assert [(m["path"].endswith("a.txt"), m["line"], m["text"]) for m in literal["matches"]] == [(True, 1, "alpha")]
+
+    regex = _call_tool("mcp_anyteam_search", {"pattern": "pr.nt", "path": str(tmp_path), "regex": True, "glob": "*.py"})
+    assert len(regex["matches"]) == 1
+    assert regex["matches"][0]["line"] == 1
+
+
+def test_shadow_web_fetch_contract(identity, monkeypatch):
+    class Headers(dict):
+        def items(self):
+            return super().items()
+
+    class Response:
+        status = 201
+        headers = Headers({"Content-Type": "text/plain"})
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc, tb): return False
+        def read(self): return b"fetch-ok"
+        def geturl(self): return "https://example.test/final"
+
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["data"] = request.data
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("claude_anyteam.wrapper_server.urllib.request.urlopen", fake_urlopen)
+    result = _call_tool(
+        "mcp_anyteam_web_fetch",
+        {"url": "https://example.test", "method": "POST", "headers": {"X-Test": "1"}, "body": "payload"},
+    )
+
+    assert seen == {"url": "https://example.test", "method": "POST", "data": b"payload", "timeout": 60}
+    assert result["status"] == 201
+    assert result["headers"]["Content-Type"] == "text/plain"
+    assert result["body"] == "fetch-ok"
 
 def test_all_cs50victor_tools_are_categorised():
     """Every cs50victor tool must be either EXPOSED or BLOCKED by name.
