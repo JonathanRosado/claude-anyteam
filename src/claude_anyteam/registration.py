@@ -18,11 +18,23 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from dataclasses import dataclass
 
 from claude_teams._filelock import file_lock
 
 from . import logger
 from .config import Settings
+
+
+@dataclass(frozen=True)
+class BackendMetadata:
+    agent_type: str = "claude-anyteam"
+    model: str = "codex-cli"
+    prompt: str = (
+        "Codex teammate adapter. Protocol I/O is handled by the adapter; "
+        "coding work is delegated to `codex exec`. No Claude LLM is involved."
+    )
+    backend_type: str = "in-process"
 
 TEAMS_ROOT = Path.home() / ".claude" / "teams"
 
@@ -81,12 +93,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def register(settings: Settings) -> dict:
+def register(settings: Settings, metadata: BackendMetadata | None = None) -> dict:
     """Register the adapter in the team config. Idempotent.
 
     Returns the member entry that corresponds to this adapter after
     registration (either freshly written or existing).
     """
+    metadata = metadata or BackendMetadata()
     cfg_path = config_path(settings.team_name)
     with _locked_team_config(settings.team_name):
         if not cfg_path.exists():
@@ -122,15 +135,12 @@ def register(settings: Settings) -> dict:
                 # metadata here.
                 "tmuxPaneId": "in-process",
                 "subscriptions": [],
-                "agentType": "claude-anyteam",
-                "model": "codex-cli",
-                "prompt": (
-                    "Codex teammate adapter. Protocol I/O is handled by the adapter; "
-                    "coding work is delegated to `codex exec`. No Claude LLM is involved."
-                ),
+                "agentType": metadata.agent_type,
+                "model": metadata.model,
+                "prompt": metadata.prompt,
                 "planModeRequired": settings.plan_mode_required,
                 "cwd": str(settings.cwd),
-                "backendType": "in-process",
+                "backendType": metadata.backend_type,
             }
             members.append(entry)
             serialized = json.dumps(cfg, indent=2) + "\n"

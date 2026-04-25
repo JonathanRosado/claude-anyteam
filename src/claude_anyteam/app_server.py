@@ -1,58 +1,17 @@
-"""Client for Codex App Server (experimental JSON-RPC 2.0 interface).
-
-Used by v7.1 to replace the one-shot `codex exec` invocation with a
-long-lived App Server session that the adapter can inject turns into
-mid-task.
-
-Transport: stdio. Codex CLI 0.120.0 provides `codex app-server` (default
-`--listen stdio://`). Protocol verified against `codex app-server
-generate-json-schema --out <dir>`; 60 methods, notifications for turn
-lifecycle, `turn/steer` as the mid-turn injection primitive.
-
-Design notes:
-
-- One `AppServerClient` per Codex subprocess. Owns the subprocess and a
-  reader thread that splits stdout into JSON messages and dispatches
-  them to pending requests (by id) or to a notification queue.
-- Requests are synchronous from the caller's perspective: you call
-  `client.request(method, params)` and get the response back, with an
-  optional timeout. The reader thread handles the async dispatch.
-- Notifications arrive on `client.notifications` (a `queue.Queue`);
-  callers drain it at their leisure. `wait_for_notification(predicate)`
-  blocks until a matching notification arrives.
-- Shutdown: `client.close()` terminates the subprocess and joins the
-  reader thread. Idempotent.
-"""
+"""Client for Codex App Server (experimental JSON-RPC 2.0 interface)."""
 
 from __future__ import annotations
 
-import io
-import json
-import queue
-import subprocess
-import threading
-import time
-import uuid
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
-from . import logger
+from .jsonrpc_stdio import JsonRpcStdioClient, JsonRpcStdioError
 
 
-class AppServerError(RuntimeError):
-    """Raised on protocol-level errors (JSON-RPC error responses, IO errors,
-    timeouts). The adapter's control loop treats these as blocking failures
-    on the current task — the caller decides whether to retry."""
+class AppServerError(JsonRpcStdioError):
+    """Raised on Codex App Server protocol/transport errors."""
 
 
-@dataclass
-class _Pending:
-    event: threading.Event
-    response: dict | None = None
-    error: dict | None = None
-
-
-class AppServerClient:
+class AppServerClient(JsonRpcStdioClient):
     def __init__(
         self,
         *,
@@ -62,248 +21,13 @@ class AppServerClient:
     ) -> None:
         self._codex_binary = codex_binary
         self._extra_args = list(extra_args or [])
-        self._env = env
-        self._proc: subprocess.Popen | None = None
-        self._reader: threading.Thread | None = None
-        self._stderr_reader: threading.Thread | None = None
-        self._stopping = threading.Event()
-        self._pending: dict[str, _Pending] = {}
-        self._pending_lock = threading.Lock()
-        self.notifications: "queue.Queue[dict]" = queue.Queue()
-
-    # ---- lifecycle ---------------------------------------------------------
-
-    def start(self) -> None:
-        if self._proc is not None:
-            raise AppServerError("AppServerClient already started")
-        args = [self._codex_binary, "app-server"] + self._extra_args
-        logger.info("app_server.start", args=args)
-        self._proc = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,  # line-buffered; App Server emits one JSON per line
-            env=self._env,
+        super().__init__(
+            argv=[codex_binary, "app-server", *self._extra_args],
+            env=env,
+            log_prefix="app_server",
+            stderr_log_prefix="app_server.stderr",
         )
-        self._reader = threading.Thread(
-            target=self._read_loop, name="app-server-reader", daemon=True
-        )
-        self._reader.start()
-        self._stderr_reader = threading.Thread(
-            target=self._drain_stderr, name="app-server-stderr", daemon=True
-        )
-        self._stderr_reader.start()
-
-    def close(self, *, timeout: float = 5.0) -> None:
-        if self._proc is None:
-            return
-        self._stopping.set()
-        proc = self._proc
-        try:
-            if proc.stdin is not None:
-                try:
-                    proc.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=timeout)
-        finally:
-            self._proc = None
-        # Unblock any callers waiting on a response.
-        with self._pending_lock:
-            for pending in self._pending.values():
-                pending.error = {
-                    "code": -32000,
-                    "message": "AppServerClient closed before response arrived",
-                }
-                pending.event.set()
-            self._pending.clear()
-        logger.info("app_server.closed")
-
-    def __enter__(self) -> "AppServerClient":
-        self.start()
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        self.close()
-
-    # ---- request/response --------------------------------------------------
-
-    def request(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        *,
-        timeout: float = 600.0,
-    ) -> Any:
-        """Send a JSON-RPC request and block for the response.
-
-        Raises AppServerError on timeout, transport failure, or JSON-RPC
-        error. Returns the `result` field on success (commonly a dict).
-        """
-        if self._proc is None or self._proc.stdin is None:
-            raise AppServerError("AppServerClient not started")
-        req_id = str(uuid.uuid4())
-        pending = _Pending(event=threading.Event())
-        with self._pending_lock:
-            self._pending[req_id] = pending
-        msg = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params or {},
-        }
-        serialized = json.dumps(msg) + "\n"
-        logger.debug("app_server.send", method=method, id=req_id)
-        try:
-            self._proc.stdin.write(serialized)
-            self._proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
-            with self._pending_lock:
-                self._pending.pop(req_id, None)
-            raise AppServerError(f"writing request to App Server failed: {e}") from e
-
-        if not pending.event.wait(timeout=timeout):
-            with self._pending_lock:
-                self._pending.pop(req_id, None)
-            raise AppServerError(
-                f"App Server did not respond to {method} within {timeout}s"
-            )
-
-        if pending.error is not None:
-            code = pending.error.get("code")
-            message = pending.error.get("message", "unknown")
-            raise AppServerError(f"JSON-RPC error {code}: {message}")
-        return pending.response
-
-    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
-        """Fire-and-forget client notification. No response expected."""
-        if self._proc is None or self._proc.stdin is None:
-            raise AppServerError("AppServerClient not started")
-        msg = {"jsonrpc": "2.0", "method": method, "params": params or {}}
-        serialized = json.dumps(msg) + "\n"
-        try:
-            self._proc.stdin.write(serialized)
-            self._proc.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
-            raise AppServerError(f"writing notification to App Server failed: {e}") from e
-
-    # ---- notifications -----------------------------------------------------
-
-    def drain_notifications(self) -> list[dict]:
-        """Return all currently queued notifications (non-blocking)."""
-        out: list[dict] = []
-        while True:
-            try:
-                out.append(self.notifications.get_nowait())
-            except queue.Empty:
-                break
-        return out
-
-    def wait_for_notification(
-        self,
-        predicate: Callable[[dict], bool],
-        *,
-        timeout: float = 600.0,
-    ) -> dict:
-        """Block until a notification matching `predicate` arrives. Raises
-        AppServerError on timeout or if the client is closed while waiting."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AppServerError(
-                    f"no matching notification within {timeout}s"
-                )
-            try:
-                ev = self.notifications.get(timeout=min(remaining, 1.0))
-            except queue.Empty:
-                if self._stopping.is_set():
-                    raise AppServerError("AppServerClient closed while waiting")
-                continue
-            if predicate(ev):
-                return ev
-            # Non-matching notifications are requeued at the back so other
-            # consumers can see them. Simpler than branching predicates.
-            self.notifications.put(ev)
-            # Small sleep to avoid a tight busy-loop when the only queued
-            # item is one we keep bouncing.
-            time.sleep(0.01)
-
-    # ---- reader thread -----------------------------------------------------
-
-    def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        stdout: io.TextIOBase = self._proc.stdout  # type: ignore[assignment]
-        try:
-            for raw in stdout:
-                if self._stopping.is_set():
-                    break
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.debug("app_server.nonjson", line=line[:200])
-                    continue
-                self._dispatch(msg)
-        except (ValueError, OSError) as e:
-            # Closed pipe / process went away. Caller will see it via their
-            # next request() or notification wait.
-            logger.debug("app_server.reader_exit", error=str(e))
-        finally:
-            logger.debug("app_server.reader_done")
-
-    def _drain_stderr(self) -> None:
-        """Forward Codex stderr lines to our logger so they aren't lost."""
-        assert self._proc is not None and self._proc.stderr is not None
-        try:
-            for raw in self._proc.stderr:
-                line = raw.rstrip()
-                if line:
-                    logger.debug("app_server.stderr", line=line[:500])
-        except (ValueError, OSError):
-            pass
-
-    def _dispatch(self, msg: dict) -> None:
-        req_id = msg.get("id")
-        # JSON-RPC: responses have id+result or id+error; notifications have
-        # method but no id; requests from the server have id+method+params.
-        if "method" in msg and req_id is None:
-            self.notifications.put(msg)
-            return
-        if "method" in msg and req_id is not None:
-            # Server-originated request — e.g. approval prompts. We don't
-            # handle these in v7.1; stub with a default reply so Codex doesn't
-            # deadlock waiting. Covered in step #4 of the impl plan (approval
-            # policy is already "never" at thread-start time, so this should
-            # rarely fire).
-            logger.warn(
-                "app_server.unhandled_server_request",
-                method=msg.get("method"),
-                id=req_id,
-            )
-            return
-        if req_id is None:
-            logger.warn("app_server.malformed_message", msg_head=str(msg)[:200])
-            return
-        with self._pending_lock:
-            pending = self._pending.pop(str(req_id), None)
-        if pending is None:
-            logger.debug("app_server.orphan_response", id=req_id)
-            return
-        if "error" in msg:
-            pending.error = msg["error"]
-        else:
-            pending.response = msg.get("result")
-        pending.event.set()
+        self._error_cls = AppServerError
 
     # ---- helpers for well-known methods -----------------------------------
 

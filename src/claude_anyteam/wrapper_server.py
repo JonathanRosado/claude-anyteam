@@ -8,7 +8,7 @@ being accessible from a running teammate's context. A hallucinated tool
 call to any of them would have outsized consequences.
 
 Rather than rely on prompt discipline, this wrapper exposes **only the
-six tools a Codex teammate actually needs mid-task**, with descriptions
+small tool set a Codex teammate actually needs mid-task**, with descriptions
 tuned for the team-protocol context and team/agent identity pre-filled
 from startup env so Codex can't accidentally send as the wrong teammate.
 
@@ -28,9 +28,15 @@ Legacy `CODEX_TEAMMATE_*` identity vars are still honored as fallbacks during th
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
+import re
+import subprocess
 import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Any, Literal
 
 from .env import LEGACY_NAME_ENV, LEGACY_TEAM_ENV, NAME_ENV, TEAM_ENV, env_first
@@ -52,6 +58,13 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "read_inbox",
     "task_list",
     "read_config",
+    "mcp_anyteam_shell",
+    "mcp_anyteam_read_file",
+    "mcp_anyteam_write_file",
+    "mcp_anyteam_list_directory",
+    "mcp_anyteam_edit_file",
+    "mcp_anyteam_search",
+    "mcp_anyteam_web_fetch",
 )
 
 # Tool set cs50victor exposes that we deliberately do NOT surface. Checked
@@ -118,8 +131,34 @@ def _identity(argv: list[str] | None = None) -> tuple[str, str]:
     return team, name
 
 
+
+def _decode_bytes(data: bytes) -> tuple[str, str]:
+    """Decode arbitrary file/HTTP bytes without raising on bad text."""
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace"), "utf-8-replacement"
+
+
+def _entry_for(path: Path, *, base: Path | None = None) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError as e:
+        return {"path": str(path if base is None else path.relative_to(base)), "error": str(e)}
+    kind = "directory" if path.is_dir() else "file" if path.is_file() else "other"
+    return {
+        "path": str(path if base is None else path.relative_to(base)),
+        "name": path.name,
+        "type": kind,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+    }
+
+
 def build_server(argv: list[str] | None = None) -> FastMCP:
-    """Construct the FastMCP app with the six narrowed tools."""
+    """Construct the FastMCP app with the narrowed tools."""
     team, self_name = _identity(argv)
 
     mcp = FastMCP(
@@ -302,6 +341,244 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
         except ValueError as e:
             raise ToolError(str(e))
         return [t.model_dump(by_alias=True, exclude_none=True) for t in result]
+
+    @mcp.tool
+    def mcp_anyteam_shell(
+        command: str,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+    ) -> dict:
+        """Run a shell command for the teammate with unrestricted filesystem
+        and network access.
+
+        Args:
+            command: shell command to execute.
+            cwd: optional working directory for the command.
+            timeout: optional timeout in seconds.
+            env: optional environment variables to add/override.
+        """
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            timeout=timeout,
+            env={**os.environ, **env} if env is not None else None,
+            capture_output=True,
+            text=True,
+        )
+        return {
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "exit_code": completed.returncode,
+        }
+
+
+    @mcp.tool
+    def mcp_anyteam_read_file(path: str, offset: int = 0, limit: int | None = None) -> dict:
+        """Read a local file as text with safe decoding fallback.
+
+        Args:
+            path: filesystem path to read. No workspace restriction is applied.
+            offset: zero-based line offset to start reading from.
+            limit: optional maximum number of lines to return.
+        """
+        if offset < 0:
+            raise ToolError("offset must be >= 0")
+        if limit is not None and limit < 0:
+            raise ToolError("limit must be >= 0")
+        file_path = Path(path)
+        try:
+            raw = file_path.read_bytes()
+        except OSError as e:
+            raise ToolError(str(e))
+        text, encoding = _decode_bytes(raw)
+        lines = text.splitlines(keepends=True)
+        selected = lines[offset : None if limit is None else offset + limit]
+        return {
+            "path": str(file_path),
+            "content": "".join(selected),
+            "encoding": encoding,
+            "bytes": len(raw),
+            "line_count": len(lines),
+            "offset": offset,
+            "limit": limit,
+            "truncated": limit is not None and offset + limit < len(lines),
+        }
+
+    @mcp.tool
+    def mcp_anyteam_write_file(
+        path: str,
+        content: str,
+        mode: Literal["overwrite", "append"] = "overwrite",
+    ) -> dict:
+        """Write text to a local file with no filesystem sandbox.
+
+        Args:
+            path: filesystem path to write.
+            content: text content to write.
+            mode: overwrite the file or append to it.
+        """
+        if mode not in ("overwrite", "append"):
+            raise ToolError("mode must be 'overwrite' or 'append'")
+        file_path = Path(path)
+        existed = file_path.exists()
+        try:
+            if mode == "append":
+                with file_path.open("a", encoding="utf-8") as f:
+                    written = f.write(content)
+            else:
+                with file_path.open("w", encoding="utf-8") as f:
+                    written = f.write(content)
+        except OSError as e:
+            raise ToolError(str(e))
+        return {
+            "path": str(file_path),
+            "mode": mode,
+            "existed": existed,
+            "chars_written": written,
+            "bytes_written": len(content.encode("utf-8")),
+        }
+
+    @mcp.tool
+    def mcp_anyteam_list_directory(path: str, recursive: bool = False, glob: str | None = None) -> dict:
+        """List directory entries with optional recursion and glob filtering.
+
+        Args:
+            path: directory path to list.
+            recursive: when true, walk the whole subtree.
+            glob: optional glob pattern matched against relative paths and names.
+        """
+        root = Path(path)
+        if not root.exists():
+            raise ToolError(f"path does not exist: {path}")
+        if not root.is_dir():
+            raise ToolError(f"path is not a directory: {path}")
+        try:
+            candidates = root.rglob("*") if recursive else root.iterdir()
+            entries = []
+            for child in candidates:
+                rel = str(child.relative_to(root))
+                if glob and not (fnmatch.fnmatch(rel, glob) or fnmatch.fnmatch(child.name, glob)):
+                    continue
+                entries.append(_entry_for(child, base=root))
+        except OSError as e:
+            raise ToolError(str(e))
+        entries.sort(key=lambda item: item.get("path", ""))
+        return {"path": str(root), "recursive": recursive, "glob": glob, "entries": entries}
+
+    @mcp.tool
+    def mcp_anyteam_edit_file(path: str, old: str, new: str, replace_all: bool = False) -> dict:
+        """Replace an exact string in a text file and return the replacement count.
+
+        Args:
+            path: filesystem path to edit.
+            old: exact text to replace.
+            new: replacement text.
+            replace_all: replace every occurrence instead of requiring exactly one.
+        """
+        if old == "":
+            raise ToolError("old must not be empty")
+        file_path = Path(path)
+        try:
+            raw = file_path.read_bytes()
+            text, encoding = _decode_bytes(raw)
+        except OSError as e:
+            raise ToolError(str(e))
+        count = text.count(old)
+        if not replace_all and count != 1:
+            raise ToolError(f"expected exactly one occurrence of old text, found {count}")
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        try:
+            file_path.write_text(updated, encoding="utf-8")
+        except OSError as e:
+            raise ToolError(str(e))
+        return {"path": str(file_path), "replacements": count if replace_all else 1, "encoding_read": encoding}
+
+    @mcp.tool
+    def mcp_anyteam_search(
+        pattern: str,
+        path: str = ".",
+        regex: bool = False,
+        glob: str | None = None,
+    ) -> dict:
+        """Search files under a path for text or regex matches.
+
+        Args:
+            pattern: literal text or regex to search for.
+            path: file or directory path to search.
+            regex: interpret pattern as a regular expression when true.
+            glob: optional file glob matched against relative paths and names.
+        """
+        root = Path(path)
+        if not root.exists():
+            raise ToolError(f"path does not exist: {path}")
+        try:
+            rx = re.compile(pattern) if regex else None
+        except re.error as e:
+            raise ToolError(f"invalid regex: {e}")
+        files = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+        matches: list[dict[str, Any]] = []
+        for file_path in files:
+            rel = str(file_path.relative_to(root)) if root.is_dir() else file_path.name
+            if glob and not (fnmatch.fnmatch(rel, glob) or fnmatch.fnmatch(file_path.name, glob)):
+                continue
+            try:
+                text, encoding = _decode_bytes(file_path.read_bytes())
+            except OSError:
+                continue
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                if (rx.search(line) if rx is not None else pattern in line):
+                    matches.append({
+                        "path": str(file_path),
+                        "line": line_no,
+                        "text": line,
+                        "encoding": encoding,
+                    })
+        return {"pattern": pattern, "path": str(root), "regex": regex, "glob": glob, "matches": matches}
+
+    @mcp.tool
+    def mcp_anyteam_web_fetch(
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> dict:
+        """Fetch a URL with unrestricted network access and return response data.
+
+        Args:
+            url: http(s) URL to fetch. No allowlist is applied.
+            method: HTTP method to use.
+            headers: optional request headers.
+            body: optional request body text encoded as UTF-8.
+        """
+        data = body.encode("utf-8") if body is not None else None
+        request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read()
+                text, encoding = _decode_bytes(raw)
+                return {
+                    "url": response.geturl(),
+                    "status": response.status,
+                    "headers": dict(response.headers.items()),
+                    "body": text,
+                    "encoding": encoding,
+                    "bytes": len(raw),
+                }
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            text, encoding = _decode_bytes(raw)
+            return {
+                "url": url,
+                "status": e.code,
+                "headers": dict(e.headers.items()) if e.headers else {},
+                "body": text,
+                "encoding": encoding,
+                "bytes": len(raw),
+            }
+        except (urllib.error.URLError, OSError) as e:
+            raise ToolError(str(e))
 
     @mcp.tool
     def read_config() -> dict:

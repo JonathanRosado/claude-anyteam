@@ -111,6 +111,7 @@ def test_install_creates_settings_and_sets_required_env_keys(
         "env": {
             installer_mod.TEAMMATE_COMMAND_KEY: str(shim_binary.resolve()),
             installer_mod.TEAMMATE_BINARY_KEY: str(codex_binary.resolve()),
+            installer_mod.GEMINI_TEAMMATE_BINARY_KEY: str(codex_binary.resolve().with_name("gemini-anyteam")),
         }
     }
 
@@ -159,6 +160,7 @@ def test_install_preserves_other_settings_and_env_entries(tmp_path: Path, monkey
         "KEEP_ME": "yes",
         installer_mod.TEAMMATE_COMMAND_KEY: "/opt/tools/claude-anyteam-spawn-shim",
         installer_mod.TEAMMATE_BINARY_KEY: "/opt/tools/claude-anyteam",
+        installer_mod.GEMINI_TEAMMATE_BINARY_KEY: "/opt/tools/gemini-anyteam",
     }
     assert result.paths.settings_path == settings_path.resolve()
 
@@ -285,6 +287,9 @@ def test_install_writes_teammate_mode_when_absent(tmp_path: Path, monkeypatch, c
         "claude_json_created_by_anyteam": True,
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
     stdout = capsys.readouterr().out
@@ -320,6 +325,9 @@ def test_install_is_noop_when_teammate_mode_already_tmux(tmp_path: Path, monkeyp
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
     stdout = capsys.readouterr().out
@@ -369,6 +377,9 @@ def test_install_prompts_and_overwrites_auto_when_accepted(tmp_path: Path, monke
         "claude_json_created_by_anyteam": False,  # claude.json was pre-existing
         "codex_cli_found": False,
         "codex_cli_version": None,
+        "gemini_cli_found": False,
+        "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
 
@@ -963,6 +974,36 @@ def _install_with_codex_stub(
     return result, claude_json_path, state_path
 
 
+
+def _install_with_gemini_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gemini_cli: installer_mod.GeminiCliCheck,
+) -> tuple[installer_mod.InstallResult, Path, Path]:
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(codex_binary),
+        prompt_fn=lambda _current: True,
+        codex_cli_check_fn=lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+        gemini_cli_check_fn=lambda: gemini_cli,
+    )
+    return result, claude_json_path, state_path
+
+
 def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
     codex_cli = installer_mod.CodexCliCheck(
         found=True,
@@ -978,7 +1019,7 @@ def test_install_detects_codex_cli_when_present(tmp_path: Path, monkeypatch):
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI 0.124.0 at /usr/local/bin/codex" in message
-    assert "Warning" not in message
+    assert "Warning: detected Codex" not in message
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["codex_cli_found"] is True
@@ -1036,7 +1077,7 @@ def test_install_handles_codex_version_parse_failure(tmp_path: Path, monkeypatch
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI at /usr/local/bin/codex" in message
-    assert "Warning" not in message, "parse-fail must not emit a scary warning"
+    assert "Warning: detected Codex" not in message, "parse-fail must not emit a scary warning"
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["codex_cli_found"] is True
@@ -1077,7 +1118,7 @@ def test_install_accepts_codex_cli_exactly_at_floor(tmp_path: Path, monkeypatch)
 
     message = installer_mod.format_install_message(result)
     assert "Detected Codex CLI 0.120.0" in message
-    assert "Warning" not in message
+    assert "Warning: detected Codex" not in message
 
 
 def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
@@ -1111,7 +1152,269 @@ def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
     assert "Codex CLI (`codex`) was not found" in err
 
 
-def test_parse_codex_version_rejects_garbage_tokens():
+
+# ---------------------------------------------------------------------------
+# Gemini CLI prereq check (informational — non-blocking)
+# ---------------------------------------------------------------------------
+
+_GEMINI_ALL_CAPABILITIES = {
+    "--prompt": True,
+    "--output-format stream-json": True,
+    "--resume": True,
+    "--approval-mode yolo": True,
+    "--acp": True,
+}
+
+
+def test_install_detects_gemini_cli_when_present(tmp_path: Path, monkeypatch):
+    gemini_cli = installer_mod.GeminiCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/gemini"),
+        version="0.3.1",
+        raw_output="0.3.1",
+        capabilities=_GEMINI_ALL_CAPABILITIES,
+    )
+    result, _claude_json_path, state_path = _install_with_gemini_stub(
+        tmp_path, monkeypatch, gemini_cli
+    )
+
+    assert result.gemini_cli is not None
+    assert result.gemini_cli.found is True
+    assert result.gemini_cli.version == "0.3.1"
+
+    message = installer_mod.format_install_message(result)
+    assert "Detected Gemini CLI 0.3.1 at /usr/local/bin/gemini" in message
+    assert "Warning: the Gemini CLI" not in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is True
+    assert state["gemini_cli_version"] == "0.3.1"
+    assert state["gemini_cli_capabilities"] == _GEMINI_ALL_CAPABILITIES
+
+
+def test_install_warns_on_missing_gemini_capabilities_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+):
+    gemini_cli = installer_mod.GeminiCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/gemini"),
+        version="0.3.1",
+        raw_output="0.3.1",
+        capabilities={
+            "--prompt": True,
+            "--output-format stream-json": True,
+            "--resume": False,
+            "--approval-mode yolo": False,
+            "--acp": False,
+        },
+        missing_capabilities=("--resume", "--approval-mode yolo"),
+    )
+    result, _claude_json_path, state_path = _install_with_gemini_stub(
+        tmp_path, monkeypatch, gemini_cli
+    )
+
+    message = installer_mod.format_install_message(result)
+    assert "Warning: detected Gemini CLI at /usr/local/bin/gemini" in message
+    assert (
+        "Gemini CLI is missing required flag --resume; gemini-* teammates may not work."
+        in message
+    )
+    assert (
+        "Gemini CLI is missing required flag --approval-mode yolo; gemini-* teammates may not work."
+        in message
+    )
+    assert installer_mod.GEMINI_CLI_INSTALL_COMMAND in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is True
+    assert state["gemini_cli_version"] == "0.3.1"
+    assert state["gemini_cli_capabilities"] == gemini_cli.capabilities
+
+
+def test_install_warns_when_gemini_cli_missing_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+    )
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_gemini_cli",
+        lambda: installer_mod.GeminiCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    exit_code = cli_mod.main(
+        _install_argv(settings_path, claude_json_path, state_path, "--assume-yes")
+    )
+    assert exit_code == 0, "missing Gemini CLI must not block install"
+
+    stdout = capsys.readouterr().out
+    assert "Warning: the Gemini CLI (`gemini`) was not found on PATH." in stdout
+    assert "npm install -g @google/gemini-cli" in stdout
+    assert "https://github.com/google-gemini/gemini-cli" in stdout
+    assert "GEMINI_API_KEY/Vertex auth" in stdout
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is False
+    assert state["gemini_cli_version"] is None
+
+
+def test_install_combines_tmux_and_gemini_warnings_on_tmux_halt(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    """User missing BOTH tmux and Gemini CLI should see both warnings at once."""
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_missing(monkeypatch, platform="linux")
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_codex_cli",
+        lambda: installer_mod.CodexCliCheck(
+            found=True,
+            path=Path("/usr/local/bin/codex"),
+            version="0.124.0",
+            raw_output="codex-cli 0.124.0",
+        ),
+    )
+    monkeypatch.setattr(
+        installer_mod,
+        "_check_gemini_cli",
+        lambda: installer_mod.GeminiCliCheck(
+            found=False, path=None, version=None, raw_output=None
+        ),
+    )
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(bin_dir / "claude-anyteam")])
+
+    exit_code = cli_mod.main(_install_argv(settings_path, claude_json_path, state_path))
+    assert exit_code != 0
+
+    err = capsys.readouterr().err
+    assert "requires a terminal multiplexer" in err
+    assert "sudo apt install tmux" in err
+    assert "Additionally:" in err
+    assert "Gemini CLI (`gemini`) was not found" in err
+
+
+def test_check_gemini_cli_returns_missing_when_not_on_path(monkeypatch):
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: None)
+    result = installer_mod._check_gemini_cli()
+    assert result.found is False
+    assert result.path is None
+    assert result.version is None
+    assert result.raw_output is None
+    assert result.capabilities == {}
+    assert result.missing_capabilities == ()
+
+
+def test_gemini_capabilities_from_help_detects_required_and_optional_flags():
+    help_text = """
+    Usage: gemini [options]
+      --prompt <prompt>
+      --output-format <text|json|stream-json>
+      --resume [session]
+      --approval-mode <default|yolo>
+      --experimental-acp
+    """
+
+    assert installer_mod._gemini_capabilities_from_help(help_text) == _GEMINI_ALL_CAPABILITIES
+    assert installer_mod._gemini_acp_flag_from_help(help_text) == "--experimental-acp"
+
+
+def test_gemini_acp_flag_from_help_prefers_stable_flag():
+    assert installer_mod._gemini_acp_flag_from_help("--experimental-acp --acp") == "--acp"
+
+
+def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: Path):
+    fake_gemini = tmp_path / "gemini"
+    fake_gemini.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_gemini.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_gemini))
+
+    class _Completed:
+        def __init__(self, stdout: str, stderr: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(args, **_kwargs):
+        if args[-1] == "--version":
+            return _Completed("gemini 0.3.1\n")
+        if args[-1] == "--help":
+            return _Completed(
+                "--prompt --output-format stream-json --resume --approval-mode yolo --acp\n"
+            )
+        raise AssertionError(f"unexpected subprocess args: {args!r}")
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_gemini_cli()
+    assert result.found is True
+    assert result.path == fake_gemini.resolve()
+    assert result.version == "0.3.1"
+    assert result.raw_output == "gemini 0.3.1"
+    assert result.capabilities == _GEMINI_ALL_CAPABILITIES
+    assert result.missing_capabilities == ()
+
+
+def test_check_gemini_cli_records_missing_capabilities(monkeypatch, tmp_path: Path):
+    fake_gemini = tmp_path / "gemini"
+    fake_gemini.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_gemini.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_gemini))
+
+    class _Completed:
+        def __init__(self, stdout: str, stderr: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(args, **_kwargs):
+        if args[-1] == "--version":
+            return _Completed("gemini 0.3.1\n")
+        if args[-1] == "--help":
+            return _Completed("--prompt --output-format stream-json\n")
+        raise AssertionError(f"unexpected subprocess args: {args!r}")
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_gemini_cli()
+    assert result.capabilities == {
+        "--prompt": True,
+        "--output-format stream-json": True,
+        "--resume": False,
+        "--approval-mode yolo": False,
+        "--acp": False,
+    }
+    assert result.missing_capabilities == ("--resume", "--approval-mode yolo")
+
+
+def test_parse_cli_version_rejects_garbage_tokens():
     # Direct unit coverage for the reviewer-requested branch: weird strings
     # must parse to None rather than returning a bogus token.
     for bad in (
@@ -1123,10 +1426,10 @@ def test_parse_codex_version_rejects_garbage_tokens():
         "0",  # major-only, not semver-ish enough
         "codex-cli unknown",
     ):
-        assert installer_mod._parse_codex_version(bad) is None, f"expected None for {bad!r}"
+        assert installer_mod._parse_cli_version(bad) is None, f"expected None for {bad!r}"
 
 
-def test_parse_codex_version_accepts_various_valid_shapes():
+def test_parse_cli_version_accepts_various_valid_shapes():
     cases = {
         "codex-cli 0.124.0": "0.124.0",
         "codex-cli 0.120": "0.120",
@@ -1134,15 +1437,15 @@ def test_parse_codex_version_accepts_various_valid_shapes():
         "codex 10.20.30": "10.20.30",
     }
     for raw, expected in cases.items():
-        assert installer_mod._parse_codex_version(raw) == expected, f"{raw!r} → {expected!r}"
+        assert installer_mod._parse_cli_version(raw) == expected, f"{raw!r} → {expected!r}"
 
 
-def test_parse_codex_version_picks_correct_token_from_noisy_output():
+def test_parse_cli_version_picks_correct_token_from_noisy_output():
     # Regression: the v1 "first token starting with a digit" heuristic would
     # report "0" here. The tightened regex must skip "0" / "errors" / headings
     # and land on "0.124.0".
     noisy = "0 errors — codex-cli 0.124.0 (release build)"
-    assert installer_mod._parse_codex_version(noisy) == "0.124.0"
+    assert installer_mod._parse_cli_version(noisy) == "0.124.0"
 
 
 def test_check_codex_cli_falls_back_when_subprocess_stdout_unparseable(

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnyTeam permission response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "request_id", "decision"],
+  "properties": {
+    "type": {"const": "permission_response"},
+    "schema_version": {"type": "integer", "const": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["allow_once", "allow_session", "deny"]},
+    "reason": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"}
+  }
+}

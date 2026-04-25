@@ -1,5 +1,11 @@
 # Install
 
+`claude-anyteam install` writes the shared spawn shim once. After restart, `codex-*` teammate names route to Codex and `gemini-*` names route to Gemini CLI. The installer checks terminal-multiplexer support as a hard prerequisite and reports Codex/Gemini CLI availability as non-blocking warnings.
+
+Install/authenticate Codex for `codex-*` teammates and Gemini CLI for `gemini-*` teammates (`gemini` once for OAuth, or use `GEMINI_API_KEY`/Vertex auth for unattended runs).
+
+# Install
+
 The quickstart in the [README](../README.md#quickstart) is the normal path:
 
 ```bash
@@ -20,13 +26,14 @@ That's the entire install. The npm installer:
 
 ## How installation works
 
-The Python installer writes two env vars to `~/.claude/settings.json`:
+The Python installer writes these env vars to `~/.claude/settings.json`:
 
 ```json
 {
   "env": {
     "CLAUDE_CODE_TEAMMATE_COMMAND": "/absolute/path/to/claude-anyteam-spawn-shim",
-    "CLAUDE_ANYTEAM_BINARY": "/absolute/path/to/claude-anyteam"
+    "CLAUDE_ANYTEAM_BINARY": "/absolute/path/to/claude-anyteam",
+    "CLAUDE_ANYTEAM_GEMINI_BINARY": "/absolute/path/to/gemini-anyteam"
   }
 }
 ```
@@ -34,6 +41,7 @@ The Python installer writes two env vars to `~/.claude/settings.json`:
 When Agent Teams mode spawns a teammate, Claude Code invokes `$CLAUDE_CODE_TEAMMATE_COMMAND` (the shim) instead of native `claude`. The shim inspects the agent name:
 
 - `codex-*` → dispatches to the `claude-anyteam` adapter (Codex)
+- `gemini-*` → dispatches to the `gemini-anyteam` adapter (Gemini CLI)
 - Anything else → forwards to native `claude` (unchanged)
 
 Every step is reversible. `claude-anyteam uninstall` cleanly removes the env vars, reverts `teammateMode` to whatever was there before (or removes the key if install added it from scratch), and deletes the state file plus its plugin-data directory if they're now empty.
@@ -42,7 +50,7 @@ Every step is reversible. `claude-anyteam uninstall` cleanly removes the env var
 
 `claude-anyteam uninstall` is designed to leave no trace of what the installer wrote. It touches the same three files the installer did:
 
-- `~/.claude/settings.json` — removes the `CLAUDE_CODE_TEAMMATE_COMMAND` and `CLAUDE_ANYTEAM_BINARY` keys from the `env` block. Any other keys you have there (including unrelated `env` entries like `KEEP_ME`) are preserved. If `settings.json` didn't exist before install and is now empty after our removal, the file is deleted.
+- `~/.claude/settings.json` — removes the `CLAUDE_CODE_TEAMMATE_COMMAND`, `CLAUDE_ANYTEAM_BINARY`, and `CLAUDE_ANYTEAM_GEMINI_BINARY` keys from the `env` block. Any other keys you have there (including unrelated `env` entries like `KEEP_ME`) are preserved. If `settings.json` didn't exist before install and is now empty after our removal, the file is deleted.
 - `~/.claude.json` — reverts `teammateMode` to whatever it held before install, or removes the key entirely if install added it from scratch. If the file didn't exist before install and is now empty, it is deleted.
 - `~/.claude/plugins/data/claude-anyteam-claude-anyteam/install-state.json` — deleted. The enclosing plugin-data directory is removed too, but only if empty. Parent directories (`~/.claude/plugins/data/`, `~/.claude/plugins/`) are left alone.
 
@@ -69,18 +77,33 @@ claude plugin install claude-anyteam@claude-anyteam
 
 All paths write the same settings. Pick whichever fits your workflow.
 
-Installing the plugin also gives Claude a plugin-provided `/claude-anyteam:help` skill, so the assistant can explain that `codex-<name>` teammates route to Codex, that `~/.claude/settings.json` is already wired by the installer, and that the GitHub repo is the source of truth.
+Installing the plugin also gives Claude a plugin-provided `/claude-anyteam:help` skill, so the assistant can explain that `codex-<name>` teammates route to Codex and `gemini-<name>` teammates route to Gemini CLI, that `~/.claude/settings.json` is already wired by the installer, and that the GitHub repo is the source of truth.
 
 ## Headless / persistent teammates
 
 For headless and persistent background adapters (run across multiple Claude Code sessions):
 
 ```bash
+# Codex
 setsid nohup claude-anyteam \
   --team my-team --name codex-alice \
   --cwd /path/to/workspace \
   --model gpt-5.5 --effort high \
   </dev/null >/tmp/codex-alice.stdout 2>/tmp/codex-alice.stderr & disown
+
+# Gemini (headless backend; add --effort to request a thinking tier)
+setsid nohup gemini-anyteam \
+  --team my-team --name gemini-alice \
+  --cwd /path/to/workspace \
+  --model gemini-2.5-pro --effort high \
+  </dev/null >/tmp/gemini-alice.stdout 2>/tmp/gemini-alice.stderr & disown
+
+# Gemini ACP backend
+setsid nohup gemini-anyteam \
+  --team my-team --name gemini-acp \
+  --cwd /path/to/workspace \
+  --model gemini-2.5-pro --effort medium --backend acp \
+  </dev/null >/tmp/gemini-acp.stdout 2>/tmp/gemini-acp.stderr & disown
 ```
 
 This mode is fully messageable (inbox, task claim, peer replies) but does NOT render in Claude Code's TUI presence line — TUI visibility requires the leader-spawn path via the shim. Useful when you want the adapter running continuously regardless of the Claude Code session lifecycle.

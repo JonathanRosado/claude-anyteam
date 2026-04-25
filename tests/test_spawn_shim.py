@@ -417,3 +417,74 @@ def test_agent_config_not_loaded_for_native_route(monkeypatch, tmp_path, capsys)
     _, forwarded = calls[0]
     assert forwarded == argv
     assert "--model" not in forwarded
+
+
+def test_gemini_dispatch_for_gemini_prefix(monkeypatch, capsys):
+    calls = _record_execv(monkeypatch)
+    monkeypatch.delenv("CLAUDE_ANYTEAM_GEMINI_BINARY", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "/usr/local/bin/claude-anyteam-spawn-shim",
+            "--agent-name",
+            "gemini-rhea",
+            "--team-name",
+            "shim-build",
+        ],
+    )
+    monkeypatch.setattr(
+        spawn_shim.shutil,
+        "which",
+        lambda name: {
+            "gemini-anyteam": "/usr/local/bin/gemini-anyteam",
+            "claude": "/usr/local/bin/claude",
+        }.get(name),
+    )
+
+    assert spawn_shim.main() == 0
+
+    assert calls == [
+        (
+            "/usr/local/bin/gemini-anyteam",
+            [
+                "/usr/local/bin/gemini-anyteam",
+                "--name",
+                "gemini-rhea",
+                "--team",
+                "shim-build",
+            ],
+        )
+    ]
+    assert json.loads(capsys.readouterr().err)["route"] == "gemini"
+
+
+def test_gemini_dispatch_forwards_model_and_effort(monkeypatch, tmp_path, capsys):
+    _write_agent_config(tmp_path, "t", "gemini-pro", {"model": "gemini-2.5-pro", "effort": "xhigh"})
+    calls = _record_execv(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_ANYTEAM_GEMINI_BINARY", "/custom/gemini-anyteam")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["/shim", "--agent-name", "gemini-pro", "--team-name", "t"],
+    )
+    monkeypatch.setattr(
+        spawn_shim.shutil,
+        "which",
+        lambda name: {"/custom/gemini-anyteam": "/custom/gemini-anyteam"}.get(name),
+    )
+
+    assert spawn_shim.main() == 0
+    _, argv = calls[0]
+    assert argv == [
+        "/custom/gemini-anyteam",
+        "--name",
+        "gemini-pro",
+        "--team",
+        "t",
+        "--model",
+        "gemini-2.5-pro",
+        "--effort",
+        "xhigh",
+    ]

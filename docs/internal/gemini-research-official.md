@@ -376,10 +376,10 @@ Officially, Gemini CLI does have a long-lived programmatic mode: **ACP mode**.
 
 - `initialize`
 - `authenticate`
-- `newSession`
-- `loadSession`
-- `prompt`
-- `cancel`
+- `session/new`
+- `session/load`
+- `session/prompt`
+- `session/cancel`
 
 The ACP docs also document:
 

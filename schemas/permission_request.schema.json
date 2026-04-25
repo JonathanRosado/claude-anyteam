@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnyTeam permission request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "request_id", "tool_name", "tool_args", "task_id", "teammate_name"],
+  "properties": {
+    "type": {"const": "permission_request"},
+    "schema_version": {"type": "integer", "const": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "tool_name": {"type": "string", "minLength": 1},
+    "tool_args": {
+      "description": "Redacted permission arguments. May be any JSON value depending on ACP payload shape."
+    },
+    "task_id": {"type": "string", "minLength": 1},
+    "teammate_name": {"type": "string", "minLength": 1},
+    "trust_mode": {"enum": ["default", "plan"]},
+    "label": {"type": "string"},
+    "session_id": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"}
+  }
+}

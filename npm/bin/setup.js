@@ -62,7 +62,7 @@ function usage() {
     '',
     'Installs uv if needed, installs the Python claude-anyteam tool, delegates',
     'the ~/.claude/settings.json + ~/.claude.json writes to the Python installer',
-    '(which verifies tmux/psmux on PATH and probes for the Codex CLI 0.120+),',
+    '(which verifies tmux/psmux on PATH and probes for the Codex CLI 0.120+ and Gemini CLI),',
     'and registers the Claude Code plugin when the claude CLI is available on PATH.',
   ].join('\n');
 }
@@ -337,7 +337,7 @@ async function main() {
   // status lines to stdout, and overlaying a spinner would fight with that output.
   if (!silent) {
     console.log('');
-    console.log(`${theme.symbols.info} ${theme.heading('Running claude-anyteam install (Python)')} ${theme.muted('— tmux + Codex CLI prereq checks, ~/.claude/settings.json, ~/.claude.json, install-state.json')}`);
+    console.log(`${theme.symbols.info} ${theme.heading('Running claude-anyteam install (Python)')} ${theme.muted('— tmux + Codex/Gemini CLI prereq checks, ~/.claude/settings.json, ~/.claude.json, install-state.json')}`);
   }
   let installerResult;
   try {
@@ -406,7 +406,7 @@ async function main() {
   // to stdout. Success box avoids duplicating that — it covers only what Python
   // doesn't know about (plugin registration status, launch template, restart
   // reminder) so there's no noise.
-  const launchTemplate = `${tool.binaryPath} --team my-team --name codex-alice --cwd /path/to/workspace`;
+  const launchTemplate = `${tool.binaryPath} --team my-team --name codex-alice --cwd /path/to/workspace  # or --name gemini-alice --cwd /path/to/workspace`;
   const toolVerb = tool.installMode === 'existing' ? 'reused existing install' : 'installed with uv tool install';
   printSuccess([
     `${theme.symbols.success} Tool status = ${theme.accent(toolVerb)}`,
@@ -418,7 +418,7 @@ async function main() {
     '',
     `${theme.symbols.warn} Restart Claude Code so it reloads ${theme.accent('~/.claude/settings.json')}.`,
   ]);
-  console.log(`${theme.symbols.success} ${theme.heading('Your claude-anyteam launcher is live.')} Codex-powered teammates use the ${theme.accent('codex-')} prefix today in Claude Code's external spawn flow.`);
+  console.log(`${theme.symbols.success} ${theme.heading('Your claude-anyteam launcher is live.')} Codex/Gemini-powered teammates use the ${theme.accent('codex-')} or ${theme.accent('gemini-')} prefix today in Claude Code's external spawn flow.`);
   return 0;
 }
 

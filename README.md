@@ -4,13 +4,13 @@
 
 ### Native Claude Code teammates, any LLM.
 
-**Codex today.** Gemini, Kimi, GLM, DeepSeek next — on the same team-native architecture.
+**Codex and Gemini today.** Kimi, GLM, DeepSeek next — on the same team-native architecture.
 
 [![License](https://img.shields.io/badge/license-MIT-000?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](npm/package.json)
-[![Codex](https://img.shields.io/badge/codex-supported%20today-10a37f?style=flat-square&logo=openai&logoColor=white)](#supported-today--coming-next)
-[![Tests](https://img.shields.io/badge/tests-202%20passing-22c55e?style=flat-square)](tests)
+[![Backends](https://img.shields.io/badge/codex%20%2B%20gemini-supported%20today-10a37f?style=flat-square&logo=openai&logoColor=white)](#supported-backends)
+[![Tests](https://img.shields.io/badge/tests-348%20passing-22c55e?style=flat-square)](tests)
 
 [**Quickstart**](#quickstart) · [**Architecture**](docs/architecture.md) · [**Roadmap**](docs/roadmap.md)
 
@@ -40,17 +40,19 @@ That's the entire install. The installer:
 
 - Detects `python3` and installs `uv` if missing (non-interactive, no shell profile edits)
 - Installs the `claude-anyteam` Python tool via `uv tool install`
-- Runs `claude-anyteam install` (verifies tmux/psmux, probes for the OpenAI Codex CLI and warns if it's missing or below 0.120, writes `~/.claude/settings.json` + `~/.claude.json`, records install-state for symmetric uninstall)
+- Runs `claude-anyteam install` (verifies tmux/psmux, probes for the OpenAI Codex CLI and Gemini CLI, warns if either is missing or Codex is below 0.120, writes `~/.claude/settings.json` + `~/.claude.json`, records install-state for symmetric uninstall)
 
-Restart Claude Code, enable Agent Teams mode, and create a teammate named `codex-<anything>`:
+Restart Claude Code, enable Agent Teams mode, and create a teammate named `codex-<anything>` or `gemini-<anything>`:
 
 ```
-codex-alice     → routed to claude-anyteam + Codex
-codex-reviewer  → routed to claude-anyteam + Codex
-alice           → native Claude (unchanged)
+codex-alice      → routed to claude-anyteam + Codex
+codex-reviewer   → routed to claude-anyteam + Codex
+gemini-alice     → routed to claude-anyteam + Gemini CLI
+gemini-reviewer  → routed to claude-anyteam + Gemini CLI
+alice            → native Claude (unchanged)
 ```
 
-Codex-prefixed names appear in your TUI presence line exactly like native teammates. Single-terminal mode or tmux — both work.
+Codex- and Gemini-prefixed names appear in your TUI presence line exactly like native teammates. Single-terminal mode or tmux — both work.
 
 ## Why it feels native
 
@@ -83,30 +85,36 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 
 **Battle-tested parity**
 
-202 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
+348 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
 
 </td>
 </tr>
 </table>
 
-## Supported today / Coming next
+## Supported backends
 
-| Supported today | Coming next |
-|---|---|
-| ✅ Codex via `codex-cli` (0.120+) | ⏳ Gemini CLI adapter |
-| ✅ gpt-5.5 / gpt-5.4 / gpt-5.3-codex, configurable effort | ⏳ Kimi adapter |
-| ✅ App Server mode (mid-task steer) | ⏳ GLM adapter |
-| ✅ Fresh-exec mode (`codex exec resume`) | ⏳ DeepSeek adapter |
-| ✅ Claude Code hook + TUI presence | ⏳ Pluggable backend routing |
-| ✅ Opt-in structured plan mode | ⏳ Generic CLI adapter template |
+| Backend | Teammate prefix | Status | Notes |
+|---|---|---|---|
+| Codex via OpenAI Codex CLI 0.120+ | `codex-*` | ✅ Supported today | App Server mode for mid-task steer and `thread/fork`; fresh-exec fallback with `codex exec resume`. |
+| Gemini via Gemini CLI | `gemini-*` | ✅ Supported today | Default headless `gemini --prompt ... --output-format stream-json`, plus ACP via `gemini-anyteam --backend acp`; ACP supports `--trust default|plan` permission bridging and team-lead next-turn steer. See [Gemini adapter limitations](docs/gemini-adapter-limitations.md) for known gaps and trust caveats. |
 
-Codex is shipping. Everything in "coming next" is on the same architectural surface — each new model is a new adapter binary + one line in the spawn shim's routing table. See [docs/roadmap.md](docs/roadmap.md).
+## Coming next
+
+| Coming next |
+|---|
+| ⏳ Kimi adapter |
+| ⏳ GLM adapter |
+| ⏳ DeepSeek adapter |
+| ⏳ Generic CLI adapter template |
+
+Codex and Gemini are shipping. Everything in "coming next" is on the same architectural surface — each new model is a new adapter binary + one line in the spawn shim's routing table. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Requirements
 
 - Python 3.12+
 - Node 18+ (for the npm installer; not required at runtime)
-- OpenAI Codex CLI 0.120+ on PATH
+- OpenAI Codex CLI 0.120+ on PATH for `codex-*` teammates
+- Gemini CLI on PATH for `gemini-*` teammates
 - Claude Code 2.1+ with Agent Teams mode
 - Terminal multiplexer on PATH (tmux or psmux) — see [configuration.md](docs/configuration.md#teammate-display-mode)
 

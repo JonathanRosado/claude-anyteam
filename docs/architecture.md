@@ -1,5 +1,9 @@
 # Architecture
 
+claude-anyteam is now a multi-backend spawn-shim adapter. The same Claude Code teammate pane path provides TUI presence; backend routing is selected by teammate name (`codex-*` or `gemini-*`). Codex retains its app-server path for mid-turn steering. Gemini currently uses headless CLI Plan A and documents non-parity in `docs/gemini-adapter-limitations.md`.
+
+# Architecture
+
 claude-anyteam is a protocol adapter, not an LLM wrapper. It lets external coding agents participate in Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams) protocol as first-class teammates without routing their reasoning through a Claude instance.
 
 ## The core insight
@@ -22,7 +26,8 @@ claude-anyteam speaks the contract directly. It reads your inbox, claims tasks, 
 ┌─────────────────────────────────────────┐
 │  claude-anyteam-spawn-shim              │
 │  • inspects agent name                  │
-│  • routes `codex-*` → adapter           │
+│  • routes `codex-*` → Codex adapter     │
+│  • routes `gemini-*` → Gemini adapter   │
 │  • forwards anything else → native claude
 └──────────────┬──────────────────────────┘
                │
@@ -31,35 +36,43 @@ claude-anyteam speaks the contract directly. It reads your inbox, claims tasks, 
 │  claude-anyteam (Python adapter)        │
 │  • self-registers in config.json        │
 │  • polls inbox, claims tasks            │
-│  • invokes codex via JSON-RPC           │
+│  • invokes backend-specific CLI         │
 │  • writes task_complete to inbox        │
 └──────────────┬──────────────────────────┘
                │
                ▼
 ┌─────────────────────────────────────────┐
-│  codex app-server                       │
-│  • long-lived JSON-RPC session          │
-│  • turn/steer for mid-task reactivity   │
-│  • thread/fork for cross-task memory    │
+│  Backend CLI                            │
+│  • Codex: app-server or exec resume     │
+│  • Gemini: headless stream-json CLI     │
+│  • shared MCP wrapper for team tools    │
 └─────────────────────────────────────────┘
 ```
 
-Each layer has one job. The shim is a 180-line dispatcher. The adapter is the protocol implementation. Codex handles all reasoning.
+Each layer has one job. The shim is a dispatcher. The adapter is the protocol implementation. Codex or Gemini handles the backend reasoning based on the teammate name prefix.
 
-## Two execution modes
+## Backend invocation paths
 
-**App Server (default).** `codex app-server` runs as a long-lived JSON-RPC session. The adapter manages the thread lifecycle, injects mid-task input via `turn/steer`, and forks cross-task memory via `thread/fork`. This is where the native-teammate behaviors live: if a peer messages you while you're working, the in-flight turn reshapes instead of losing the message; each new task inherits your conversational history from the previous one.
+### Codex path (headless + app-server)
 
-**Fresh-exec (opt-out).** Each task spawns `codex exec` fresh. Second and subsequent tasks use `codex exec resume <session_id>` so context carries forward. No mid-task reactivity, but simpler operationally. Enable with `--no-app-server` or `CLAUDE_ANYTEAM_APP_SERVER=false`.
+**App Server (default for Codex).** `codex app-server` runs as a long-lived JSON-RPC session. The adapter manages the thread lifecycle, injects mid-task input via `turn/steer`, and forks cross-task memory via `thread/fork`. This is where the native-teammate behaviors live: if a peer messages a Codex teammate while it is working, the in-flight turn reshapes instead of losing the message; each new task inherits conversational history from the previous one.
+
+**Fresh-exec (Codex opt-out).** Each task spawns `codex exec` fresh. Second and subsequent tasks use `codex exec resume <session_id>` so context carries forward. No mid-task reactivity, but simpler operationally. Enable with `--no-app-server` or `CLAUDE_ANYTEAM_APP_SERVER=false`.
+
+### Gemini path (headless only; ACP not yet wired)
+
+Gemini teammates currently run through the Gemini CLI in headless mode: `gemini --prompt ... --output-format stream-json`. The adapter writes an isolated `.gemini/settings.json` that exposes the narrowed anyteam MCP wrapper, streams Gemini output back through the same team protocol, and records task completion in the leader inbox.
+
+Gemini does not yet have Codex App Server parity: ACP / mid-turn steering and `thread/fork`-style cross-task memory are documented limitations. See [Gemini adapter limitations](gemini-adapter-limitations.md).
 
 ## How teammates become visible
 
-The TUI presence line (`@main @codex-alice`) renders from the leader's in-memory state, not from `config.json`. That state is only populated when Claude Code's own spawn flow is what launched the teammate.
+The TUI presence line (`@main @codex-alice @gemini-bob`) renders from the leader's in-memory state, not from `config.json`. That state is only populated when Claude Code's own spawn flow is what launched the teammate.
 
 claude-anyteam hooks into that spawn flow via `CLAUDE_CODE_TEAMMATE_COMMAND`. When Agent Teams mode spawns a teammate:
 
 1. Claude Code invokes `$CLAUDE_CODE_TEAMMATE_COMMAND` (our shim) instead of the default `claude` binary
-2. The shim checks the agent name. Matches `^codex-`? Dispatches to the adapter
+2. The shim checks the agent name. Matches `^codex-` dispatch to the Codex adapter; matches `^gemini-` dispatch to the Gemini adapter; anything else forwards to native Claude.
 3. Claude Code's internal spawn-completion callback registers a mirror task in its state — this is what the TUI renders
 4. The adapter self-registers in `config.json` with `backendType: "in-process"` so its entry matches what the leader expects
 
@@ -70,19 +83,19 @@ Both pieces (leader mirror + adapter entry) are required. The shim enables step 
 1. Lead creates a task via Claude Code's task list
 2. Adapter picks it up in its poll loop (1.5s default)
 3. Adapter claims it via compare-and-set under a file lock
-4. Adapter sends the task description to Codex via App Server
-5. Codex executes: reads files, writes files, runs commands, calls wrapper MCP tools to update task status / send messages to peers
+4. Adapter sends the task description to the selected backend: Codex via App Server or fresh `codex exec`; Gemini via headless `gemini --prompt ... --output-format stream-json`
+5. The backend executes: reads files, writes files, runs commands, calls wrapper MCP tools to update task status / send messages to peers
 6. Task completes; adapter writes `task_complete` to lead's inbox
-7. If a peer sent a message mid-execution, adapter injected it via `turn/steer` and Codex incorporated it
+7. Codex App Server teammates can incorporate peer messages mid-execution via `turn/steer`; Gemini teammates currently receive peer messages on the next poll / task boundary rather than ACP steering.
 
-The wrapper MCP server exposes a narrowed 6-tool surface to Codex (`send_message`, `task_update`, `task_create`, `read_inbox`, `task_list`, `read_config`). Destructive tools like `team_delete` and `force_kill_teammate` are deliberately blocked — Codex has full coding access but cannot break the team.
+The wrapper MCP server exposes a narrowed 6-tool surface to external backends (`send_message`, `task_update`, `task_create`, `read_inbox`, `task_list`, `read_config`). Destructive tools like `team_delete` and `force_kill_teammate` are deliberately blocked — Codex or Gemini has full coding access but cannot break the team.
 
 ## Extending to new models
 
 The same architecture supports any CLI-native model. Each new adapter is:
 
 1. A Python module that implements the shared protocol interface (inbox polling, task claiming, result writing — most of this is already shared code)
-2. A model-specific invocation path (e.g. `gemini exec`, `kimi run`)
+2. A model-specific invocation path (e.g. headless `gemini --prompt ...`, `kimi run`)
 3. One entry in the spawn shim's routing table (e.g. `gemini-*` → gemini adapter)
 
 The protocol layer doesn't care which model is backing a teammate. The shim routes by name prefix. Each adapter gets its own binary but shares the same team-protocol semantics.

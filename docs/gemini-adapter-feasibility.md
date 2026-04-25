@@ -200,7 +200,7 @@ What still makes it harder than Plan A:
    The reader loop, stderr drain, pending-response bookkeeping, and close semantics are already solved.
 
 3. **ACP-side MCP injection must have a tested fallback.**  
-   If Gemini ACP accepts inline MCP config at `initialize`/`newSession`, use it. If not, fall back to the same adapter-owned Gemini home/settings path from Plan A.
+   If Gemini ACP accepts inline MCP config at `initialize`/`session/new`, use it. If not, fall back to the same adapter-owned Gemini home/settings path from Plan A.
 
 4. **Do not promise mid-task steer parity in v1.**  
    If ACP supports a same-session follow-up while a task is live, use it. If not, queue the message and inject it at the next safe boundary on the same session, or cancel/re-prompt if that is the only supported path.
