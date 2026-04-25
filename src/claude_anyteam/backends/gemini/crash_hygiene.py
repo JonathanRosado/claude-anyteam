@@ -54,7 +54,7 @@ def utc_now() -> str:
 def adapter_runtime_fields(*, team: str, agent: str, cwd: Path, generation: str | None = None) -> dict[str, Any]:
     return {
         "adapter_pid": os.getpid(),
-        "adapter_start_time": time.time(),
+        "adapter_start_time": utc_now(),
         "adapter_start_monotonic_ns": time.monotonic_ns(),
         "adapter_generation": generation or str(uuid.uuid4()),
         "adapter_exited_at": None,
@@ -351,7 +351,7 @@ def run_startup_recovery(
     )
     moved = quarantine_stale_acp_sessions(
         gemini_home,
-        previous_start_time=state.get("adapter_start_time") if isinstance(state.get("adapter_start_time"), str) else None,
+        previous_start_time=state.get("adapter_start_time"),
         recovery_start_time=recovery_start,
         generation=state.get("adapter_generation") if isinstance(state.get("adapter_generation"), str) else None,
     )

@@ -85,7 +85,8 @@ def test_successful_acp_session_persists_adapter_and_gemini_pids(tmp_path, monke
     assert result.exit_code == 0
     state = invoke.read_adapter_state(home)
     assert state["adapter_pid"] == os.getpid()
-    assert isinstance(state["adapter_start_time"], float)
+    assert isinstance(state["adapter_start_time"], str)
+    assert state["adapter_start_time"].endswith("Z")
     assert state["gemini_pid"] == RuntimeStateClient.pid
     assert state["team"] == "team"
     assert state["agent"] == "agent"

@@ -93,11 +93,13 @@ def test_reap_orphan_acp_processes_filters_by_isolated_home(monkeypatch, tmp_pat
 
 def test_startup_recovery_resets_sessions_and_records_summary(monkeypatch, tmp_path):
     home = tmp_path / "home"
+    now = time.time()
+    crashed_start = datetime.fromtimestamp(now - 10, timezone.utc).isoformat().replace("+00:00", "Z")
     invoke.merge_adapter_state(
         home,
         backend="acp",
         adapter_pid=99999,
-        adapter_start_time="2026-01-01T00:00:00Z",
+        adapter_start_time=crashed_start,
         adapter_generation="gen",
         acp_session_id="live",
         acp_storage_session_id="store",
@@ -107,6 +109,11 @@ def test_startup_recovery_resets_sessions_and_records_summary(monkeypatch, tmp_p
     session = home / ".gemini" / "tmp" / "proj" / "chats" / "session-a.jsonl"
     session.parent.mkdir(parents=True)
     session.write_text("{}\n", encoding="utf-8")
+    os.utime(session, (now, now))
+    pre_crash_session = home / ".gemini" / "tmp" / "proj" / "chats" / "session-before-crash.jsonl"
+    pre_crash_session.write_text("{}\n", encoding="utf-8")
+    before_crash = now - 60
+    os.utime(pre_crash_session, (before_crash, before_crash))
     monkeypatch.setattr(crash_hygiene, "pid_alive", lambda pid: False)
     monkeypatch.setattr(crash_hygiene, "reap_orphan_acp_processes", lambda **kwargs: [101])
 
@@ -118,4 +125,6 @@ def test_startup_recovery_resets_sessions_and_records_summary(monkeypatch, tmp_p
     assert state["acp_storage_session_id"] is None
     assert state["gemini_pid"] is None
     assert state["last_reaper_summary"]["orphan_processes_killed"] == 1
+    assert state["last_reaper_summary"]["sessions_quarantined"] == 1
     assert not session.exists()
+    assert pre_crash_session.exists()

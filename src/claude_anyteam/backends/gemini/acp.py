@@ -402,7 +402,7 @@ def run(
             invoke.merge_adapter_state(
                 home,
                 adapter_pid=os.getpid(),
-                adapter_start_time=time.time(),
+                adapter_start_time=crash_hygiene.utc_now(),
                 team=team,
                 agent=agent,
                 cwd=str(cwd),
