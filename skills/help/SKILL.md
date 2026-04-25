@@ -15,8 +15,14 @@ claude-anyteam lets Claude Code route selected Agent Teams teammates to external
 
 ## When to choose a backend
 
-- Use `codex-*` for the most mature path, including Codex app-server mid-turn steering support.
+- Use `codex-*` for the most mature path, including Codex app-server mid-turn steering support. Codex teammates handle stateful multi-step work (implementer, executor, tester) reliably.
 - Use `gemini-*` when the user specifically wants Gemini CLI models or wants a second non-Claude backend. Gemini supports both `--backend headless` and `--backend acp`; ACP supports `--trust default|plan` with a team-lead approval bridge and next-turn steer via `SendMessage(message={"type":"steer", ...})`.
+
+### Role-fit guidance
+
+- **Strong fit for `gemini-*`**: single-turn analysis, document review, code review with a written rubric, second-opinion passes — anything where the teammate produces one self-contained deliverable per turn.
+- **Weak fit for `gemini-*` on older models (`gemini-2.5-*`)**: stateful executor roles like tester or implementer where the teammate must wait, observe, then act. Older Gemini drifts (re-runs finished work, ignores "stay parked", loses track of state). Prefer `gemini-3.1-pro` for these — it's substantially better at orchestration. If forced to use 2.5, give it short, complete, self-contained dispatches and explicit disk-state checks.
+- **Strong fit for `codex-*`**: stateful executor roles (implementer, tester) — the app-server backend handles tool loops well.
 
 ## Setting model and effort per teammate
 
@@ -25,10 +31,20 @@ The spawn shim reads `~/.claude/teams/<team>/agents/<name>.json` for per-teammat
 When the user asks for "best models and effort" or otherwise specifies model/effort intent:
 
 - For each `codex-*` member, write `{"model": "gpt-5.5", "effort": "xhigh"}`.
-- For each `gemini-*` member, write `{"model": "gemini-2.5-pro", "effort": "xhigh"}`.
+- For each `gemini-*` member, write `{"model": "gemini-3.1-pro", "effort": "xhigh"}`. (The adapter also supports `gemini-3-pro`, `gemini-3-flash`, and the `gemini-2.5-*` family — pick `gemini-3.1-pro` unless the user specifies otherwise.)
 - For each native Claude member, pass `model="opus"` directly to the `Agent(...)` call. Native Claude teammates use the host's Agent-tool model param, not the agent config file.
 
 The user does not interact with the JSON files; the lead writes them as part of the spawn flow.
+
+## Briefing teammates for orchestration and memory
+
+External-CLI teammates (`codex-*`, `gemini-*`) don't share the lead's context. Effective dispatches give them:
+
+1. **Self-contained instructions.** Don't reference earlier conversation; restate the goal, file paths, and exact deliverable in each message.
+2. **Explicit disk-state checks.** Tell the teammate to run `git log --oneline -5`, `ls <dir>`, or read the relevant file BEFORE starting work. This prevents redoing finished work — especially important for older Gemini models.
+3. **Memory access.** Both backends can read `~/.claude/projects/<project-slug>/memory/MEMORY.md` for persistent team context. For non-trivial roles, instruct the teammate to load `MEMORY.md` at the start of their first turn and save new persistent facts there.
+4. **Task discipline.** Teammates should use `TaskList`/`TaskUpdate` to claim and progress tasks. Tell them: "Mark `in_progress` only when actually working, `completed` only when verifiably done. Don't move tasks while waiting for triggers."
+5. **Park instructions.** When a teammate must wait (e.g., a tester waiting for an implementer's PR), tell them explicitly: "Do nothing — no file reads, no fixture setup, no progress reports. Idle until I message you with a go-signal."
 
 ## Patching agentType after spawn (current workaround)
 
@@ -43,7 +59,7 @@ TeamCreate(team_name="build-team")
 
 # 1. Write per-teammate agent configs BEFORE Agent(...) calls.
 write ~/.claude/teams/build-team/agents/codex-implementer.json   {"model": "gpt-5.5", "effort": "xhigh"}
-write ~/.claude/teams/build-team/agents/gemini-reviewer.json     {"model": "gemini-2.5-pro", "effort": "xhigh"}
+write ~/.claude/teams/build-team/agents/gemini-reviewer.json     {"model": "gemini-3.1-pro", "effort": "xhigh"}
 
 # 2. Spawn. Native Claude teammates take model via Agent's own param.
 Agent(team_name="build-team", name="codex-implementer", prompt="Implement the patch.")

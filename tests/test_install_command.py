@@ -485,6 +485,36 @@ def test_install_with_codex_signed_in_only_prints_gemini_walkthrough_and_updates
     assert settings_path.exists()
 
 
+def test_install_with_gemini_signed_in_only_prints_codex_walkthrough_and_updates_settings(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch, stub_providers=False)
+    _stub_provider_checks(
+        monkeypatch,
+        codex_cli=_codex_cli_missing(),
+        codex_signed_in=False,
+        gemini_cli=_gemini_cli_ready(signed_in=True),
+        gemini_signed_in=True,
+    )
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
+
+    stdout = capsys.readouterr().out
+    assert "Ready: Codex (not installed) · Gemini 0.39.0." in stdout
+    assert "Codex CLI:" in stdout
+    assert "  1. Install:  npm install -g @openai/codex" in stdout
+    assert "Refusing to install" not in stdout
+    assert settings_path.exists()
+
+
 def test_install_with_both_installed_but_not_signed_in_refuses(
     tmp_path: Path,
     monkeypatch,
