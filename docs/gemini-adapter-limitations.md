@@ -5,11 +5,11 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 ## App-server / TUI presence
 
 - **No direct Codex `app-server` sidecar equivalent:** ACP (`gemini --acp`) is JSON-RPC 2.0 over stdio, not an HTTP app server. The existing TUI/app-server client is not compatible with it.
-- **No mid-turn `turn/steer` parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP has `session/cancel`, but empirical testing showed cancelled prompt text can remain influential in later turns, so the ACP backend does not treat cancel as a safe steering primitive. ACP instead supports **next-turn steer**: structured `team-lead` steer messages are queued and prepended to the next task `session/prompt` boundary.
+- **Next-turn steer only, not mid-token-stream parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP now supports **next-turn steer** via `SendMessage(message={"type":"steer", ...})`: structured `team-lead` steer messages are queued and prepended to the next task `session/prompt` boundary. This is closer than no steering, but it is not Codex mid-token-stream `turn/steer` parity.
 
 ## Protocol and streaming
 
-- **Built-in tool result payloads may be missing:** Built-in tool updates in both headless `stream-json` and ACP can omit the tool output payload even when the assistant later depended on it; this has been empirically verified with shell commands. MCP tool updates do include output in ACP. The adapter parser tolerates missing built-in output but cannot recover the omitted payload.
+- **Resolved — built-in tool output loss mitigated by shadow MCP tools:** Gemini built-ins (`tools.core: []`) are intentionally disabled; teammates use `mcp_anyteam_*` shadow tools whose output is fully visible. Native built-in tool calls remain unavailable.
 - **ACP stdout can include a non-JSON preamble:** ACP stdout emits startup log lines before the JSON-RPC response, such as `Ignore file not found: ... .geminiignore` and `Hook registry initialized...`. The shared JSON-RPC stdio transport filters non-JSON lines, but strict third-party ACP clients may still fail on this host.
 - **Late `init` events are ignored:** If Gemini emits an `init` event after the first `message` event, the adapter logs a warning and discards it rather than overwriting the session id.
 - **Protocol field naming is still legacy:** Task-complete messages continue to use the legacy `codex_exit_code` protocol field for backwards compatibility, even when the value is a Gemini process exit code.
@@ -27,6 +27,10 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 - **Gemini 3 mapping uses `thinkingLevel`:** `minimal` and `low` map to `LOW`, `medium` to `MEDIUM`, and `high`/`xhigh` to `HIGH`, always with `includeThoughts: false`. Current Gemini 3-style docs expose only `LOW`, `MEDIUM`, and `HIGH`, so `xhigh` intentionally collapses to `high`; `minimal` is the lowest available level unless a non-thinking/base model alias is provided upstream.
 - **Unknown model families pass through:** The adapter only synthesizes effort aliases for model IDs beginning with `gemini-2.5` or `gemini-3`. Other models are passed through unchanged with a warning, because incompatible thinking config can fail at runtime.
 
+## Crash hygiene
+
+- **Resolved — orphan cleanup and stale-session quarantine:** ACP launches Gemini in its own process group, installs signal handlers, records a PID file, runs a startup reaper for orphaned Gemini processes filtered by the adapter's isolated HOME, and quarantines stale session JSONL files. Hard SIGKILL of the adapter still leaves a transient window where Gemini ACP subprocess and a session JSONL exist as orphans until the next adapter startup runs the reaper.
+
 ## Schema-constrained output
 
 - **Schema validation is prompt plus Python validation:** Gemini CLI has no `--output-schema` equivalent. The adapter embeds schemas in the prompt and validates final text in Python with retries, which is weaker than Codex's native schema enforcement.
@@ -39,7 +43,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 - **Only the known auth subtree is merged into isolated settings:** The adapter merges only `security.auth` from the user's real `~/.gemini/settings.json` into isolated per-session settings. Other auth-related state, such as account selection beyond `selectedType` or device codes, is not propagated. If Gemini introduces richer auth state, this merge will need to widen.
 - **Config isolation remains a tradeoff:** The adapter writes MCP settings under an isolated Gemini home and copies selected Gemini auth cache files when present. Operators should still prefer `GEMINI_API_KEY` or Vertex/ADC environment auth for unattended teammates.
-- **ACP trust modes and permission bridge:** ACP defaults to `trusted` for backward compatibility, which sets Gemini mode `yolo` and auto-approves `session/request_permission` with `allow_once` (equivalent to headless `--approval-mode yolo`). Set `CLAUDE_ANYTEAM_GEMINI_TRUST=default` or `plan` (or `gemini-anyteam --trust ...`) for untrusted task text; those modes forward permission requests to `team-lead` and wait up to `CLAUDE_ANYTEAM_GEMINI_APPROVAL_TIMEOUT` seconds (default 300, clamped below the prompt timeout). Denials or timeouts select Gemini's cancel option and mark the task blocked.
+- **Resolved — ACP trust modes and permission bridge:** ACP defaults to `trusted` for backward compatibility, which sets Gemini mode `yolo` and auto-approves `session/request_permission` with `allow_once` (equivalent to headless `--approval-mode yolo`). Set `CLAUDE_ANYTEAM_GEMINI_TRUST=default` or `plan` (or `gemini-anyteam --trust ...`) for untrusted task text; those modes forward permission requests to `team-lead` via `permission_request`, wait for `permission_response`, and fail closed only on denial or timeout (`CLAUDE_ANYTEAM_GEMINI_APPROVAL_TIMEOUT`, default 300 seconds and clamped below the prompt timeout).
 
 ## Open questions
 

@@ -16,7 +16,7 @@ claude-anyteam lets Claude Code route selected Agent Teams teammates to external
 ## When to choose a backend
 
 - Use `codex-*` for the most mature path, including Codex app-server mid-turn steering support.
-- Use `gemini-*` when the user specifically wants Gemini CLI models or wants a second non-Claude backend. Gemini currently uses headless `gemini -p ... --output-format stream-json`; it does not have Codex app-server `turn/steer` parity.
+- Use `gemini-*` when the user specifically wants Gemini CLI models or wants a second non-Claude backend. Gemini supports both `--backend headless` and `--backend acp`; ACP supports `--trust default|plan` with a team-lead approval bridge and next-turn steer via `SendMessage(message={"type":"steer", ...})`.
 
 ## Example
 

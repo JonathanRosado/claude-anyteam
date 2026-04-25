@@ -2,7 +2,7 @@
 
 claude-anyteam routes Agent Teams teammates to external CLI backends. Teammate names matching `codex-*` use the Codex adapter; names matching `gemini-*` use the Gemini CLI adapter. Other names continue to launch native Claude teammates.
 
-Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP defaults to fully trusted YOLO behavior, but supports `CLAUDE_ANYTEAM_GEMINI_TRUST=default|plan` / `gemini-anyteam --trust` to opt out for untrusted task text and bridge permission requests to `team-lead`. ACP also supports **next-turn steer** from `team-lead` at the next task prompt boundary; it is not mid-turn `turn/steer` parity.
+Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper and `mcp_anyteam_*` shadow tools to close Gemini built-in tool stdout visibility gaps. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP defaults to fully trusted YOLO behavior, but supports `CLAUDE_ANYTEAM_GEMINI_TRUST=default|plan` / `gemini-anyteam --trust` to opt out for untrusted task text and bridge permission requests to `team-lead`. ACP also supports **next-turn steer** from `team-lead` at the next task prompt boundary; it is not mid-turn `turn/steer` parity.
 
 <div align="center">
 
@@ -16,7 +16,7 @@ Gemini support ships both the default headless `gemini --prompt ... --output-for
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?style=flat-square&logo=node.js&logoColor=white)](npm/package.json)
 [![Backends](https://img.shields.io/badge/codex%20%2B%20gemini-supported%20today-10a37f?style=flat-square&logo=openai&logoColor=white)](#supported-backends)
-[![Tests](https://img.shields.io/badge/tests-313%20passing-22c55e?style=flat-square)](tests)
+[![Tests](https://img.shields.io/badge/tests-348%20passing-22c55e?style=flat-square)](tests)
 
 [**Quickstart**](#quickstart) · [**Architecture**](docs/architecture.md) · [**Roadmap**](docs/roadmap.md)
 
@@ -91,7 +91,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 
 **Battle-tested parity**
 
-313 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
+348 passing tests. Ten parity bugs caught by a live 4-teammate hunt (mixed Claude + Codex) and fixed. Zero accepted limitations on the protocol layer.
 
 </td>
 </tr>
