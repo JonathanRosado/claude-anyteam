@@ -1,0 +1,3 @@
+{"role":"assistant","content":[],"tool_calls":[{"type":"function","id":"tool_xVs8vQZfDJP5Klx60prjQmPB","function":{"name":"ReadFile","arguments":"{\"path\": \"./sentinel.txt\"}"}}]}
+{"role":"tool","content":[{"type":"text","text":"<system>1 lines read from file starting from line 1. Total lines in file: 1. End of file reached.</system>"},{"type":"text","text":"     1\tKIMI_SENTINEL_VALUE\n"}],"tool_call_id":"tool_xVs8vQZfDJP5Klx60prjQmPB"}
+{"role":"assistant","content":"TOOL_SENTINEL=KIMI_SENTINEL_VALUE"}

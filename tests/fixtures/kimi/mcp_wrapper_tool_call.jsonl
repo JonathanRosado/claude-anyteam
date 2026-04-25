@@ -1,0 +1,3 @@
+{"role":"assistant","content":[],"tool_calls":[{"type":"function","id":"tool_QJeAAQjv7xR0hi2Kguie8wOb","function":{"name":"read_config","arguments":"{}"}}]}
+{"role":"tool","content":"{\"name\":\"kimi-fixtures\",\"description\":\"Fixture team for Kimi MCP wrapper captures\",\"createdAt\":1777149115896,\"leadAgentId\":\"team-lead@kimi-fixtures\",\"leadSessionId\":\"kimi-fixture-session\",\"members\":[{\"agentId\":\"team-lead@kimi-fixtures\",\"name\":\"team-lead\",\"agentType\":\"team-lead\",\"model\":\"claude-opus-4-6\",\"joinedAt\":1777149115896,\"tmuxPaneId\":\"\",\"cwd\":\"/tmp/kimi-fixture-work\",\"subscriptions\":[]}]}","tool_call_id":"tool_QJeAAQjv7xR0hi2Kguie8wOb"}
+{"role":"assistant","content":"MCP_READ_CONFIG_OK"}

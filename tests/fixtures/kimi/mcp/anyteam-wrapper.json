@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "anyteam": {
+      "command": "/home/rosado/.local/bin/claude-anyteam-wrapper",
+      "args": [
+        "--team",
+        "kimi-fixtures",
+        "--name",
+        "kimi-fixture-agent"
+      ],
+      "env": {
+        "HOME": "/home/rosado",
+        "CLAUDE_ANYTEAM_TEAM": "kimi-fixtures",
+        "CLAUDE_ANYTEAM_NAME": "kimi-fixture-agent"
+      }
+    }
+  }
+}

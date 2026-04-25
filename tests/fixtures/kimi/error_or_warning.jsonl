@@ -1,0 +1,3 @@
+{"role":"assistant","content":[],"tool_calls":[{"type":"function","id":"tool_CqPRPmlYI9VVud9ZggtWfHX1","function":{"name":"Shell","arguments":"{\"command\": \"sh -c \\\"echo fixture warning >&2; exit 0\\\"\"}"}}]}
+{"role":"tool","content":[{"type":"text","text":"<system>Command executed successfully.</system>"},{"type":"text","text":"fixture warning\n"}],"tool_call_id":"tool_CqPRPmlYI9VVud9ZggtWfHX1"}
+{"role":"assistant","content":"WARNING_HANDLED"}
