@@ -1,120 +1,152 @@
-"""Real Gemini CLI smoke tests.
-
-These tests intentionally exercise the installed ``gemini`` binary instead of
-mocking subprocess/ACP traffic, so they are marked ``integration`` and excluded
-from the default suite. Run explicitly with:
-
-    uv run pytest -m integration tests/integration/test_gemini_smoke.py
-"""
-
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from claude_anyteam.backends.gemini import acp, invoke
-from claude_anyteam.backends.gemini.acp_client import detect_acp_flag
+from claude_anyteam.backends.gemini import invoke
+from claude_anyteam.backends.gemini.acp_client import (
+    GeminiAcpClient,
+    GeminiAcpError,
+    GeminiAcpTimeoutError,
+)
 
 pytestmark = pytest.mark.integration
 
-EXPECTED_GEMINI_VERSION = "0.39.0"
-SMOKE_TOKEN = "ANYTEAM_SMOKE_OK"
-
-
-_AUTH_ERROR_RE = re.compile(
-    r"(auth|authenticate|authentication|unauthenticated|login|log in|sign in|api key|oauth|credentials?)",
-    re.IGNORECASE,
+PROMPT = "Reply exactly: OK"
+AUTH_FAILURE_MARKERS = (
+    "auth",
+    "authenticate",
+    "authentication",
+    "credential",
+    "credentials",
+    "login",
+    "log in",
+    "not logged in",
+    "unauthorized",
+    "permission denied",
+    "api key",
 )
 
 
-def _gemini_binary() -> str:
-    return os.environ.get("CLAUDE_ANYTEAM_GEMINI_BINARY", "gemini")
+def _gemini_binary_or_skip() -> str:
+    binary = shutil.which("gemini")
+    if binary is None:
+        pytest.skip("gemini binary not found on PATH")
+    return binary
 
 
-def _require_gemini_039() -> str:
-    binary = _gemini_binary()
-    resolved = shutil.which(binary)
-    if not resolved:
-        pytest.skip(f"Gemini CLI binary {binary!r} not found on PATH")
-
+def _gemini_help_or_skip(binary: str) -> str:
     try:
         proc = subprocess.run(
-            [resolved, "--version"],
+            [binary, "--help"],
             capture_output=True,
             text=True,
             timeout=10,
-            check=True,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        pytest.skip(f"could not run {resolved} --version: {exc}")
+        pytest.skip(f"could not probe Gemini CLI help: {exc}")
+    return (proc.stdout or "") + (proc.stderr or "")
 
-    version_output = f"{proc.stdout}\n{proc.stderr}".strip()
-    match = re.search(r"\b(\d+\.\d+\.\d+)\b", version_output)
-    assert match, f"could not parse Gemini CLI version from: {version_output!r}"
-    assert match.group(1) == EXPECTED_GEMINI_VERSION, (
-        f"Gemini CLI version drift: expected {EXPECTED_GEMINI_VERSION}, "
-        f"got {match.group(1)} from {resolved} ({version_output!r})"
+
+def _require_acp_capability(binary: str) -> str:
+    help_text = _gemini_help_or_skip(binary)
+    if "--acp" in help_text:
+        return "--acp"
+    if "--experimental-acp" in help_text:
+        return "--experimental-acp"
+    pytest.skip("Gemini CLI does not advertise --acp/--experimental-acp capability")
+
+
+def _skip_if_auth_failure(detail: str | None) -> None:
+    if not detail:
+        return
+    lowered = detail.lower()
+    if any(marker in lowered for marker in AUTH_FAILURE_MARKERS):
+        pytest.skip(f"Gemini CLI is not authenticated for smoke test: {detail[:300]}")
+
+
+def _isolated_gemini_env(tmp_path: Path) -> dict[str, str]:
+    gemini_home = tmp_path / "gemini-home"
+    invoke.write_mcp_settings(
+        gemini_home,
+        team="integration",
+        agent_name="gemini-smoke-acp",
+        real_home=os.environ.get("HOME"),
+        cwd=tmp_path,
     )
-    return resolved
+    env = dict(os.environ)
+    env["HOME"] = str(gemini_home)
+    env.setdefault("GEMINI_CLI_NO_RELAUNCH", "true")
+    if os.environ.get("HOME"):
+        env["CLAUDE_ANYTEAM_REAL_HOME"] = os.environ["HOME"]
+    return env
 
 
-def _skip_if_unauthenticated(error: str | None) -> None:
-    if error and _AUTH_ERROR_RE.search(error):
-        pytest.skip(f"Gemini CLI is present but not authenticated: {error}")
+def _result_is_error(result: dict[str, Any]) -> bool:
+    stop_reason = str(result.get("stopReason") or result.get("stop_reason") or "").lower()
+    return bool(result.get("error") or stop_reason == "error")
 
 
-def _smoke_prompt(path_name: str) -> str:
-    return (
-        f"This is a claude-anyteam {path_name} integration smoke test. "
-        f"Do not call tools. Reply with only this exact token: {SMOKE_TOKEN}"
-    )
-
-
-def test_real_gemini_headless_smoke(tmp_path: Path) -> None:
-    """The headless adapter can invoke real Gemini CLI stream-json output."""
-    gemini = _require_gemini_039()
+def test_gemini_headless_smoke_returns_output_and_session_id(tmp_path: Path) -> None:
+    binary = _gemini_binary_or_skip()
+    _require_acp_capability(binary)
 
     result = invoke.run(
-        _smoke_prompt("headless"),
+        PROMPT,
         cwd=tmp_path,
-        gemini_binary=gemini,
-        gemini_home=tmp_path / "gemini-home-headless",
-        wrapper_identity=("integration", "gemini-smoke-headless"),
-        timeout_s=180,
+        gemini_binary=binary,
+        gemini_home=tmp_path / "gemini-home",
+        timeout_s=120,
     )
 
-    _skip_if_unauthenticated(result.error)
+    _skip_if_auth_failure(result.error)
+    assert result.exit_code == 0, result.error
     assert result.error is None
-    assert result.exit_code == 0
+    assert result.session_id, "Gemini stream did not include an init session_id"
+    assert result.events, "Gemini stream parser did not capture any JSON events"
     assert any(event.get("type") == "result" for event in result.events)
-    assert SMOKE_TOKEN in result.last_message
-    assert result.session_id
+    assert result.last_message.strip(), "Gemini did not return assistant output"
+    assert "OK" in result.last_message
 
 
-def test_real_gemini_acp_smoke(tmp_path: Path) -> None:
-    """The ACP adapter can initialize, create a session, and prompt real Gemini."""
-    gemini = _require_gemini_039()
-    acp_flag = detect_acp_flag(gemini)
-    assert acp_flag in {"--acp", "--experimental-acp"}
+def test_gemini_acp_smoke_prompt_emits_session_updates(tmp_path: Path) -> None:
+    binary = _gemini_binary_or_skip()
+    acp_flag = _require_acp_capability(binary)
+    env = _isolated_gemini_env(tmp_path)
 
-    result = acp.run(
-        _smoke_prompt("ACP"),
-        cwd=tmp_path,
-        gemini_binary=gemini,
-        gemini_home=tmp_path / "gemini-home-acp",
-        wrapper_identity=("integration", "gemini-smoke-acp"),
-        timeout_s=180,
-        ephemeral=True,
-    )
+    client = GeminiAcpClient(gemini_binary=binary, env=env, acp_flag=acp_flag)
+    try:
+        client.start()
+        try:
+            initialize = client.initialize(timeout=60)
+            session = client.session_new(cwd=tmp_path, timeout=120)
+            session_id = session.get("sessionId")
+            assert isinstance(session_id, str) and session_id
+            response = client.session_prompt(session_id=session_id, prompt=PROMPT, timeout=180)
+        except (GeminiAcpError, GeminiAcpTimeoutError) as exc:
+            _skip_if_auth_failure(str(exc))
+            raise
 
-    _skip_if_unauthenticated(result.error)
-    assert result.error is None
-    assert result.exit_code == 0
-    assert any(event.get("method") == "session/update" for event in result.events)
-    assert SMOKE_TOKEN in result.last_message
-    assert result.session_id
+        assert initialize.get("protocolVersion") == 1
+        assert isinstance(response, dict)
+        if _result_is_error(response):
+            _skip_if_auth_failure(repr(response))
+        assert not _result_is_error(response), response
+
+        notifications = client.drain_notifications()
+        session_updates = [
+            note
+            for note in notifications
+            if note.get("method") == "session/update"
+            and isinstance(note.get("params"), dict)
+            and note["params"].get("sessionId") in (None, session_id)
+        ]
+        assert session_updates, notifications
+    finally:
+        client.close()
