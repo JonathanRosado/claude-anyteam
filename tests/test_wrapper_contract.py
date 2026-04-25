@@ -83,11 +83,11 @@ def test_exposed_and_blocked_do_not_overlap():
     assert not overlap, f"EXPOSED_TOOLS and BLOCKED_TOOLS overlap: {overlap}"
 
 
-def test_exposed_count_is_six(identity):
-    """Canary: six tools is the intentional count. Adding a seventh should
+def test_exposed_count_is_seven(identity):
+    """Canary: seven tools is the intentional count. Adding an eighth should
     be a deliberate decision, not an accident — if this fails, update
     EXPOSED_TOOLS explicitly and re-check the blast radius."""
-    assert len(_advertised_tool_names()) == 6
+    assert len(_advertised_tool_names()) == 7
 
 
 def test_identity_required_at_build_time(monkeypatch):
@@ -160,6 +160,13 @@ def test_exposed_tools_covers_cs50victor_safe_subset():
     assert "read_inbox" in EXPOSED_TOOLS
     assert "task_list" in EXPOSED_TOOLS
     assert "read_config" in EXPOSED_TOOLS
+    assert "mcp_anyteam_shell" in EXPOSED_TOOLS
+
+
+def test_mcp_anyteam_shell_exists_and_produces_output(identity):
+    result = _call_tool("mcp_anyteam_shell", {"command": "printf shell-ok"})
+
+    assert result == {"stdout": "shell-ok", "stderr": "", "exit_code": 0}
 
 
 def test_all_cs50victor_tools_are_categorised():
