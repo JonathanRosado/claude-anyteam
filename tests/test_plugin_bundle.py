@@ -15,8 +15,8 @@ WRAPPER_SCRIPT = REPO_ROOT / "bin" / "claude-anyteam"
 HELP_SKILL = REPO_ROOT / "skills" / "help" / "SKILL.md"
 STATUS_SKILL = REPO_ROOT / "skills" / "status" / "SKILL.md"
 ORIENTATION_MESSAGE = (
-    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex "
-    "and gemini-* route to Gemini CLI. Use `claude-anyteam team-agent|team-patch|team-roster` "
+    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex, "
+    "gemini-* to Gemini, kimi-* to Kimi. Use `claude-anyteam team-agent|team-patch|team-roster` "
     "for team config (preferred over hand-edits). Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
 DRIFT_WARNING = "claude-anyteam: settings drifted — run `claude-anyteam install` to repair"
@@ -41,6 +41,10 @@ def test_plugin_manifests_exist_and_are_well_formed() -> None:
     assert marketplace["name"] == "claude-anyteam"
     assert marketplace["plugins"][0]["name"] == "claude-anyteam"
     assert marketplace["plugins"][0]["source"] == "./"
+    assert "Kimi" in plugin["description"]
+    assert "kimi-*" in marketplace["plugins"][0]["description"]
+    assert "kimi" in plugin["keywords"]
+    assert "kimi" in marketplace["plugins"][0]["tags"]
 
 
 def test_help_skill_exists_and_teaches_claude_about_cli_teammates() -> None:
@@ -48,12 +52,15 @@ def test_help_skill_exists_and_teaches_claude_about_cli_teammates() -> None:
 
     assert "name: help" in content
     # Core intent of the skill (unchanged across rewrites): teach Claude Code
-    # to name CLI teammates with `codex-` / `gemini-` prefixes and call the Agent Teams
+    # to name CLI teammates with `codex-` / `gemini-` / `kimi-` prefixes and call the Agent Teams
     # tools directly instead of explaining the mechanism.
     assert "codex-" in content
     assert "gemini-" in content
+    assert "kimi-" in content
     assert "^codex-" in content
     assert "^gemini-" in content
+    assert "^kimi-" in content
+    assert "kimi-code/kimi-for-coding" in content
     assert "TeamCreate" in content
     assert "Agent(" in content
     assert "when_to_use:" in content
@@ -119,12 +126,14 @@ def test_session_start_hook_prints_orientation_when_settings_are_complete(tmp_pa
     command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
     binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
     gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
+    kimi_binary = _make_executable(tmp_path / "configured" / "kimi-anyteam", "#!/bin/sh\n")
     _write_hook_settings(
         home,
         {
             "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
             "CLAUDE_ANYTEAM_BINARY": str(binary),
             "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+            "CLAUDE_ANYTEAM_KIMI_BINARY": str(kimi_binary),
         },
     )
 
@@ -196,6 +205,7 @@ def test_session_start_hook_warns_when_configured_paths_are_stale(tmp_path: Path
             "CLAUDE_CODE_TEAMMATE_COMMAND": str(tmp_path / "missing" / "claude-anyteam-spawn-shim"),
             "CLAUDE_ANYTEAM_BINARY": str(tmp_path / "missing" / "claude-anyteam"),
             "CLAUDE_ANYTEAM_GEMINI_BINARY": str(tmp_path / "missing" / "gemini-anyteam"),
+            "CLAUDE_ANYTEAM_KIMI_BINARY": str(tmp_path / "missing" / "kimi-anyteam"),
         },
     )
 
@@ -220,7 +230,8 @@ def test_session_start_hook_warns_when_configured_paths_are_not_executable(tmp_p
     command = tmp_path / "configured" / "claude-anyteam-spawn-shim"
     binary = tmp_path / "configured" / "claude-anyteam"
     gemini_binary = tmp_path / "configured" / "gemini-anyteam"
-    for path in (command, binary, gemini_binary):
+    kimi_binary = tmp_path / "configured" / "kimi-anyteam"
+    for path in (command, binary, gemini_binary, kimi_binary):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/bin/sh\n", encoding="utf-8")
         path.chmod(0o644)
@@ -230,6 +241,7 @@ def test_session_start_hook_warns_when_configured_paths_are_not_executable(tmp_p
             "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
             "CLAUDE_ANYTEAM_BINARY": str(binary),
             "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+            "CLAUDE_ANYTEAM_KIMI_BINARY": str(kimi_binary),
         },
     )
 
@@ -303,12 +315,14 @@ def test_session_start_hook_uses_grep_fallback_when_python3_is_missing(tmp_path:
     command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
     binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
     gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
+    kimi_binary = _make_executable(tmp_path / "configured" / "kimi-anyteam", "#!/bin/sh\n")
     _write_hook_settings(
         home,
         {
             "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
             "CLAUDE_ANYTEAM_BINARY": str(binary),
             "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+            "CLAUDE_ANYTEAM_KIMI_BINARY": str(kimi_binary),
         },
     )
 

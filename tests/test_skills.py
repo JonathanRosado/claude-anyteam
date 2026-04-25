@@ -59,6 +59,8 @@ def test_help_skill_documents_backend_routing() -> None:
     body = path.read_text(encoding="utf-8")
     assert "^codex-" in body, "help skill must state the codex- name regex"
     assert "^gemini-" in body, "help skill must state the gemini- name regex"
+    assert "^kimi-" in body, "help skill must state the kimi- name regex"
+    assert "kimi-code/kimi-for-coding" in body, "help skill must include the Kimi default model slug"
     assert "TeamCreate" in body, "help skill must show the TeamCreate tool call"
     assert "Agent(" in body, "help skill must show the Agent tool call"
     assert "team_name" in body, "help skill must name the team_name parameter"
