@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -1492,6 +1492,7 @@ def install(
     gemini_cli_check_fn: Callable[[], GeminiCliCheck] | None = None,
     codex_auth_check_fn: Callable[[], AuthCheck] | None = None,
     gemini_auth_check_fn: Callable[[], AuthCheck] | None = None,
+    provider_status_callback: Callable[[str], None] | None = None,
     force_empty: bool = False,
     no_allowlist: bool = False,
 ) -> InstallResult:
@@ -1561,6 +1562,26 @@ def install(
         err = InstallError(_format_no_provider_ready_message(codex_status, gemini_status))
         err.cli_exit_code = INSTALL_ERROR_EXIT_NO_PROVIDER  # type: ignore[attr-defined]
         raise err
+
+    if provider_status_callback is not None:
+        render_codex_cli = replace(
+            codex_cli,
+            signed_in=bool(codex_cli.found and codex_auth.signed_in),
+            signed_in_detail=codex_auth.signed_in_detail,
+        )
+        render_gemini_cli = replace(
+            gemini_cli,
+            signed_in=bool(gemini_cli.found and gemini_auth.signed_in),
+            signed_in_detail=gemini_auth.signed_in_detail,
+        )
+        provider_status_callback(
+            "\n".join(
+                [
+                    _render_provider_status(render_codex_cli, render_gemini_cli),
+                    _render_provider_summary(render_codex_cli, render_gemini_cli),
+                ]
+            )
+        )
 
     paths = discover_managed_paths(
         settings_path=settings_path,
@@ -1849,6 +1870,38 @@ def uninstall(
 PROVIDER_STATUS_RULE = "─" * 45
 
 
+def _codex_render_status(codex: CodexCliCheck) -> ProviderStatus:
+    if not codex.found:
+        state: ProviderState = "MISSING"
+    elif codex.signed_in:
+        state = "READY"
+    else:
+        state = "NEEDS_SIGNIN"
+    return ProviderStatus(
+        provider_key="codex",
+        display_name="Codex CLI",
+        summary_name="Codex",
+        state=state,
+        version=codex.version,
+    )
+
+
+def _gemini_render_status(gemini: GeminiCliCheck) -> ProviderStatus:
+    if not gemini.found:
+        state: ProviderState = "MISSING"
+    elif gemini.signed_in:
+        state = "READY"
+    else:
+        state = "NEEDS_SIGNIN"
+    return ProviderStatus(
+        provider_key="gemini",
+        display_name="Gemini CLI",
+        summary_name="Gemini",
+        state=state,
+        version=gemini.version,
+    )
+
+
 def _provider_row(status: ProviderStatus) -> str:
     return f"{status.display_name:<14}{status.installed_cell():<18}{status.signin_cell()}"
 
@@ -1867,7 +1920,7 @@ def _aggregate_summary_line(codex: ProviderStatus, gemini: ProviderStatus) -> st
     return f"{lead}: {_provider_summary_entry(codex)} · {_provider_summary_entry(gemini)}."
 
 
-def _format_provider_status_table(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+def _format_provider_status_rows(codex: ProviderStatus, gemini: ProviderStatus) -> str:
     return "\n".join(
         [
             "Provider status",
@@ -1876,6 +1929,28 @@ def _format_provider_status_table(codex: ProviderStatus, gemini: ProviderStatus)
             _provider_row(codex),
             _provider_row(gemini),
             PROVIDER_STATUS_RULE,
+        ]
+    )
+
+
+def _render_provider_status(codex: CodexCliCheck, gemini: GeminiCliCheck) -> str:
+    return _format_provider_status_rows(
+        _codex_render_status(codex),
+        _gemini_render_status(gemini),
+    )
+
+
+def _render_provider_summary(codex: CodexCliCheck, gemini: GeminiCliCheck) -> str:
+    return _aggregate_summary_line(
+        _codex_render_status(codex),
+        _gemini_render_status(gemini),
+    )
+
+
+def _format_provider_status_table(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    return "\n".join(
+        [
+            _format_provider_status_rows(codex, gemini),
             _aggregate_summary_line(codex, gemini),
         ]
     )
@@ -1961,7 +2036,7 @@ def _format_no_provider_ready_message(codex: ProviderStatus, gemini: ProviderSta
     return "\n\n".join(block for block in blocks if block)
 
 
-def format_install_message(result: InstallResult) -> str:
+def format_install_message(result: InstallResult, *, include_provider_status: bool = True) -> str:
     lines: list[str] = []
 
     codex_status = result.codex_status or _codex_provider_status(
@@ -1974,7 +2049,8 @@ def format_install_message(result: InstallResult) -> str:
     )
 
     if codex_status is not None and gemini_status is not None:
-        lines.append(_format_provider_status_table(codex_status, gemini_status))
+        if include_provider_status:
+            lines.append(_format_provider_status_table(codex_status, gemini_status))
         if result.force_empty_used and not _any_provider_ready(codex_status, gemini_status):
             lines.append(_format_no_provider_explainer())
         walkthrough = _format_provider_walkthroughs(codex_status, gemini_status)

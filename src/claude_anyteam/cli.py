@@ -213,6 +213,14 @@ def _install_command(
     else:
         prompt_fn = _interactive_prompt
 
+    provider_status_rendered = False
+
+    def _print_provider_status(block: str) -> None:
+        nonlocal provider_status_rendered
+        print(block, file=stream)
+        print("", file=stream)
+        provider_status_rendered = True
+
     try:
         result = install_settings(
             settings_path=settings_path,
@@ -220,6 +228,7 @@ def _install_command(
             state_path=state_path,
             argv0=current_executable or sys.argv[0],
             prompt_fn=prompt_fn,
+            provider_status_callback=_print_provider_status,
             force_empty=force_empty or self_heal,
             no_allowlist=no_allowlist,
         )
@@ -227,7 +236,10 @@ def _install_command(
         print(str(exc), file=sys.stderr)
         return getattr(exc, "cli_exit_code", 2)
 
-    print(format_install_message(result), file=stream)
+    print(
+        format_install_message(result, include_provider_status=not provider_status_rendered),
+        file=stream,
+    )
     return 0
 
 

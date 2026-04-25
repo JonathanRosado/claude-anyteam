@@ -26,12 +26,17 @@ _GEMINI_ALL_CAPABILITIES = {
 }
 
 
-def _codex_cli_ready(version: str | None = "0.124.0") -> installer_mod.CodexCliCheck:
+def _codex_cli_ready(
+    version: str | None = "0.124.0",
+    *,
+    signed_in: bool = False,
+) -> installer_mod.CodexCliCheck:
     return installer_mod.CodexCliCheck(
         found=True,
         path=Path("/usr/local/bin/codex"),
         version=version,
         raw_output=f"codex-cli {version}" if version else "codex-cli unknown",
+        signed_in=signed_in,
     )
 
 
@@ -39,13 +44,18 @@ def _codex_cli_missing() -> installer_mod.CodexCliCheck:
     return installer_mod.CodexCliCheck(found=False, path=None, version=None, raw_output=None)
 
 
-def _gemini_cli_ready(version: str | None = "0.39.0") -> installer_mod.GeminiCliCheck:
+def _gemini_cli_ready(
+    version: str | None = "0.39.0",
+    *,
+    signed_in: bool = False,
+) -> installer_mod.GeminiCliCheck:
     return installer_mod.GeminiCliCheck(
         found=True,
         path=Path("/usr/local/bin/gemini"),
         version=version,
         raw_output=version,
         capabilities=_GEMINI_ALL_CAPABILITIES,
+        signed_in=signed_in,
     )
 
 
@@ -151,6 +161,123 @@ def _uninstall_argv(
 # ---------------------------------------------------------------------------
 # Existing coverage, updated to stub the prereq check.
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("codex_cli", "gemini_cli", "expected"),
+    [
+        (
+            _codex_cli_ready(signed_in=True),
+            _gemini_cli_ready(signed_in=True),
+            "\n".join(
+                [
+                    "Provider status",
+                    "─────────────────────────────────────────────",
+                    "              Installed?        Signed in?",
+                    "Codex CLI     ✅ 0.124.0         ✅",
+                    "Gemini CLI    ✅ 0.39.0          ✅",
+                    "─────────────────────────────────────────────",
+                ]
+            ),
+        ),
+        (
+            _codex_cli_ready(signed_in=False),
+            _gemini_cli_ready(signed_in=False),
+            "\n".join(
+                [
+                    "Provider status",
+                    "─────────────────────────────────────────────",
+                    "              Installed?        Signed in?",
+                    "Codex CLI     ✅ 0.124.0         ❌",
+                    "Gemini CLI    ✅ 0.39.0          ❌",
+                    "─────────────────────────────────────────────",
+                ]
+            ),
+        ),
+        (
+            _codex_cli_missing(),
+            _gemini_cli_missing(),
+            "\n".join(
+                [
+                    "Provider status",
+                    "─────────────────────────────────────────────",
+                    "              Installed?        Signed in?",
+                    "Codex CLI     ❌" + (" " * 17) + "—",
+                    "Gemini CLI    ❌" + (" " * 17) + "—",
+                    "─────────────────────────────────────────────",
+                ]
+            ),
+        ),
+    ],
+)
+def test_render_provider_status_buckets(
+    codex_cli: installer_mod.CodexCliCheck,
+    gemini_cli: installer_mod.GeminiCliCheck,
+    expected: str,
+):
+    assert installer_mod._render_provider_status(codex_cli, gemini_cli) == expected
+
+
+@pytest.mark.parametrize(
+    ("codex_cli", "gemini_cli", "expected"),
+    [
+        (
+            _codex_cli_ready(signed_in=True),
+            _gemini_cli_ready(signed_in=True),
+            "Ready: Codex 0.124.0 · Gemini 0.39.0.",
+        ),
+        (
+            _codex_cli_ready(signed_in=False),
+            _gemini_cli_ready(signed_in=False),
+            "Almost ready: Codex (sign in to finish) · Gemini (sign in to finish).",
+        ),
+        (
+            _codex_cli_missing(),
+            _gemini_cli_missing(),
+            "Not ready: Codex (not installed) · Gemini (not installed).",
+        ),
+    ],
+)
+def test_render_provider_summary_buckets(
+    codex_cli: installer_mod.CodexCliCheck,
+    gemini_cli: installer_mod.GeminiCliCheck,
+    expected: str,
+):
+    assert installer_mod._render_provider_summary(codex_cli, gemini_cli) == expected
+
+
+def test_install_prints_provider_status_before_settings_update(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    codex_binary = _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+
+    _stub_prereq_found(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli_mod.sys, "argv", [str(codex_binary)])
+
+    assert cli_mod.main(_install_argv(settings_path, claude_json_path, state_path)) == 0
+
+    stdout = capsys.readouterr().out
+    expected_status = installer_mod._render_provider_status(
+        _codex_cli_ready(signed_in=True),
+        _gemini_cli_missing(),
+    )
+    expected_summary = installer_mod._render_provider_summary(
+        _codex_cli_ready(signed_in=True),
+        _gemini_cli_missing(),
+    )
+    updated_line = f"Updated {settings_path.resolve()}"
+
+    assert stdout.count("Provider status") == 1
+    assert (
+        stdout.index(expected_status)
+        < stdout.index(expected_summary)
+        < stdout.index(updated_line)
+    )
+
 
 def test_install_creates_settings_and_sets_required_env_keys(
     tmp_path: Path,
