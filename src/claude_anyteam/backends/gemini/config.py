@@ -17,7 +17,9 @@ GEMINI_BINARY_ENV = "CLAUDE_ANYTEAM_GEMINI_BINARY"
 GEMINI_HOME_ENV = "CLAUDE_ANYTEAM_GEMINI_HOME"
 GEMINI_BACKEND_ENV = "CLAUDE_ANYTEAM_GEMINI_BACKEND"
 GEMINI_EFFORT_ENV = "CLAUDE_ANYTEAM_GEMINI_EFFORT"
+GEMINI_TRUST_ENV = "CLAUDE_ANYTEAM_GEMINI_TRUST"
 
+GEMINI_TRUST_MODES = {"trusted", "default", "plan"}
 GEMINI_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
@@ -34,6 +36,7 @@ class GeminiSettings:
     effort: str | None = None
     gemini_home: Path | None = None
     backend: Literal["headless", "acp"] = "headless"
+    trust_mode: Literal["trusted", "default", "plan"] = "trusted"
 
 
 def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
@@ -65,6 +68,9 @@ def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
     backend_raw = str(_pick(overrides, "backend", os.environ.get(GEMINI_BACKEND_ENV, "headless")))
     if backend_raw not in {"headless", "acp"}:
         raise ValueError(f"Gemini backend must be headless or acp, got {backend_raw!r}")
+    trust_raw = str(_pick(overrides, "trust_mode", os.environ.get(GEMINI_TRUST_ENV, "trusted")))
+    if trust_raw not in GEMINI_TRUST_MODES:
+        raise ValueError(f"Gemini trust mode must be trusted, default, or plan, got {trust_raw!r}")
 
     return GeminiSettings(
         team_name=str(team_name),
@@ -78,4 +84,5 @@ def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
         effort=effort,
         gemini_home=Path(str(home_raw)).expanduser().resolve() if home_raw else None,
         backend=backend_raw,  # type: ignore[arg-type]
+        trust_mode=trust_raw,  # type: ignore[arg-type]
     )

@@ -101,6 +101,7 @@ def _backend_run(
         # the loop only tracks durable Gemini session ids across tasks.
         kwargs["resume_session_id"] = None if ephemeral else resume_session_id
         kwargs["ephemeral"] = ephemeral
+        kwargs["trust_mode"] = s.trust_mode
     else:
         kwargs["resume_session_id"] = resume_session_id
     return runner.run(prompt, **kwargs)
@@ -323,6 +324,13 @@ def _blocked(all_tasks: list, t) -> bool:
     return any((by_id.get(bid) is not None and by_id[bid].status not in ("completed", "deleted")) for bid in t.blocked_by)
 
 
+def _is_permission_blocked(result: Any) -> bool:
+    return any(
+        isinstance(ev, dict) and ev.get("type") == "permission_blocked"
+        for ev in getattr(result, "events", []) or []
+    )
+
+
 def _should_drop_session_after_failure(result: Any) -> bool:
     if getattr(result, "exit_code", None) == 124:
         return True
@@ -343,6 +351,15 @@ def _execute_task(state: GeminiLoopState, task) -> None:
         if result.exit_code == 0 and result.structured is not None:
             if result.session_id:
                 state.gemini_session_id = result.session_id
+            break
+        if _is_permission_blocked(result):
+            logger.warn(
+                "gemini.task.permission_blocked",
+                task_id=task.id,
+                session_id=state.gemini_session_id or result.session_id,
+                error=result.error,
+            )
+            state.gemini_session_id = None
             break
         if _should_drop_session_after_failure(result):
             logger.warn(

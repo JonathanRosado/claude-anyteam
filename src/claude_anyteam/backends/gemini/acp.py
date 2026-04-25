@@ -15,12 +15,15 @@ from claude_anyteam.env import identity_env
 from claude_anyteam.schema_validation import load_schema, parse_and_validate
 
 from . import invoke
+
+TRUST_TO_ACP_MODE = {"trusted": "yolo", "default": "default", "plan": "plan"}
 from .acp_client import (
     GeminiAcpAuthenticationError,
     GeminiAcpClient,
     GeminiAcpError,
     GeminiAcpTimeoutError,
     detect_acp_flag,
+    permission_request_label,
 )
 
 
@@ -230,6 +233,32 @@ def _assistant_text_and_tools(events: list[dict[str, Any]], session_id: str) -> 
     return "".join(parts).strip(), tool_calls
 
 
+def _permission_block_message(block: dict[str, Any]) -> str:
+    label = block.get("label") or permission_request_label(block.get("params"))
+    trust_mode = block.get("trust_mode") or "default"
+    return (
+        f"Gemini requested permission for {label}; trust_mode={trust_mode}; "
+        "rerun with CLAUDE_ANYTEAM_GEMINI_TRUST=trusted to allow."
+    )
+
+
+def _permission_block_result(
+    block: dict[str, Any],
+    *,
+    events: list[dict[str, Any]],
+    session_id: str | None,
+) -> CodexResult:
+    event = {"type": "permission_blocked", "source": "gemini_acp", **block}
+    return CodexResult(
+        exit_code=1,
+        structured=None,
+        last_message="",
+        events=[*events, event],
+        error=_permission_block_message(block),
+        session_id=session_id,
+    )
+
+
 def _cancel_session_quietly(client: GeminiAcpClient, session_id: str | None) -> None:
     if not session_id:
         return
@@ -252,7 +281,10 @@ def run(
     effort: str | None = None,
     gemini_home: Path | None = None,
     ephemeral: bool = False,
+    trust_mode: str = "trusted",
 ) -> CodexResult:
+    if trust_mode not in TRUST_TO_ACP_MODE:
+        raise ValueError(f"Gemini trust mode must be trusted, default, or plan, got {trust_mode!r}")
     team, agent = wrapper_identity or ("default", "gemini")
     real_home = os.environ.get("HOME")
     home = gemini_home or invoke._default_gemini_home(team, agent)
@@ -281,9 +313,9 @@ def run(
     error: str | None = None
     session_id: str | None = None
     loaded = False
-    logger.info("gemini_acp.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id), model=model, effort=effort, effective_model=effective_model)
+    logger.info("gemini_acp.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id), model=model, effort=effort, effective_model=effective_model, trust_mode=trust_mode)
 
-    client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env)
+    client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env, trust_mode=trust_mode)
     try:
         client.start()
         initialize_result = client.initialize()
@@ -299,7 +331,7 @@ def run(
             stored_storage_session_id=stored_storage if isinstance(stored_storage, str) else None,
         )
         try:
-            client.set_session_mode(session_id=session_id, mode_id="yolo")
+            client.set_session_mode(session_id=session_id, mode_id=TRUST_TO_ACP_MODE[trust_mode])
         except GeminiAcpError as e:
             logger.warn("gemini_acp.set_mode_failed", error=str(e))
         if effective_model:
@@ -309,12 +341,20 @@ def run(
                 logger.warn("gemini_acp.set_model_failed", model=effective_model, raw_model=model, effort=effort, error=str(e))
         response = client.session_prompt(session_id=session_id, prompt=prompt, timeout=timeout_s)
         events = _normalize_tool_events(client.drain_notifications(), session_id)
+        if getattr(client, "permission_blocked", None) is not None:
+            if not ephemeral:
+                invoke.reset_acp_adapter_state(home)
+            return _permission_block_result(getattr(client, "permission_blocked"), events=events, session_id=session_id)
     except (subprocess.TimeoutExpired, GeminiAcpTimeoutError):
         _cancel_session_quietly(client, session_id)
         if not ephemeral:
             invoke.reset_acp_adapter_state(home)
         return CodexResult(exit_code=124, structured=None, last_message="", events=events, error=f"gemini ACP timed out after {timeout_s}s; ACP session was dropped for the next task", session_id=session_id)
     except Exception as e:
+        if getattr(client, "permission_blocked", None) is not None:
+            if not ephemeral:
+                invoke.reset_acp_adapter_state(home)
+            return _permission_block_result(getattr(client, "permission_blocked"), events=events, session_id=session_id)
         return CodexResult(exit_code=1, structured=None, last_message="", events=events, error=str(e), session_id=session_id)
     finally:
         client.close()

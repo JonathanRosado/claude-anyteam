@@ -173,3 +173,40 @@ def test_acp_run_closes_client_on_schema_validation_failure(tmp_path, monkeypatc
     assert result.exit_code == 1
     assert "schema validation" in (result.error or "")
     assert InvalidSchemaClient.close_count == 1
+
+class ModeRecordingClient(FakeClient):
+    modes = []
+    init_kwargs = []
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        type(self).init_kwargs.append(kwargs)
+    def set_session_mode(self, **kwargs):
+        type(self).modes.append(kwargs)
+        return {}
+
+
+def test_acp_run_trust_modes_map_to_acp_session_modes(tmp_path, monkeypatch):
+    monkeypatch.setattr(acp, "GeminiAcpClient", ModeRecordingClient)
+    for trust_mode, acp_mode in [("trusted", "yolo"), ("default", "default"), ("plan", "plan")]:
+        ModeRecordingClient.instances = []
+        ModeRecordingClient.modes = []
+        ModeRecordingClient.init_kwargs = []
+        result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / f"home-{trust_mode}", trust_mode=trust_mode)
+        assert result.exit_code == 0
+        assert ModeRecordingClient.init_kwargs[0]["trust_mode"] == trust_mode
+        assert ModeRecordingClient.modes == [{"session_id": "live-1", "mode_id": acp_mode}]
+
+
+class PermissionBlockedClient(FakeClient):
+    def set_session_mode(self, **kwargs): return {}
+    def session_prompt(self, **kwargs):
+        self.permission_blocked = {"trust_mode": "default", "label": "Write file", "params": {"toolCall": {"title": "Write file"}}}
+        raise acp.GeminiAcpError("permission denied")
+
+
+def test_acp_run_returns_permission_blocked_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(acp, "GeminiAcpClient", PermissionBlockedClient)
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / "home", trust_mode="default")
+    assert result.exit_code == 1
+    assert result.error == "Gemini requested permission for Write file; trust_mode=default; rerun with CLAUDE_ANYTEAM_GEMINI_TRUST=trusted to allow."
+    assert any(ev.get("type") == "permission_blocked" for ev in result.events)

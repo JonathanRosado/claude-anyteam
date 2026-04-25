@@ -39,7 +39,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 - **Only the known auth subtree is merged into isolated settings:** The adapter merges only `security.auth` from the user's real `~/.gemini/settings.json` into isolated per-session settings. Other auth-related state, such as account selection beyond `selectedType` or device codes, is not propagated. If Gemini introduces richer auth state, this merge will need to widen.
 - **Config isolation remains a tradeoff:** The adapter writes MCP settings under an isolated Gemini home and copies selected Gemini auth cache files when present. Operators should still prefer `GEMINI_API_KEY` or Vertex/ADC environment auth for unattended teammates.
-- **ACP YOLO trust model:** ACP YOLO mode plus auto-approving every `session/request_permission` with `allow_once` is functionally equivalent to headless `--approval-mode yolo`. Treat Gemini teammates as fully trusted code-execution agents. Untrusted task text could instruct broad filesystem/shell actions or misleading inter-teammate messaging.
+- **ACP trust modes:** ACP defaults to `trusted` for backward compatibility, which sets Gemini mode `yolo` and auto-approves `session/request_permission` with `allow_once` (equivalent to headless `--approval-mode yolo`). Set `CLAUDE_ANYTEAM_GEMINI_TRUST=default` or `plan` (or `gemini-anyteam --trust ...`) for untrusted task text; those modes set ACP `default`/`plan`, answer permission requests with `cancel`, and mark the task blocked with the requested action details. Approval bridging to `team-lead` is not implemented yet, so non-trusted modes never approve mutations automatically.
 
 ## Open questions
 

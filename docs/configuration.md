@@ -1,6 +1,6 @@
 # Configuration
 
-claude-anyteam now supports two routed backend prefixes by default: `codex-*` for Codex and `gemini-*` for Gemini CLI. Shared settings such as `CLAUDE_ANYTEAM_TEAM`, `CLAUDE_ANYTEAM_NAME`, `CLAUDE_ANYTEAM_CWD`, `CLAUDE_ANYTEAM_MODEL`, and per-agent `model` config apply to both. Codex-only settings include `CODEX_BINARY`, `CLAUDE_ANYTEAM_APP_SERVER`, and `CLAUDE_ANYTEAM_EFFORT`. Gemini-only settings include `CLAUDE_ANYTEAM_GEMINI_BINARY`, `CLAUDE_ANYTEAM_GEMINI_HOME`, `CLAUDE_ANYTEAM_GEMINI_BACKEND`, and `CLAUDE_ANYTEAM_GEMINI_EFFORT`; Gemini effort is mapped through adapter-owned `modelConfigs.customAliases` when a Gemini model is configured.
+claude-anyteam now supports two routed backend prefixes by default: `codex-*` for Codex and `gemini-*` for Gemini CLI. Shared settings such as `CLAUDE_ANYTEAM_TEAM`, `CLAUDE_ANYTEAM_NAME`, `CLAUDE_ANYTEAM_CWD`, `CLAUDE_ANYTEAM_MODEL`, and per-agent `model` config apply to both. Codex-only settings include `CODEX_BINARY`, `CLAUDE_ANYTEAM_APP_SERVER`, and `CLAUDE_ANYTEAM_EFFORT`. Gemini-only settings include `CLAUDE_ANYTEAM_GEMINI_BINARY`, `CLAUDE_ANYTEAM_GEMINI_HOME`, `CLAUDE_ANYTEAM_GEMINI_BACKEND`, `CLAUDE_ANYTEAM_GEMINI_EFFORT`, and `CLAUDE_ANYTEAM_GEMINI_TRUST`; Gemini effort is mapped through adapter-owned `modelConfigs.customAliases` when a Gemini model is configured.
 
 Gemini teammates use adapter-owned Gemini config/session state and do not mutate the user's real `~/.gemini/settings.json`. See `docs/gemini-adapter-limitations.md` for auth and app-server parity notes.
 
@@ -67,6 +67,7 @@ Every flag has an equivalent env var:
 | `CLAUDE_ANYTEAM_GEMINI_HOME` | adapter-owned Gemini home for isolated config/session state |
 | `CLAUDE_ANYTEAM_GEMINI_BACKEND` | Gemini transport: `headless` (default) or `acp` |
 | `CLAUDE_ANYTEAM_GEMINI_EFFORT` | Gemini thinking effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| `CLAUDE_ANYTEAM_GEMINI_TRUST` | ACP trust policy: `trusted` (default/backward compatible), `default`, or `plan`; non-trusted modes cancel permission requests and block the task |
 
 ## Per-teammate configuration (shim path)
 
@@ -94,7 +95,7 @@ Behavior:
 - Unknown keys — ignored. Only `model` and `effort` are forwarded today; more keys may be added later.
 - Native (`claude-*`) teammates — the file is not consulted; native dispatch is always pass-through.
 
-Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT` for Codex, `CLAUDE_ANYTEAM_GEMINI_EFFORT` for Gemini) → adapter defaults → backend CLI defaults.
+Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT` for Codex, `CLAUDE_ANYTEAM_GEMINI_EFFORT` / `CLAUDE_ANYTEAM_GEMINI_TRUST` for Gemini) → adapter defaults → backend CLI defaults.
 
 ## Shim configuration
 

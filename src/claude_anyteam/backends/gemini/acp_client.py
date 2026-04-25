@@ -23,6 +23,25 @@ class GeminiAcpAuthenticationError(GeminiAcpError):
     """Raised when Gemini ACP authentication fails."""
 
 
+TRUST_MODES = {"trusted", "default", "plan"}
+
+
+def permission_request_label(params: Any) -> str:
+    """Return a compact human-readable label for ACP permission details."""
+    if isinstance(params, dict):
+        for key in ("title", "tool", "toolName", "tool_name", "command", "description"):
+            value = params.get(key)
+            if isinstance(value, str) and value:
+                return value
+        tool_call = params.get("toolCall") or params.get("tool_call")
+        if isinstance(tool_call, dict):
+            for key in ("title", "name", "toolName", "tool_name", "command"):
+                value = tool_call.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return "a tool/action"
+
+
 def detect_acp_flag(gemini_binary: str = "gemini") -> str:
     """Return the supported Gemini CLI ACP flag, preferring the stable spelling.
 
@@ -59,7 +78,10 @@ class GeminiAcpClient(JsonRpcStdioClient):
         debug: bool = False,
         extra_args: list[str] | None = None,
         acp_flag: str | None = None,
+        trust_mode: str = "trusted",
     ) -> None:
+        if trust_mode not in TRUST_MODES:
+            raise ValueError(f"Gemini ACP trust mode must be trusted, default, or plan, got {trust_mode!r}")
         argv = [gemini_binary, acp_flag or detect_acp_flag(gemini_binary)]
         if debug:
             argv.append("--debug")
@@ -72,6 +94,8 @@ class GeminiAcpClient(JsonRpcStdioClient):
         )
         self._error_cls = GeminiAcpError
         self._timeout_error_cls = GeminiAcpTimeoutError
+        self.trust_mode = trust_mode
+        self.permission_blocked: dict[str, Any] | None = None
 
     def initialize(
         self,
@@ -184,5 +208,24 @@ class GeminiAcpClient(JsonRpcStdioClient):
 
     def handle_server_request(self, msg: dict[str, Any]) -> Any:
         if msg.get("method") == "session/request_permission":
-            return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+            if self.trust_mode == "trusted":
+                return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+            params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+            label = permission_request_label(params)
+            self.permission_blocked = {
+                "trust_mode": self.trust_mode,
+                "label": label,
+                "params": params,
+            }
+            # Wake the in-flight session/prompt request so acp.run can mark the
+            # task blocked immediately instead of waiting for Gemini to settle.
+            with self._pending_lock:
+                for pending in self._pending.values():
+                    pending.error = {
+                        "code": -32001,
+                        "message": f"Gemini ACP permission denied for {label}; trust_mode={self.trust_mode}",
+                        "data": self.permission_blocked,
+                    }
+                    pending.event.set()
+            return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
         return None

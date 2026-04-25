@@ -87,3 +87,20 @@ def test_client_uses_experimental_acp_flag_when_only_deprecated_flag_is_advertis
     c = GeminiAcpClient(gemini_binary="gemini")
 
     assert c._argv[:2] == ["gemini", "--experimental-acp"]
+
+
+def test_request_permission_default_cancels_and_records_details():
+    c = GeminiAcpClient(trust_mode="default")
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"toolCall": {"title": "Write file"}}})
+    assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+    assert c.permission_blocked is not None
+    assert c.permission_blocked["trust_mode"] == "default"
+    assert c.permission_blocked["label"] == "Write file"
+
+
+def test_request_permission_plan_cancels_and_does_not_approve_writes():
+    c = GeminiAcpClient(trust_mode="plan")
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"toolName": "edit"}})
+    assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+    assert c.permission_blocked is not None
+    assert c.permission_blocked["trust_mode"] == "plan"

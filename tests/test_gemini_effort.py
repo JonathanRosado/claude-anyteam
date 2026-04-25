@@ -140,3 +140,13 @@ def test_config_reads_gemini_effort_env_and_validates(tmp_path, monkeypatch) -> 
     monkeypatch.setenv(GEMINI_EFFORT_ENV, "ultra")
     with pytest.raises(ValueError, match="minimal\\|low\\|medium\\|high\\|xhigh"):
         from_env()
+
+
+def test_gemini_trust_mode_from_env_and_overrides(tmp_path, monkeypatch):
+    from claude_anyteam.backends.gemini.config import GEMINI_TRUST_ENV, from_env as gemini_from_env
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "t")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "a")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_CWD", str(tmp_path))
+    monkeypatch.setenv(GEMINI_TRUST_ENV, "plan")
+    assert gemini_from_env().trust_mode == "plan"
+    assert gemini_from_env({"trust_mode": "default"}).trust_mode == "default"
