@@ -51,3 +51,13 @@ No new shell-injection issue found in the provider probes: subprocess calls pass
 
 - The render-only helpers `_codex_render_status`, `_gemini_render_status`, and `_render_provider_*` duplicate the real `ProviderStatus` path and ignore the Codex `NEEDS_UPGRADE` state (`src/claude_anyteam/installer.py:1869-1950`). They are currently test-only helpers, but they make it easy for tests to assert behavior that production formatting does not use. Prefer deleting them or making tests build real `ProviderStatus` objects through `_codex_provider_status` / `_gemini_provider_status`.
 - Hidden `--self-heal` still bypasses the no-provider refusal by passing `force_empty=force_empty or self_heal` (`src/claude_anyteam/cli.py:228-238`), even though the current hook only warns and never invokes install. If self-heal is no longer part of the design, remove the flag; if it is, add explicit tests for its output/state semantics.
+
+## Re-review (post-fix)
+
+Reviewed only the post-fix auth probe and hook drift changes requested. I did not run tests per instruction.
+
+### Verdict: ship
+
+- `69114cc`: `_check_codex_signin` now gates token auth on `tokens.access_token` and still accepts top-level `OPENAI_API_KEY` (`src/claude_anyteam/installer.py:929-932`). `_check_gemini_signin` still accepts `GEMINI_API_KEY` and Vertex env (`src/claude_anyteam/installer.py:950-952`), ignores `google_accounts_path` as an auth signal (`src/claude_anyteam/installer.py:947`), and requires `oauth_creds.json` `access_token` (`src/claude_anyteam/installer.py:963-968`). Negative coverage exists for Gemini id/refresh-token-only (`tests/test_install_command.py:1889-1908`), Gemini `google_accounts.json`-only (`tests/test_install_command.py:1912-1928`), and Codex id/refresh-token-only (`tests/test_install_command.py:2201-2220`).
+- `3c1c65d`: the Python hook branch now rejects configured values unless `Path(value).is_file()` and `os.access(value, os.X_OK)` both pass (`hooks/session-start.sh:38-43`); the grep fallback uses equivalent `-f` and `-x` checks (`hooks/session-start.sh:51-62`), so any missing/non-file/non-executable value falls through to `DRIFT_WARNING` (`hooks/session-start.sh:69-75`). Tests cover the real executable happy path plus stale-path and non-executable temp-file warnings (`tests/test_plugin_bundle.py:137-248`).
+- Static regression pass found no new issue and no tightening that breaks the documented legitimate auth paths: Codex `tokens.access_token` or auth-file `OPENAI_API_KEY`; Gemini OAuth `access_token`, `GEMINI_API_KEY`, or Vertex.

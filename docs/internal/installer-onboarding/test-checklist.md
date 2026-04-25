@@ -37,8 +37,7 @@ Gemini CLI:
   Docs: https://github.com/google-gemini/gemini-cli
 
 Refusing to install — no provider is ready.
-  claude-anyteam needs at least one signed-in CLI (Codex or Gemini) to do anything
-  useful. Follow the steps above, then re-run `claude-anyteam install`.
+  Follow the steps above, then re-run `claude-anyteam install`.
 
   Setting up later? Pass --force-empty to install with no provider ready:
     claude-anyteam install --force-empty
@@ -65,7 +64,7 @@ Provider status
 Codex CLI     ✅ 0.124.0         ❌
 Gemini CLI    ✅ 0.39.0          ❌
 ─────────────────────────────────────────────
-Almost ready: Codex (sign in to finish) · Gemini (sign in to finish).
+Almost ready: Codex (needs sign-in) · Gemini (needs sign-in).
 
 claude-anyteam routes some Claude Code teammates to external AI CLIs (Codex, Gemini).
 You need at least one signed-in CLI for it to do anything useful.
@@ -80,8 +79,7 @@ Gemini CLI:
   Docs: https://github.com/google-gemini/gemini-cli
 
 Refusing to install — no provider is ready.
-  claude-anyteam needs at least one signed-in CLI (Codex or Gemini) to do anything
-  useful. Follow the steps above, then re-run `claude-anyteam install`.
+  Follow the steps above, then re-run `claude-anyteam install`.
 
   Setting up later? Pass --force-empty to install with no provider ready:
     claude-anyteam install --force-empty

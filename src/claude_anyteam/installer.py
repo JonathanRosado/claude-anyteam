@@ -167,7 +167,7 @@ class ProviderStatus:
         if self.state == "READY":
             return f"{self.summary_name} {self.version}" if self.version else self.summary_name
         if self.state == "NEEDS_SIGNIN":
-            return f"{self.summary_name} (sign in to finish)"
+            return f"{self.summary_name} (needs sign-in)"
         if self.state == "NEEDS_UPGRADE":
             detail = self.upgrade_summary or "upgrade required"
             return f"{self.summary_name} ({detail})"
@@ -1998,8 +1998,7 @@ def _format_provider_walkthroughs(codex: ProviderStatus, gemini: ProviderStatus)
 def _format_no_provider_refusal_message() -> str:
     return (
         "Refusing to install — no provider is ready.\n"
-        "  claude-anyteam needs at least one signed-in CLI (Codex or Gemini) to do anything\n"
-        "  useful. Follow the steps above, then re-run `claude-anyteam install`.\n\n"
+        "  Follow the steps above, then re-run `claude-anyteam install`.\n\n"
         "  Setting up later? Pass --force-empty to install with no provider ready:\n"
         "    claude-anyteam install --force-empty"
     )

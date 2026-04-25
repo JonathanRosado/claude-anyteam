@@ -236,7 +236,7 @@ def test_render_provider_status_buckets(
         (
             _codex_cli_ready(signed_in=False),
             _gemini_cli_ready(signed_in=False),
-            "Almost ready: Codex (sign in to finish) · Gemini (sign in to finish).",
+            "Almost ready: Codex (needs sign-in) · Gemini (needs sign-in).",
         ),
         (
             _codex_cli_missing(),
@@ -538,7 +538,7 @@ def test_install_with_both_installed_but_not_signed_in_refuses(
 
     stdout = capsys.readouterr().out
     assert exit_code == installer_mod.INSTALL_ERROR_EXIT_NO_PROVIDER
-    assert "Almost ready: Codex (sign in to finish) · Gemini (sign in to finish)." in stdout
+    assert "Almost ready: Codex (needs sign-in) · Gemini (needs sign-in)." in stdout
     assert "  1. Sign in:  codex     (opens an OAuth flow on first run)" in stdout
     assert "  1. Sign in:  gemini    (or set GEMINI_API_KEY, or configure Vertex)" in stdout
     assert "Refusing to install — no provider is ready." in stdout
