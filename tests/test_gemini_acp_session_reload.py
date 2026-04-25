@@ -22,11 +22,11 @@ class LoadingClient:
 
 def test_acp_run_reloads_persisted_storage_session(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    invoke.write_adapter_state(home, backend="acp", acp_session_id="live-old", acp_storage_session_id="store-1")
+    invoke.write_adapter_state(home, backend="acp", acp_session_id="live-old")
     LoadingClient.loaded = []
     monkeypatch.setattr(acp, "GeminiAcpClient", LoadingClient)
     monkeypatch.setattr(acp.invoke.shutil, "which", lambda name: "/bin/" + name)
     result = acp.run("prompt", cwd=tmp_path, gemini_home=home)
     assert result.exit_code == 0
-    assert LoadingClient.loaded == ["store-1"]
-    assert result.session_id == "store-1"
+    assert LoadingClient.loaded == ["live-old"]
+    assert result.session_id == "live-old"

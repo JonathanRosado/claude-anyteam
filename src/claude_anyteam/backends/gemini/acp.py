@@ -93,7 +93,7 @@ def _ensure_session(
     stored_session_id: str | None,
     stored_storage_session_id: str | None,
 ) -> tuple[str, bool]:
-    for candidate in (resume_session_id, stored_storage_session_id, stored_session_id):
+    for candidate in (resume_session_id, stored_session_id, stored_storage_session_id):
         if not candidate:
             continue
         try:
@@ -213,12 +213,10 @@ def run(
         exit_code = 1
 
     if session_id and not ephemeral:
-        storage_session_id = _latest_storage_session_id(home)
         invoke.write_adapter_state(
             home,
             backend="acp",
             acp_session_id=session_id,
-            acp_storage_session_id=storage_session_id or session_id,
         )
 
     logger.info("gemini_acp.result", session_id=session_id, loaded=loaded, stop_reason=stop_reason, tool_calls=tool_call_events)
