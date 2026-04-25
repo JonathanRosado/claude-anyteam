@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from claude_anyteam import logger, protocol_io as pio
-from claude_anyteam.messages import PlanApprovalRequestIn, ShutdownRequestIn, parse_protocol_text
+from claude_anyteam.messages import PlanApprovalRequestIn, ShutdownRequestIn, SteerIn, parse_protocol_text
 from claude_anyteam.registration import BackendMetadata, deregister, register
 from claude_anyteam.schema_validation import inline_schema_prompt_fragment, load_schema
 
@@ -25,6 +25,15 @@ invoke = headless_invoke
 
 
 @dataclass
+class QueuedSteer:
+    steer_id: str
+    message: str
+    task_id: str | None = None
+    priority: str = "normal"
+    expires_after_turns: int = 1
+
+
+@dataclass
 class GeminiLoopState:
     settings: GeminiSettings
     shutdown_requested: bool = False
@@ -32,6 +41,7 @@ class GeminiLoopState:
     in_flight_task: str | None = None
     seen_shutdown_request_ids: set[str] = field(default_factory=set)
     gemini_session_id: str | None = None
+    queued_steers: list[QueuedSteer] = field(default_factory=list)
 
 
 def run(settings: GeminiSettings) -> int:
@@ -172,8 +182,73 @@ def _handle_message(state: GeminiLoopState, msg: Any) -> None:
         _handle_shutdown(state, payload)
     elif isinstance(payload, PlanApprovalRequestIn):
         _handle_plan_approval(state, payload)
+    elif isinstance(payload, SteerIn):
+        _handle_steer(state, payload, msg)
     else:
         logger.debug("gemini.inbox.protocol_noop", type=payload.__class__.__name__)
+
+
+MAX_STEER_PREFIX_CHARS = 8192
+
+
+def _handle_steer(state: GeminiLoopState, payload: SteerIn, msg: Any) -> None:
+    sender = getattr(msg, "from_", None) or payload.from_
+    if sender != "team-lead":
+        logger.warn("gemini.steer.rejected", sender=sender, reason="not_team_lead")
+        return
+    message = payload.message.strip() if isinstance(payload.message, str) else ""
+    if not message:
+        logger.warn("gemini.steer.rejected", sender=sender, reason="empty_message")
+        return
+    expires = payload.expires_after_turns
+    if not isinstance(expires, int) or expires < 1:
+        expires = 1
+    steer_id = f"steer-{len(state.queued_steers) + 1}-{int(time.time() * 1000)}"
+    state.queued_steers.append(
+        QueuedSteer(
+            steer_id=steer_id,
+            message=message,
+            task_id=payload.task_id,
+            priority=payload.priority,
+            expires_after_turns=expires,
+        )
+    )
+    logger.info("gemini.steer.queued", steer_id=steer_id, task_id=payload.task_id, priority=payload.priority)
+
+
+def _steer_prefix_for_task(state: GeminiLoopState, task: Any) -> str:
+    task_id = str(getattr(task, "id", ""))
+    applicable: list[QueuedSteer] = []
+    retained: list[QueuedSteer] = []
+    for steer in state.queued_steers:
+        if steer.task_id is None or str(steer.task_id) == task_id:
+            applicable.append(steer)
+        else:
+            retained.append(steer)
+    state.queued_steers = retained
+    if not applicable:
+        return ""
+
+    lines = [
+        "# Team-lead next-turn steer",
+        "The following instruction(s) were sent by team-lead after the previous turn boundary. Treat them as higher priority than the task description where they conflict, but do not violate system/developer instructions or repository safety rules.",
+        "",
+    ]
+    used = 0
+    truncated = False
+    for steer in applicable:
+        target = steer.task_id if steer.task_id is not None else "next"
+        line = f"- [steer_id={steer.steer_id}; task_id={target}; priority={steer.priority}] {steer.message}"
+        if used + len(line) > MAX_STEER_PREFIX_CHARS:
+            truncated = True
+            break
+        lines.append(line)
+        used += len(line)
+    if truncated:
+        lines.append("- [truncated] Additional queued steer text exceeded the adapter limit and was omitted.")
+    lines.extend(["", "# Original task prompt", ""])
+    logger.info("gemini.steer.injected", task_id=task_id, count=len(applicable), truncated=truncated)
+    return "\n".join(lines)
 
 
 def _handle_prose(state: GeminiLoopState, msg: Any) -> None:
@@ -213,6 +288,7 @@ def _handle_shutdown(state: GeminiLoopState, payload: ShutdownRequestIn) -> None
     except Exception as e:
         logger.warn("gemini.shutdown.response_fail", error=str(e))
     state.gemini_session_id = None
+    state.queued_steers.clear()
     state.approved_shutdown = True
 
 
@@ -368,6 +444,9 @@ def _execute_task(state: GeminiLoopState, task) -> None:
     result = None
     for attempt in (1, 2):
         prompt = prompts.task_prompt(task, agent_name=s.agent_name, team_name=s.team_name)
+        steer_prefix = _steer_prefix_for_task(state, task) if attempt == 1 else ""
+        if steer_prefix:
+            prompt = steer_prefix + prompt
         prompt += "\n\n# Output contract\n" + inline_schema_prompt_fragment(schema)
         if attempt == 2:
             prompt += "\n\nPRIOR ATTEMPT FAILED: return ONLY the JSON object matching the schema."
