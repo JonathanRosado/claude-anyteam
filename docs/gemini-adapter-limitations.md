@@ -23,6 +23,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 ## Model / effort
 
 - **No plumbed effort tiers:** Gemini teammates receive `--model` but not `--effort`; the spawn shim intentionally drops effort with `include_effort=False`. No Gemini equivalent of Codex effort tiers such as `xhigh` or `high` is currently plumbed.
+- **Effort mapping is intentionally deferred:** [Post-ship parity research §3](internal/gemini-integration/post-ship-parity-research.md#3-effort-mapping) identified `modelConfigs.customAliases` / `customOverrides` with SDK-level `thinkingBudget` / `thinkingLevel` as the theoretical mapping path, including a proposed Codex-effort-to-Gemini-thinking table. We are deferring that path because it may require writing generated model config rather than simply passing a per-turn CLI flag, and because the semantic mapping from Codex effort tiers to Gemini thinking budgets has not been empirically validated.
 
 ## Schema-constrained output
 
