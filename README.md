@@ -1,9 +1,3 @@
-# claude-anyteam
-
-claude-anyteam routes Agent Teams teammates to external CLI backends. Teammate names matching `codex-*` use the Codex adapter; names matching `gemini-*` use the Gemini CLI adapter. Other names continue to launch native Claude teammates.
-
-Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper and `mcp_anyteam_*` shadow tools to close Gemini built-in tool stdout visibility gaps. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP defaults to fully trusted YOLO behavior, but supports `CLAUDE_ANYTEAM_GEMINI_TRUST=default|plan` / `gemini-anyteam --trust` to opt out for untrusted task text and bridge permission requests to `team-lead`. ACP also supports **next-turn steer** from `team-lead` at the next task prompt boundary; it is not mid-turn `turn/steer` parity.
-
 <div align="center">
 
 <img src="assets/logo/wordmark.svg" alt="claude-anyteam" width="420" />
