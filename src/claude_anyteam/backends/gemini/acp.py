@@ -230,6 +230,15 @@ def _assistant_text_and_tools(events: list[dict[str, Any]], session_id: str) -> 
     return "".join(parts).strip(), tool_calls
 
 
+def _cancel_session_quietly(client: GeminiAcpClient, session_id: str | None) -> None:
+    if not session_id:
+        return
+    try:
+        client.session_cancel(session_id=session_id)
+    except Exception as e:
+        logger.warn("gemini_acp.cancel_failed", session_id=session_id, error=str(e))
+
+
 def run(
     prompt: str,
     *,
@@ -301,6 +310,7 @@ def run(
         response = client.session_prompt(session_id=session_id, prompt=prompt, timeout=timeout_s)
         events = _normalize_tool_events(client.drain_notifications(), session_id)
     except (subprocess.TimeoutExpired, GeminiAcpTimeoutError):
+        _cancel_session_quietly(client, session_id)
         if not ephemeral:
             invoke.reset_acp_adapter_state(home)
         return CodexResult(exit_code=124, structured=None, last_message="", events=events, error=f"gemini ACP timed out after {timeout_s}s; ACP session was dropped for the next task", session_id=session_id)

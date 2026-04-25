@@ -97,6 +97,8 @@ def _backend_run(
         "gemini_home": s.gemini_home,
     }
     if s.backend == "acp":
+        # ACP subprocesses are created and cleaned up per invocation in acp.run();
+        # the loop only tracks durable Gemini session ids across tasks.
         kwargs["resume_session_id"] = None if ephemeral else resume_session_id
         kwargs["ephemeral"] = ephemeral
     else:

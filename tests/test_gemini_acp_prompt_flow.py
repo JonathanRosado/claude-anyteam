@@ -109,3 +109,67 @@ def test_acp_cancelled_stop_reason_clears_persisted_sessions(tmp_path, monkeypat
     state = json.loads((home / ".claude-anyteam" / "state.json").read_text())
     assert state["acp_session_id"] is None
     assert state["acp_storage_session_id"] is None
+
+class CloseTrackingClient(FakeClient):
+    close_count = 0
+    def close(self):
+        type(self).close_count += 1
+
+
+def test_acp_run_closes_client_on_success(tmp_path, monkeypatch):
+    CloseTrackingClient.instances = []
+    CloseTrackingClient.close_count = 0
+    monkeypatch.setattr(acp, "GeminiAcpClient", CloseTrackingClient)
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / "home")
+    assert result.exit_code == 0
+    assert CloseTrackingClient.close_count == 1
+
+
+class TimeoutAfterSessionClient(CloseTrackingClient):
+    cancels = []
+    def session_prompt(self, **kwargs):
+        raise acp.GeminiAcpTimeoutError("slow")
+    def session_cancel(self, **kwargs):
+        type(self).cancels.append(kwargs["session_id"])
+
+
+def test_acp_run_cancels_then_closes_client_on_timeout(tmp_path, monkeypatch):
+    TimeoutAfterSessionClient.instances = []
+    TimeoutAfterSessionClient.close_count = 0
+    TimeoutAfterSessionClient.cancels = []
+    monkeypatch.setattr(acp, "GeminiAcpClient", TimeoutAfterSessionClient)
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / "home", timeout_s=1)
+    assert result.exit_code == 124
+    assert TimeoutAfterSessionClient.cancels == ["live-1"]
+    assert TimeoutAfterSessionClient.close_count == 1
+
+
+class JsonRpcErrorClient(CloseTrackingClient):
+    def session_prompt(self, **kwargs):
+        raise acp.GeminiAcpError("JSON-RPC error -32603: boom")
+
+
+def test_acp_run_closes_client_on_jsonrpc_error(tmp_path, monkeypatch):
+    JsonRpcErrorClient.instances = []
+    JsonRpcErrorClient.close_count = 0
+    monkeypatch.setattr(acp, "GeminiAcpClient", JsonRpcErrorClient)
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / "home")
+    assert result.exit_code == 1
+    assert "JSON-RPC error" in (result.error or "")
+    assert JsonRpcErrorClient.close_count == 1
+
+
+class InvalidSchemaClient(CloseTrackingClient):
+    def session_prompt(self, **kwargs):
+        self.notifications.append({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": kwargs["session_id"], "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": '{"files_changed": []}'}}}})
+        return {"stopReason": "end_turn"}
+
+
+def test_acp_run_closes_client_on_schema_validation_failure(tmp_path, monkeypatch):
+    InvalidSchemaClient.instances = []
+    InvalidSchemaClient.close_count = 0
+    monkeypatch.setattr(acp, "GeminiAcpClient", InvalidSchemaClient)
+    result = acp.run("prompt", cwd=tmp_path, schema=acp.TASK_COMPLETE_SCHEMA, gemini_home=tmp_path / "home")
+    assert result.exit_code == 1
+    assert "schema validation" in (result.error or "")
+    assert InvalidSchemaClient.close_count == 1
