@@ -295,8 +295,6 @@ def write_mcp_settings(
     real_home: str | None = None,
     cwd: Path | None = None,
     include_dirs: list[Path] | None = None,
-    model: str | None = None,
-    effort: str | None = None,
 ) -> Path:
     """Write adapter-owned Gemini MCP config without mutating ~/.gemini."""
     settings_dir = prepare_isolated_gemini_home(
@@ -317,13 +315,6 @@ def write_mcp_settings(
         }
     }
     data.update(_real_auth_settings(real_home))
-    if effort:
-        entry = _effort_alias_entry(model or DEFAULT_EFFORT_BASE_MODEL, effort)
-        if entry is None:
-            logger.warn("gemini.effort.unknown_model_family", model=model, effort=effort)
-        else:
-            alias = gemini_effort_alias_name(effort, team=team, agent_name=agent_name)
-            data.setdefault("modelConfigs", {}).setdefault("customAliases", {})[alias] = entry
     path = settings_dir / "settings.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
