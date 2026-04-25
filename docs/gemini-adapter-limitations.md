@@ -5,7 +5,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 ## App-server / TUI presence
 
 - **No direct Codex `app-server` sidecar equivalent:** ACP (`gemini --acp`) is JSON-RPC 2.0 over stdio, not an HTTP app server. The existing TUI/app-server client is not compatible with it.
-- **No `turn/steer` parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP has `session/cancel`, but empirical testing showed cancelled prompt text can remain influential in later turns, so the ACP backend queues prose outside active task turns rather than treating cancel as a safe steering primitive.
+- **No mid-turn `turn/steer` parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP has `session/cancel`, but empirical testing showed cancelled prompt text can remain influential in later turns, so the ACP backend does not treat cancel as a safe steering primitive. ACP instead supports **next-turn steer**: structured `team-lead` steer messages are queued and prepended to the next task `session/prompt` boundary.
 
 ## Protocol and streaming
 
@@ -18,7 +18,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 - **Resume/reload is weaker than Codex thread lineage:** Headless `--resume` works, and the ACP backend attempts `session/load` using the adapter-persisted ACP `sessionId`. Recovery replays transcript state but cannot preserve live MCP process memory, so MCP servers are re-supplied on load and a new session is created if load fails.
 - **No thread/fork cross-task memory parity:** Gemini sessions do not currently provide a Codex-equivalent thread/fork memory model across tasks.
-- **No mid-turn inbox delivery in headless mode:** Gemini headless turns cannot receive inbox prose during an in-flight turn; the ACP backend also avoids unsafe mid-turn steering and handles prose with ephemeral sessions.
+- **No mid-turn inbox delivery in headless mode:** Gemini headless turns cannot receive inbox prose during an in-flight turn. ACP can consume `team-lead` steer messages only after the adapter returns to its poll loop, so a steer sent during a long task waits for the next task/turn boundary.
 
 ## Model / effort
 
@@ -39,7 +39,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 - **Only the known auth subtree is merged into isolated settings:** The adapter merges only `security.auth` from the user's real `~/.gemini/settings.json` into isolated per-session settings. Other auth-related state, such as account selection beyond `selectedType` or device codes, is not propagated. If Gemini introduces richer auth state, this merge will need to widen.
 - **Config isolation remains a tradeoff:** The adapter writes MCP settings under an isolated Gemini home and copies selected Gemini auth cache files when present. Operators should still prefer `GEMINI_API_KEY` or Vertex/ADC environment auth for unattended teammates.
-- **ACP trust modes:** ACP defaults to `trusted` for backward compatibility, which sets Gemini mode `yolo` and auto-approves `session/request_permission` with `allow_once` (equivalent to headless `--approval-mode yolo`). Set `CLAUDE_ANYTEAM_GEMINI_TRUST=default` or `plan` (or `gemini-anyteam --trust ...`) for untrusted task text; those modes set ACP `default`/`plan`, answer permission requests with `cancel`, and mark the task blocked with the requested action details. Approval bridging to `team-lead` is not implemented yet, so non-trusted modes never approve mutations automatically.
+- **ACP trust modes and permission bridge:** ACP defaults to `trusted` for backward compatibility, which sets Gemini mode `yolo` and auto-approves `session/request_permission` with `allow_once` (equivalent to headless `--approval-mode yolo`). Set `CLAUDE_ANYTEAM_GEMINI_TRUST=default` or `plan` (or `gemini-anyteam --trust ...`) for untrusted task text; those modes forward permission requests to `team-lead` and wait up to `CLAUDE_ANYTEAM_GEMINI_APPROVAL_TIMEOUT` seconds (default 300, clamped below the prompt timeout). Denials or timeouts select Gemini's cancel option and mark the task blocked.
 
 ## Open questions
 

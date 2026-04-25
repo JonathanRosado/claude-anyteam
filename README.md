@@ -2,7 +2,7 @@
 
 claude-anyteam routes Agent Teams teammates to external CLI backends. Teammate names matching `codex-*` use the Codex adapter; names matching `gemini-*` use the Gemini CLI adapter. Other names continue to launch native Claude teammates.
 
-Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP defaults to fully trusted YOLO behavior, but supports `CLAUDE_ANYTEAM_GEMINI_TRUST=default|plan` / `gemini-anyteam --trust` to opt out for untrusted task text.
+Gemini support ships both the default headless `gemini --prompt ... --output-format stream-json` path and an ACP transport enabled with `gemini-anyteam --backend acp`, using an isolated `.gemini/settings.json` for the shared anyteam MCP wrapper. See `docs/gemini-adapter-limitations.md` for current gaps and trust-posture caveats: ACP defaults to fully trusted YOLO behavior, but supports `CLAUDE_ANYTEAM_GEMINI_TRUST=default|plan` / `gemini-anyteam --trust` to opt out for untrusted task text and bridge permission requests to `team-lead`. ACP also supports **next-turn steer** from `team-lead` at the next task prompt boundary; it is not mid-turn `turn/steer` parity.
 
 <div align="center">
 
@@ -102,7 +102,7 @@ Each new task forks from the previous task's Codex thread via `thread/fork`. The
 | Backend | Teammate prefix | Status | Notes |
 |---|---|---|---|
 | Codex via OpenAI Codex CLI 0.120+ | `codex-*` | ✅ Supported today | App Server mode for mid-task steer and `thread/fork`; fresh-exec fallback with `codex exec resume`. |
-| Gemini via Gemini CLI | `gemini-*` | ✅ Supported today | Default headless `gemini --prompt ... --output-format stream-json`, plus ACP via `gemini-anyteam --backend acp`; ACP supports `--trust default|plan` to block permission requests for untrusted task text. See [Gemini adapter limitations](docs/gemini-adapter-limitations.md) for known gaps and trust caveats. |
+| Gemini via Gemini CLI | `gemini-*` | ✅ Supported today | Default headless `gemini --prompt ... --output-format stream-json`, plus ACP via `gemini-anyteam --backend acp`; ACP supports `--trust default|plan` permission bridging and team-lead next-turn steer. See [Gemini adapter limitations](docs/gemini-adapter-limitations.md) for known gaps and trust caveats. |
 
 ## Coming next
 
