@@ -595,13 +595,21 @@ _GEMINI_REQUIRED_CAPABILITIES = (
 )
 
 
+def _gemini_acp_flag_from_help(help_text: str) -> str | None:
+    if "--acp" in help_text:
+        return "--acp"
+    if "--experimental-acp" in help_text:
+        return "--experimental-acp"
+    return None
+
+
 def _gemini_capabilities_from_help(help_text: str) -> dict[str, bool]:
     return {
         "--prompt": "--prompt" in help_text,
         "--output-format stream-json": "--output-format" in help_text and "stream-json" in help_text,
         "--resume": "--resume" in help_text,
         "--approval-mode yolo": "--approval-mode" in help_text and "yolo" in help_text,
-        "--acp": "--acp" in help_text or "--experimental-acp" in help_text,
+        "--acp": _gemini_acp_flag_from_help(help_text) is not None,
     }
 
 

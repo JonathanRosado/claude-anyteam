@@ -19,6 +19,10 @@ class JsonRpcStdioError(RuntimeError):
     """Raised on JSON-RPC stdio transport or protocol errors."""
 
 
+class JsonRpcStdioTimeoutError(JsonRpcStdioError):
+    """Raised when a JSON-RPC stdio request times out waiting for a response."""
+
+
 @dataclass
 class _Pending:
     event: threading.Event
@@ -40,6 +44,7 @@ class JsonRpcStdioClient:
         self._log_prefix = log_prefix
         self._stderr_log_prefix = stderr_log_prefix or f"{log_prefix}.stderr"
         self._error_cls: type[JsonRpcStdioError] = JsonRpcStdioError
+        self._timeout_error_cls: type[JsonRpcStdioError] | None = None
         self._proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -137,7 +142,9 @@ class JsonRpcStdioClient:
         if not pending.event.wait(timeout=timeout):
             with self._pending_lock:
                 self._pending.pop(req_id, None)
-            raise self._error(f"JSON-RPC stdio process did not respond to {method} within {timeout}s")
+            raise self._timeout_error(
+                f"JSON-RPC stdio process did not respond to {method} within {timeout}s"
+            )
 
         if pending.error is not None:
             code = pending.error.get("code")
@@ -276,3 +283,6 @@ class JsonRpcStdioClient:
 
     def _error(self, message: str) -> JsonRpcStdioError:
         return self._error_cls(message)
+
+    def _timeout_error(self, message: str) -> JsonRpcStdioError:
+        return (self._timeout_error_cls or self._error_cls)(message)

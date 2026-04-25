@@ -15,7 +15,13 @@ from claude_anyteam.env import identity_env
 from claude_anyteam.schema_validation import load_schema, parse_and_validate
 
 from . import invoke
-from .acp_client import GeminiAcpAuthenticationError, GeminiAcpClient, GeminiAcpError
+from .acp_client import (
+    GeminiAcpAuthenticationError,
+    GeminiAcpClient,
+    GeminiAcpError,
+    GeminiAcpTimeoutError,
+    detect_acp_flag,
+)
 
 
 def feature_test(gemini_binary: str = "gemini") -> None:
@@ -30,7 +36,12 @@ def feature_test(gemini_binary: str = "gemini") -> None:
     help_text = (help_out.stdout or "") + (help_out.stderr or "")
     if "--acp" not in help_text and "--experimental-acp" not in help_text:
         raise RuntimeError(f"Gemini CLI is missing required ACP flag --acp; found version {(version.stdout or version.stderr).strip()}")
-    logger.info("gemini_acp.version", binary=resolved, version=(version.stdout or version.stderr).strip())
+    logger.info(
+        "gemini_acp.version",
+        binary=resolved,
+        version=(version.stdout or version.stderr).strip(),
+        acp_flag=detect_acp_flag(gemini_binary),
+    )
 
 
 def _extract_json_candidate(text: str) -> str:
@@ -289,7 +300,7 @@ def run(
                 logger.warn("gemini_acp.set_model_failed", model=effective_model, raw_model=model, effort=effort, error=str(e))
         response = client.session_prompt(session_id=session_id, prompt=prompt, timeout=timeout_s)
         events = _normalize_tool_events(client.drain_notifications(), session_id)
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, GeminiAcpTimeoutError):
         if not ephemeral:
             invoke.reset_acp_adapter_state(home)
         return CodexResult(exit_code=124, structured=None, last_message="", events=events, error=f"gemini ACP timed out after {timeout_s}s; ACP session was dropped for the next task", session_id=session_id)

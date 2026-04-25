@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from claude_anyteam.backends.gemini import acp, invoke
-from claude_anyteam.backends.gemini.acp_client import GeminiAcpError
+from claude_anyteam.backends.gemini.acp_client import GeminiAcpError, GeminiAcpTimeoutError
 
 
 class RecoveringClient:
@@ -36,3 +36,31 @@ def test_load_failure_creates_and_persists_new_session(tmp_path, monkeypatch):
     assert result.session_id == "live-new"
     state = json.loads((home / ".claude-anyteam" / "state.json").read_text())
     assert state["acp_session_id"] == "live-new"
+
+
+class PromptTimeoutClient(RecoveringClient):
+    def session_load(self, **kwargs):
+        return {"sessionId": kwargs["session_id"]}
+
+    def session_prompt(self, **kwargs):
+        raise GeminiAcpTimeoutError("JSON-RPC stdio process did not respond to session/prompt within 0.01s")
+
+
+def test_jsonrpc_timeout_drops_persisted_acp_session(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    invoke.write_adapter_state(
+        home,
+        backend="acp",
+        acp_session_id="zombie-live",
+        acp_storage_session_id="zombie-store",
+    )
+    monkeypatch.setattr(acp, "GeminiAcpClient", PromptTimeoutClient)
+
+    result = acp.run("prompt", cwd=tmp_path, gemini_home=home, timeout_s=0.01)
+
+    assert result.exit_code == 124
+    assert result.session_id == "zombie-live"
+    assert "timed out" in (result.error or "")
+    state = json.loads((home / ".claude-anyteam" / "state.json").read_text())
+    assert state["acp_session_id"] is None
+    assert state["acp_storage_session_id"] is None

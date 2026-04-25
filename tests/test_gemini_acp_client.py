@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from claude_anyteam.backends.gemini import acp_client
 from claude_anyteam.backends.gemini.acp_client import GeminiAcpClient
 
 
@@ -59,3 +61,29 @@ def test_initialize_rejects_protocol_version_mismatch(monkeypatch):
         assert "expected 1" in str(e)
     else:
         raise AssertionError("initialize should reject unsupported protocolVersion")
+
+
+def test_client_uses_stable_acp_flag_when_advertised(monkeypatch):
+    monkeypatch.setattr(acp_client.shutil, "which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr(
+        acp_client.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="--acp --experimental-acp", stderr=""),
+    )
+
+    c = GeminiAcpClient(gemini_binary="gemini")
+
+    assert c._argv[:2] == ["gemini", "--acp"]
+
+
+def test_client_uses_experimental_acp_flag_when_only_deprecated_flag_is_advertised(monkeypatch):
+    monkeypatch.setattr(acp_client.shutil, "which", lambda _name: "/usr/bin/gemini")
+    monkeypatch.setattr(
+        acp_client.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="--experimental-acp", stderr=""),
+    )
+
+    c = GeminiAcpClient(gemini_binary="gemini")
+
+    assert c._argv[:2] == ["gemini", "--experimental-acp"]

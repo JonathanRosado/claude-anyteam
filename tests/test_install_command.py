@@ -1341,6 +1341,11 @@ def test_gemini_capabilities_from_help_detects_required_and_optional_flags():
     """
 
     assert installer_mod._gemini_capabilities_from_help(help_text) == _GEMINI_ALL_CAPABILITIES
+    assert installer_mod._gemini_acp_flag_from_help(help_text) == "--experimental-acp"
+
+
+def test_gemini_acp_flag_from_help_prefers_stable_flag():
+    assert installer_mod._gemini_acp_flag_from_help("--experimental-acp --acp") == "--acp"
 
 
 def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: Path):

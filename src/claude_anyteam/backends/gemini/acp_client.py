@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +15,39 @@ class GeminiAcpError(JsonRpcStdioError):
     """Raised on Gemini ACP protocol/transport errors."""
 
 
+class GeminiAcpTimeoutError(GeminiAcpError):
+    """Raised when Gemini ACP does not answer a JSON-RPC request in time."""
+
+
 class GeminiAcpAuthenticationError(GeminiAcpError):
     """Raised when Gemini ACP authentication fails."""
+
+
+def detect_acp_flag(gemini_binary: str = "gemini") -> str:
+    """Return the supported Gemini CLI ACP flag, preferring the stable spelling.
+
+    Older Gemini CLI builds advertised only ``--experimental-acp``.  If probing
+    fails, keep the historical default so callers surface the underlying launch
+    failure rather than failing during construction.
+    """
+
+    resolved = shutil.which(gemini_binary) or gemini_binary
+    try:
+        help_out = subprocess.run(
+            [resolved, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "--acp"
+    help_text = (help_out.stdout or "") + (help_out.stderr or "")
+    if "--acp" in help_text:
+        return "--acp"
+    if "--experimental-acp" in help_text:
+        return "--experimental-acp"
+    return "--acp"
 
 
 class GeminiAcpClient(JsonRpcStdioClient):
@@ -25,8 +58,9 @@ class GeminiAcpClient(JsonRpcStdioClient):
         env: dict[str, str] | None = None,
         debug: bool = False,
         extra_args: list[str] | None = None,
+        acp_flag: str | None = None,
     ) -> None:
-        argv = [gemini_binary, "--acp"]
+        argv = [gemini_binary, acp_flag or detect_acp_flag(gemini_binary)]
         if debug:
             argv.append("--debug")
         argv.extend(extra_args or [])
@@ -37,6 +71,7 @@ class GeminiAcpClient(JsonRpcStdioClient):
             stderr_log_prefix="gemini_acp.stderr",
         )
         self._error_cls = GeminiAcpError
+        self._timeout_error_cls = GeminiAcpTimeoutError
 
     def initialize(
         self,
