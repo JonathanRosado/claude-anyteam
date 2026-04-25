@@ -40,6 +40,10 @@ This asymmetry hasn't been root-caused. Possibilities:
 
 The above steps were reproduced informally on 2026-04-25 with v0.3.2 settings still loaded; the v0.4.0 path needs a clean retest after a Claude Code restart.
 
+### Reproduction log
+
+- **2026-04-25 ~14:48**: Reproduced again on the same WSL2 host, this time with v0.4.0 settings loaded (`CLAUDE_ANYTEAM_GEMINI_BINARY` confirmed present in `~/.claude/settings.json`). Spawned `gemini-flow-tester` via the `Agent` tool from a leader Claude Code session; team-config entry was written with `backendType: "tmux"` and `tmuxPaneId: "%19"`, but no `gemini-anyteam` process appeared in `ps`. Codex teammates spawned in the same team (`codex-installer-implementer`, `codex-code-reviewer`, `codex-image-gen`) all started cleanly. Workaround: manual `setsid nohup uv run gemini-anyteam ...` launch resurrected the teammate. **This confirms the bug is NOT a stale-settings artifact — it survives a clean v0.4.0 install.** Promotes Proper-fix-candidate #2 from "if real" to "real, needs fix".
+
 ## Workarounds in use today
 
 - Manual `setsid nohup uv run gemini-anyteam ...` shell launch as shown above.

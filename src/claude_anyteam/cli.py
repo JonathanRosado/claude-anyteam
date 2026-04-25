@@ -15,6 +15,7 @@ from typing import TextIO
 from . import logger
 from .config import from_env
 from .installer import (
+    INSTALL_ERROR_EXIT_NO_PROVIDER,
     InstallError,
     format_install_message,
     format_uninstall_message,
@@ -27,11 +28,11 @@ from .loop import run
 def _build_run_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="claude-anyteam",
-        description="Route Codex-powered teammates into Claude Code with the claude-anyteam adapter.",
+        description="Route Codex- and Gemini-backed teammates into Claude Code with the claude-anyteam adapter.",
         epilog=(
             "Management commands:\n"
             "  claude-anyteam install    Persist the claude-anyteam shim in ~/.claude/settings.json\n"
-            "  claude-anyteam uninstall  Remove the installed Claude teammate shim settings"
+            "  claude-anyteam uninstall  Remove the installed Codex/Gemini teammate shim settings"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -106,6 +107,26 @@ def _build_install_parser() -> argparse.ArgumentParser:
         help="auto-accept prompts (needed for scripted installs)",
     )
     p.add_argument(
+        "--force-empty",
+        action="store_true",
+        help="install without any provider ready (CI / set up later)",
+    )
+    p.add_argument(
+        "--no-input",
+        action="store_true",
+        help="fail instead of prompting; use in CI",
+    )
+    p.add_argument(
+        "--no-allowlist",
+        action="store_true",
+        help="skip writing recommended permission allowlist entries",
+    )
+    p.add_argument(
+        "--self-heal",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
         "--settings-path",
         default=None,
         help=argparse.SUPPRESS,
@@ -178,11 +199,31 @@ def _install_command(
     claude_json_path: Path | str | None = None,
     state_path: Path | str | None = None,
     assume_yes: bool = False,
+    force_empty: bool = False,
+    no_input: bool = False,
+    self_heal: bool = False,
+    no_allowlist: bool = False,
     current_executable: str | None = None,
     out: TextIO | None = None,
 ) -> int:
     stream = out or sys.stdout
-    prompt_fn = (lambda _current: True) if assume_yes else _interactive_prompt
+    if assume_yes:
+        prompt_fn = lambda _current: True
+    elif no_input or self_heal:
+        # --no-input is a prompt guard for CI. The current provider-ready /
+        # refuse-to-install path is non-interactive, but future prompts should
+        # route through this branch and fail fast instead of blocking on stdin.
+        prompt_fn = lambda _current: False
+    else:
+        prompt_fn = _interactive_prompt
+
+    provider_status_rendered = False
+
+    def _print_provider_status(block: str) -> None:
+        nonlocal provider_status_rendered
+        print(block, file=stream)
+        print("", file=stream)
+        provider_status_rendered = True
 
     try:
         result = install_settings(
@@ -191,12 +232,19 @@ def _install_command(
             state_path=state_path,
             argv0=current_executable or sys.argv[0],
             prompt_fn=prompt_fn,
+            provider_status_callback=_print_provider_status,
+            force_empty=force_empty or self_heal,
+            no_allowlist=no_allowlist,
         )
     except InstallError as exc:
-        print(str(exc), file=sys.stderr)
-        return getattr(exc, "cli_exit_code", 2)
+        exit_code = getattr(exc, "cli_exit_code", 2)
+        print(str(exc), file=stream if exit_code == INSTALL_ERROR_EXIT_NO_PROVIDER else sys.stderr)
+        return exit_code
 
-    print(format_install_message(result), file=stream)
+    print(
+        format_install_message(result, include_provider_status=not provider_status_rendered),
+        file=stream,
+    )
     return 0
 
 
@@ -229,7 +277,13 @@ def main(argv: list[str] | None = None) -> int:
         command = argv[0]
         if command == "install":
             args = _parse_install_args(argv[1:])
-            kwargs: dict[str, object] = {"assume_yes": args.assume_yes}
+            kwargs: dict[str, object] = {
+                "assume_yes": args.assume_yes,
+                "force_empty": args.force_empty,
+                "no_input": args.no_input,
+                "self_heal": args.self_heal,
+                "no_allowlist": args.no_allowlist,
+            }
             if args.settings_path is not None:
                 kwargs["settings_path"] = args.settings_path
             if args.claude_json_path is not None:

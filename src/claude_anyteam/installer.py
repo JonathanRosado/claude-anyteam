@@ -19,8 +19,9 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 TEAMMATE_COMMAND_KEY = "CLAUDE_CODE_TEAMMATE_COMMAND"
 TEAMMATE_BINARY_KEY = "CLAUDE_ANYTEAM_BINARY"
@@ -32,13 +33,25 @@ LEGACY_SHIM_BASENAME = "codex-teammate-spawn-shim"
 BINARY_BASENAME = "claude-anyteam"
 LEGACY_BINARY_BASENAME = "codex-teammate"
 
+RECOMMENDED_ALLOWLIST_ENTRIES = (
+    "Write(~/.claude/teams/**/config.json)",
+    "Write(~/.claude/teams/**/agents/**.json)",
+    "Write(~/.claude/tasks/**)",
+    "Edit(~/.claude/teams/**/config.json)",
+    "Bash(setsid nohup uv run gemini-anyteam *)",
+    "Bash(setsid nohup uv run claude-anyteam *)",
+    "Bash(pkill -f gemini-anyteam *)",
+    "Bash(pkill -f claude-anyteam *)",
+    "Bash(mkdir -p ~/.claude/teams/**)",
+)
+
 MANAGED_BINARY_KEYS = (TEAMMATE_BINARY_KEY, GEMINI_TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY)
 MANAGED_SHIM_BASENAMES = {SHIM_BASENAME, LEGACY_SHIM_BASENAME}
 MANAGED_BINARY_BASENAMES = {BINARY_BASENAME, LEGACY_BINARY_BASENAME, "gemini-anyteam", "claude-anyteam-gemini"}
 
 TEAMMATE_MODE_KEY = "teammateMode"
 TEAMMATE_MODE_TARGET_VALUE = "tmux"
-STATE_SCHEMA_VERSION = 2  # v2 adds settings_file_created_by_anyteam + claude_json_created_by_anyteam
+STATE_SCHEMA_VERSION = 3  # v3 adds managed permissions.allow allowlist state
 
 PLUGIN_DATA_DIR_NAME = "claude-anyteam-claude-anyteam"
 STATE_FILE_NAME = "install-state.json"
@@ -47,9 +60,13 @@ STATE_FILE_NAME = "install-state.json"
 #   2 = generic install failure (default, when cli_exit_code is unset)
 #   3 = install aborted by user (teammateMode overwrite prompt declined)
 #   4 = uninstall refuses to mutate files due to corrupted/malformed state
+#   5 = install refused because no provider CLI is installed and signed in
 INSTALL_ERROR_EXIT_GENERIC = 2
 INSTALL_ERROR_EXIT_PROMPT_DECLINED = 3
 INSTALL_ERROR_EXIT_CORRUPTED_STATE = 4
+INSTALL_ERROR_EXIT_NO_PROVIDER = 5
+
+ProviderState = Literal["READY", "NEEDS_SIGNIN", "NEEDS_UPGRADE", "MISSING"]
 
 
 @dataclass(frozen=True)
@@ -84,6 +101,8 @@ class GeminiCliCheck:
     raw_output: str | None
     capabilities: dict[str, bool] = field(default_factory=dict)
     missing_capabilities: tuple[str, ...] = ()
+    signed_in: bool = False
+    signed_in_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +117,61 @@ class CodexCliCheck:
     path: Path | None
     version: str | None  # parsed version token (e.g. "0.124.0"); None if unparseable
     raw_output: str | None  # raw `codex --version` stdout, retained for debugging
+    signed_in: bool = False
+    signed_in_detail: str | None = None
+
+
+@dataclass(frozen=True)
+class AuthCheck:
+    """Non-secret result of probing a provider's local auth state."""
+
+    signed_in: bool
+    signed_in_detail: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    """Display-ready aggregate of a provider's install + sign-in state."""
+
+    provider_key: Literal["codex", "gemini"]
+    display_name: str
+    summary_name: str
+    state: ProviderState
+    version: str | None = None
+    upgrade_summary: str | None = None
+    upgrade_hint: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "READY"
+
+    @property
+    def signed_in(self) -> bool:
+        return self.state == "READY"
+
+    def installed_cell(self) -> str:
+        if self.state in ("READY", "NEEDS_SIGNIN"):
+            return f"✅ {self.version}" if self.version else "✅"
+        if self.state == "NEEDS_UPGRADE":
+            return f"⚠️  {self.version}" if self.version else "⚠️"
+        return "❌"
+
+    def signin_cell(self) -> str:
+        if self.state == "READY":
+            return "✅"
+        if self.state == "NEEDS_SIGNIN":
+            return "❌"
+        return "—"
+
+    def summary_entry(self) -> str:
+        if self.state == "READY":
+            return f"{self.summary_name} {self.version}" if self.version else self.summary_name
+        if self.state == "NEEDS_SIGNIN":
+            return f"{self.summary_name} (needs sign-in)"
+        if self.state == "NEEDS_UPGRADE":
+            detail = self.upgrade_summary or "upgrade required"
+            return f"{self.summary_name} ({detail})"
+        return f"{self.summary_name} (not installed)"
 
 
 @dataclass(frozen=True)
@@ -138,6 +212,14 @@ class InstallResult:
     teammate_mode: TeammateModeResult | None = None
     codex_cli: CodexCliCheck | None = None
     gemini_cli: GeminiCliCheck | None = None
+    codex_auth: AuthCheck | None = None
+    gemini_auth: AuthCheck | None = None
+    codex_status: ProviderStatus | None = None
+    gemini_status: ProviderStatus | None = None
+    force_empty_used: bool = False
+    permissions_allow_added: tuple[str, ...] = ()
+    permissions_allow_managed: tuple[str, ...] = ()
+    permissions_allowlist_skipped: bool = False
 
     @property
     def changed_anything(self) -> bool:
@@ -145,6 +227,7 @@ class InstallResult:
             self.created_file
             or bool(self.changed)
             or bool(self.removed_legacy_keys)
+            or bool(self.permissions_allow_added)
             or (self.teammate_mode is not None and self.teammate_mode.wrote_value)
         )
 
@@ -157,11 +240,13 @@ class UninstallResult:
     file_present: bool
     teammate_mode: TeammateModeRevertResult | None = None
     settings_file_removed: bool = False  # v2: True if the now-empty file was unlinked
+    permissions_allow_removed: tuple[str, ...] = ()
 
     @property
     def changed_anything(self) -> bool:
         return (
             bool(self.removed)
+            or bool(self.permissions_allow_removed)
             or self.settings_file_removed
             or (self.teammate_mode is not None and self.teammate_mode.claude_json_touched)
             or (self.teammate_mode is not None and self.teammate_mode.claude_json_removed)
@@ -316,6 +401,175 @@ def _env_block(settings: dict[str, Any], *, path: Path, create: bool) -> dict[st
     return env
 
 
+def _permissions_block(
+    settings: dict[str, Any],
+    *,
+    path: Path,
+    create: bool,
+) -> dict[str, Any]:
+    permissions = settings.get("permissions")
+    if permissions is None:
+        if not create:
+            return {}
+        permissions = {}
+        settings["permissions"] = permissions
+
+    if not isinstance(permissions, dict):
+        raise InstallError(
+            f"{path} has a 'permissions' entry, but it is not a JSON object."
+        )
+
+    return permissions
+
+
+def _permissions_allow_list(
+    settings: dict[str, Any],
+    *,
+    path: Path,
+    create: bool,
+) -> list[str]:
+    permissions = _permissions_block(settings, path=path, create=create)
+    if not permissions and not create:
+        return []
+
+    allow = permissions.get("allow")
+    if allow is None:
+        if not create:
+            return []
+        allow = []
+        permissions["allow"] = allow
+
+    if not isinstance(allow, list):
+        raise InstallError(
+            f"{path} has a 'permissions.allow' entry, but it is not a JSON array."
+        )
+
+    if not all(isinstance(entry, str) for entry in allow):
+        raise InstallError(
+            f"{path} has a non-string entry under 'permissions.allow'; refusing to overwrite it."
+        )
+
+    return allow
+
+
+def _merge_unique_preserving_order(*entry_groups: tuple[str, ...]) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in entry_groups:
+        for entry in group:
+            if entry not in seen:
+                seen.add(entry)
+                merged.append(entry)
+    return tuple(merged)
+
+
+def _state_permissions_allow_added(state: dict[str, Any] | None) -> tuple[str, ...]:
+    if state is None:
+        return ()
+    raw = state.get("permissions_allow_added_by_anyteam", ())
+    if not isinstance(raw, list) or not all(isinstance(entry, str) for entry in raw):
+        return ()
+    recommended = set(RECOMMENDED_ALLOWLIST_ENTRIES)
+    return tuple(entry for entry in raw if entry in recommended)
+
+
+def _state_permissions_allow_added_strict(
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> tuple[str, ...]:
+    if "permissions_allow_added_by_anyteam" not in state:
+        return ()
+    raw = state.get("permissions_allow_added_by_anyteam")
+    if not isinstance(raw, list) or not all(isinstance(entry, str) for entry in raw):
+        err = InstallError(
+            f"{state_path} has a malformed 'permissions_allow_added_by_anyteam' value; "
+            "refusing to touch permissions.allow.\n"
+            f"Inspect or delete the state file manually, then re-run uninstall."
+        )
+        err.cli_exit_code = INSTALL_ERROR_EXIT_CORRUPTED_STATE  # type: ignore[attr-defined]
+        raise err
+    recommended = set(RECOMMENDED_ALLOWLIST_ENTRIES)
+    return tuple(entry for entry in raw if entry in recommended)
+
+
+def _state_permissions_bool(state: dict[str, Any] | None, key: str) -> bool:
+    if state is None:
+        return False
+    return bool(state.get(key, False))
+
+
+def _load_existing_state_for_install(path: Path) -> dict[str, Any] | None:
+    try:
+        return _load_state(path)
+    except InstallError:
+        # Existing install() did not read state before overwriting it. Preserve
+        # that self-healing behavior if a previous receipt is unreadable.
+        return None
+
+
+def _install_permission_allowlist(
+    settings: dict[str, Any],
+    *,
+    path: Path,
+    no_allowlist: bool,
+) -> tuple[tuple[str, ...], bool, bool]:
+    """Append recommended permissions.allow entries, returning what we created.
+
+    Returns (entries_added, permissions_object_created, allow_list_created).
+    The entries are appended idempotently, so re-running install never creates
+    duplicate permission patterns.
+    """
+    if no_allowlist:
+        return (), False, False
+
+    permissions_existed = "permissions" in settings
+    permissions = settings.get("permissions")
+    allow_existed = isinstance(permissions, dict) and "allow" in permissions
+
+    allow = _permissions_allow_list(settings, path=path, create=True)
+    added: list[str] = []
+    for entry in RECOMMENDED_ALLOWLIST_ENTRIES:
+        if entry not in allow:
+            allow.append(entry)
+            added.append(entry)
+
+    return tuple(added), not permissions_existed, not allow_existed
+
+
+def _remove_permission_allowlist_entries(
+    settings: dict[str, Any],
+    *,
+    path: Path,
+    entries: tuple[str, ...],
+    permissions_created_by_anyteam: bool,
+    allow_created_by_anyteam: bool,
+) -> tuple[str, ...]:
+    if not entries:
+        return ()
+
+    permissions = _permissions_block(settings, path=path, create=False)
+    if not permissions:
+        return ()
+
+    allow = _permissions_allow_list(settings, path=path, create=False)
+    if not allow:
+        return ()
+
+    removed: list[str] = []
+    for entry in entries:
+        with contextlib.suppress(ValueError):
+            allow.remove(entry)
+            removed.append(entry)
+
+    if removed and not allow and allow_created_by_anyteam:
+        permissions.pop("allow", None)
+    if removed and not permissions and permissions_created_by_anyteam:
+        settings.pop("permissions", None)
+
+    return tuple(removed)
+
+
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -468,7 +722,7 @@ def _install_instructions(platform: str) -> str:
 # ---------------------------------------------------------------------------
 
 CODEX_CLI_BINARY = "codex"
-CODEX_CLI_INSTALL_COMMAND = "npm i -g @openai/codex"
+CODEX_CLI_INSTALL_COMMAND = "npm install -g @openai/codex"
 CODEX_CLI_DOCS_URL = "https://github.com/openai/codex#getting-started"
 CODEX_CLI_MIN_VERSION: tuple[int, int, int] = (0, 120, 0)
 CODEX_CLI_VERSION_TIMEOUT_S = 5
@@ -476,6 +730,11 @@ GEMINI_CLI_BINARY = "gemini"
 GEMINI_CLI_INSTALL_COMMAND = "npm install -g @google/gemini-cli"
 GEMINI_CLI_DOCS_URL = "https://github.com/google-gemini/gemini-cli"
 GEMINI_CLI_VERSION_TIMEOUT_S = 5
+CODEX_AUTH_PATH = Path(".codex") / "auth.json"
+GEMINI_OAUTH_CREDS_PATH = Path(".gemini") / "oauth_creds.json"
+GEMINI_GOOGLE_ACCOUNTS_PATH = Path(".gemini") / "google_accounts.json"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_VERTEX_ENV_KEYS = ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GENAI_USE_VERTEXAI")
 
 # Accepts semver-ish tokens like "0.124.0", "0.124", or "0.124.0-rc1". Rejects
 # garbage ("12abc"), leading-v prefixes ("v0.124.0"), and trailing junk.
@@ -520,7 +779,14 @@ def _codex_meets_minimum(check: CodexCliCheck) -> bool | None:
 def _check_codex_cli() -> CodexCliCheck:
     found_path = shutil.which(CODEX_CLI_BINARY)
     if not found_path:
-        return CodexCliCheck(found=False, path=None, version=None, raw_output=None)
+        return CodexCliCheck(
+            found=False,
+            path=None,
+            version=None,
+            raw_output=None,
+            signed_in=False,
+            signed_in_detail="Codex CLI not found on PATH",
+        )
 
     resolved = Path(found_path).resolve()
     raw: str | None = None
@@ -541,7 +807,174 @@ def _check_codex_cli() -> CodexCliCheck:
         if raw:
             version = _parse_cli_version(raw)
 
-    return CodexCliCheck(found=True, path=resolved, version=version, raw_output=raw)
+    try:
+        signed_in, signed_in_detail = _check_codex_signin(resolved)
+    except Exception as exc:
+        signed_in, signed_in_detail = False, f"Codex sign-in check failed: {exc}"
+
+    return CodexCliCheck(
+        found=True,
+        path=resolved,
+        version=version,
+        raw_output=raw,
+        signed_in=signed_in,
+        signed_in_detail=signed_in_detail,
+    )
+
+
+def _non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _read_auth_json_object(path: Path, *, label: str) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, f"{label} file missing: {path}"
+    except OSError as exc:
+        return None, f"{label} file unreadable: {path}: {exc}"
+
+    if not text.strip():
+        return None, f"{label} file empty: {path}"
+
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"{label} file malformed: {path}: {exc.msg}"
+
+    if not isinstance(raw, dict):
+        return None, f"{label} file malformed: {path}: expected a JSON object"
+    return raw, None
+
+
+def _load_json_object_or_none(path: Path) -> dict[str, Any] | None:
+    raw, _detail = _read_auth_json_object(path, label="auth")
+    return raw
+
+
+def _parse_expiry_timestamp(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            timestamp = float(stripped)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+    else:
+        return None
+
+    # Gemini stores expiry_date as milliseconds since epoch; tolerate seconds too.
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000
+    return timestamp
+
+
+def _expiry_detail(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    label: str,
+    keys: tuple[str, ...] = ("expiry_date", "expires_at", "expiresAt", "expires"),
+) -> str | None:
+    now = datetime.now(timezone.utc).timestamp()
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        timestamp = _parse_expiry_timestamp(value)
+        if timestamp is None:
+            return f"{label} file malformed: {path}: invalid {key}"
+        if timestamp <= now:
+            return f"{label} credentials expired: {path}"
+    return None
+
+
+def _check_codex_signin(
+    found_path: Path | str | None,
+    auth_path: Path | str | None = None,
+) -> tuple[bool, str | None]:
+    """Detect Codex local auth state without exposing token values."""
+    del found_path  # The auth file location is currently independent of the binary path.
+    try:
+        path = Path(auth_path).expanduser() if auth_path is not None else Path.home() / CODEX_AUTH_PATH
+        raw, detail = _read_auth_json_object(path, label="Codex auth")
+        if raw is None:
+            return False, detail
+
+        tokens = raw.get("tokens")
+        if tokens is not None and not isinstance(tokens, dict):
+            return False, f"Codex auth file malformed: {path}: tokens must be a JSON object"
+
+        expiry = _expiry_detail(raw, path=path, label="Codex auth")
+        if expiry is None and isinstance(tokens, dict):
+            expiry = _expiry_detail(tokens, path=path, label="Codex auth")
+        if expiry is not None:
+            return False, expiry
+
+        token_signed_in = isinstance(tokens, dict) and _non_empty_string(
+            tokens.get("access_token")
+        )
+        if _non_empty_string(raw.get("OPENAI_API_KEY")) or token_signed_in:
+            return True, None
+        return False, f"Codex auth file empty or missing credentials: {path}"
+    except Exception as exc:
+        return False, f"Codex sign-in check failed: {exc}"
+
+
+def _check_gemini_signin(
+    found_path: Path | str | None,
+    oauth_creds_path: Path | str | None = None,
+    google_accounts_path: Path | str | None = None,
+    environ: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    """Detect Gemini local auth state without exposing token values."""
+    del found_path  # The auth file locations are currently independent of the binary path.
+    del google_accounts_path  # Only oauth_creds.json participates in Gemini auth detection.
+    try:
+        env = os.environ if environ is None else environ
+        if _non_empty_string(env.get(GEMINI_API_KEY_ENV)):
+            return True, None
+        if any(_non_empty_string(env.get(key)) for key in GEMINI_VERTEX_ENV_KEYS):
+            return True, None
+
+        oauth_path = (
+            Path(oauth_creds_path).expanduser()
+            if oauth_creds_path is not None
+            else Path.home() / GEMINI_OAUTH_CREDS_PATH
+        )
+        oauth_raw, oauth_detail = _read_auth_json_object(oauth_path, label="Gemini OAuth credentials")
+        if oauth_raw is not None:
+            expiry = _expiry_detail(oauth_raw, path=oauth_path, label="Gemini OAuth credentials")
+            if expiry is not None:
+                return False, expiry
+            if _non_empty_string(oauth_raw.get("access_token")):
+                return True, None
+            return False, f"Gemini OAuth credentials file empty or missing credentials: {oauth_path}"
+
+        return False, oauth_detail
+    except Exception as exc:
+        return False, f"Gemini sign-in check failed: {exc}"
+
+
+def _check_codex_auth(auth_path: Path | str | None = None) -> AuthCheck:
+    """Detect whether Codex has usable local auth without exposing secrets."""
+    signed_in, detail = _check_codex_signin(CODEX_CLI_BINARY, auth_path=auth_path)
+    return AuthCheck(signed_in=signed_in, signed_in_detail=detail)
 
 
 def _codex_cli_warning(check: CodexCliCheck) -> str | None:
@@ -616,7 +1049,14 @@ def _gemini_capabilities_from_help(help_text: str) -> dict[str, bool]:
 def _check_gemini_cli() -> GeminiCliCheck:
     found_path = shutil.which(GEMINI_CLI_BINARY)
     if not found_path:
-        return GeminiCliCheck(found=False, path=None, version=None, raw_output=None)
+        return GeminiCliCheck(
+            found=False,
+            path=None,
+            version=None,
+            raw_output=None,
+            signed_in=False,
+            signed_in_detail="Gemini CLI not found on PATH",
+        )
     resolved = Path(found_path).resolve()
     raw = None
     version = None
@@ -649,6 +1089,10 @@ def _check_gemini_cli() -> GeminiCliCheck:
         help_text = (help_completed.stdout or "") + (help_completed.stderr or "")
     capabilities = _gemini_capabilities_from_help(help_text)
     missing = tuple(name for name in _GEMINI_REQUIRED_CAPABILITIES if not capabilities.get(name, False))
+    try:
+        signed_in, signed_in_detail = _check_gemini_signin(resolved)
+    except Exception as exc:
+        signed_in, signed_in_detail = False, f"Gemini sign-in check failed: {exc}"
     return GeminiCliCheck(
         found=True,
         path=resolved,
@@ -656,7 +1100,24 @@ def _check_gemini_cli() -> GeminiCliCheck:
         raw_output=raw,
         capabilities=capabilities,
         missing_capabilities=missing,
+        signed_in=signed_in,
+        signed_in_detail=signed_in_detail,
     )
+
+
+def _check_gemini_auth(
+    oauth_creds_path: Path | str | None = None,
+    google_accounts_path: Path | str | None = None,
+    environ: dict[str, str] | None = None,
+) -> AuthCheck:
+    """Detect whether Gemini CLI has usable OAuth/API-key/Vertex auth."""
+    signed_in, detail = _check_gemini_signin(
+        GEMINI_CLI_BINARY,
+        oauth_creds_path=oauth_creds_path,
+        google_accounts_path=google_accounts_path,
+        environ=environ,
+    )
+    return AuthCheck(signed_in=signed_in, signed_in_detail=detail)
 
 
 def _gemini_cli_warning(check: GeminiCliCheck) -> str | None:
@@ -684,6 +1145,64 @@ def _gemini_cli_warning(check: GeminiCliCheck) -> str | None:
     return None
 
 
+def _codex_provider_status(cli: CodexCliCheck, auth: AuthCheck) -> ProviderStatus:
+    if not cli.found:
+        state: ProviderState = "MISSING"
+        upgrade_summary = None
+        upgrade_hint = None
+    elif _codex_meets_minimum(cli) is False:
+        state = "NEEDS_UPGRADE"
+        detected = cli.version or "unknown"
+        floor = _min_version_str()
+        upgrade_summary = f"upgrade — {detected} < {floor} floor"
+        upgrade_hint = f"detected {detected}, need ≥ {floor}"
+    elif auth.signed_in:
+        state = "READY"
+        upgrade_summary = None
+        upgrade_hint = None
+    else:
+        state = "NEEDS_SIGNIN"
+        upgrade_summary = None
+        upgrade_hint = None
+    return ProviderStatus(
+        provider_key="codex",
+        display_name="Codex CLI",
+        summary_name="Codex",
+        state=state,
+        version=cli.version,
+        upgrade_summary=upgrade_summary,
+        upgrade_hint=upgrade_hint,
+    )
+
+
+def _gemini_provider_status(cli: GeminiCliCheck, auth: AuthCheck) -> ProviderStatus:
+    if not cli.found:
+        state: ProviderState = "MISSING"
+        upgrade_summary = None
+        upgrade_hint = None
+    elif auth.signed_in:
+        state = "READY"
+        upgrade_summary = None
+        upgrade_hint = None
+    else:
+        state = "NEEDS_SIGNIN"
+        upgrade_summary = None
+        upgrade_hint = None
+    return ProviderStatus(
+        provider_key="gemini",
+        display_name="Gemini CLI",
+        summary_name="Gemini",
+        state=state,
+        version=cli.version,
+        upgrade_summary=upgrade_summary,
+        upgrade_hint=upgrade_hint,
+    )
+
+
+def _any_provider_ready(*statuses: ProviderStatus) -> bool:
+    return any(status.ready for status in statuses)
+
+
 # ---------------------------------------------------------------------------
 # teammateMode install/uninstall
 # ---------------------------------------------------------------------------
@@ -696,6 +1215,13 @@ def install_teammate_mode(
     settings_file_created_by_anyteam: bool = False,
     codex_cli: CodexCliCheck | None = None,
     gemini_cli: GeminiCliCheck | None = None,
+    codex_auth: AuthCheck | None = None,
+    gemini_auth: AuthCheck | None = None,
+    force_empty_used: bool = False,
+    permissions_allow_added_by_anyteam: tuple[str, ...] = (),
+    permissions_allowlist_skipped: bool = False,
+    permissions_created_by_anyteam: bool = False,
+    permissions_allow_created_by_anyteam: bool = False,
 ) -> TeammateModeResult:
     """Ensures ~/.claude.json has teammateMode='tmux', recording what we did in state.
 
@@ -727,14 +1253,23 @@ def install_teammate_mode(
             # can remove exactly those if and only if they end up empty later.
             "settings_file_created_by_anyteam": bool(settings_file_created_by_anyteam),
             "claude_json_created_by_anyteam": bool(claude_json_created_by_anyteam),
+            "force_empty_used": bool(force_empty_used),
+            "permissions_allow_added_by_anyteam": list(permissions_allow_added_by_anyteam),
+            "permissions_allowlist_skipped": bool(permissions_allowlist_skipped),
+            "permissions_created_by_anyteam": bool(permissions_created_by_anyteam),
+            "permissions_allow_created_by_anyteam": bool(permissions_allow_created_by_anyteam),
         }
         if codex_cli is not None:
             state["codex_cli_found"] = bool(codex_cli.found)
             state["codex_cli_version"] = codex_cli.version
+        if codex_auth is not None:
+            state["codex_signed_in"] = bool(codex_auth.signed_in)
         if gemini_cli is not None:
             state["gemini_cli_found"] = bool(gemini_cli.found)
             state["gemini_cli_version"] = gemini_cli.version
             state["gemini_cli_capabilities"] = dict(gemini_cli.capabilities)
+        if gemini_auth is not None:
+            state["gemini_signed_in"] = bool(gemini_auth.signed_in)
         return state
 
     # Case 1: absent.
@@ -914,6 +1449,7 @@ def uninstall_teammate_mode(
 # Top-level install / uninstall
 # ---------------------------------------------------------------------------
 
+
 def install(
     *,
     settings_path: Path | str | None = None,
@@ -926,6 +1462,11 @@ def install(
     prereq_check_fn: Callable[[], PrereqCheck] | None = None,
     codex_cli_check_fn: Callable[[], CodexCliCheck] | None = None,
     gemini_cli_check_fn: Callable[[], GeminiCliCheck] | None = None,
+    codex_auth_check_fn: Callable[[], AuthCheck] | None = None,
+    gemini_auth_check_fn: Callable[[], AuthCheck] | None = None,
+    provider_status_callback: Callable[[str], None] | None = None,
+    force_empty: bool = False,
+    no_allowlist: bool = False,
 ) -> InstallResult:
     """Full install: prereq check → env block write → teammateMode update.
 
@@ -948,6 +1489,31 @@ def install(
     prereq = checker()
     codex_cli = codex_checker()
     gemini_cli = gemini_checker()
+    if not codex_cli.found:
+        codex_auth = AuthCheck(signed_in=False, signed_in_detail=codex_cli.signed_in_detail)
+    elif codex_auth_check_fn is not None:
+        codex_auth = codex_auth_check_fn()
+    elif codex_cli.signed_in or codex_cli.signed_in_detail is not None:
+        codex_auth = AuthCheck(
+            signed_in=codex_cli.signed_in,
+            signed_in_detail=codex_cli.signed_in_detail,
+        )
+    else:
+        codex_auth = _check_codex_auth()
+
+    if not gemini_cli.found:
+        gemini_auth = AuthCheck(signed_in=False, signed_in_detail=gemini_cli.signed_in_detail)
+    elif gemini_auth_check_fn is not None:
+        gemini_auth = gemini_auth_check_fn()
+    elif gemini_cli.signed_in or gemini_cli.signed_in_detail is not None:
+        gemini_auth = AuthCheck(
+            signed_in=gemini_cli.signed_in,
+            signed_in_detail=gemini_cli.signed_in_detail,
+        )
+    else:
+        gemini_auth = _check_gemini_auth()
+    codex_status = _codex_provider_status(codex_cli, codex_auth)
+    gemini_status = _gemini_provider_status(gemini_cli, gemini_auth)
 
     if not prereq.found:
         message = (
@@ -964,15 +1530,47 @@ def install(
             message = f"{message}\n\nAdditionally:\n{gemini_warning}"
         raise InstallError(message)
 
+    provider_preamble_rendered = False
+    if provider_status_callback is not None:
+        provider_status_callback(
+            _format_provider_preamble(
+                codex_status,
+                gemini_status,
+                force_empty=force_empty,
+            )
+        )
+        provider_preamble_rendered = True
+
+    if not _any_provider_ready(codex_status, gemini_status) and not force_empty:
+        message = (
+            _format_no_provider_refusal_message()
+            if provider_preamble_rendered
+            else _format_no_provider_ready_message(codex_status, gemini_status)
+        )
+        err = InstallError(message)
+        err.cli_exit_code = INSTALL_ERROR_EXIT_NO_PROVIDER  # type: ignore[attr-defined]
+        raise err
+
     paths = discover_managed_paths(
         settings_path=settings_path,
         argv0=argv0,
         shim_path=shim_path,
         binary_path=binary_path,
     )
+    resolved_claude_json = (
+        Path(claude_json_path).expanduser().resolve()
+        if claude_json_path is not None
+        else default_claude_json_path()
+    )
+    resolved_state_path = (
+        Path(state_path).expanduser().resolve()
+        if state_path is not None
+        else default_state_path()
+    )
+    previous_state = _load_existing_state_for_install(resolved_state_path)
 
     settings, existed = _load_settings(paths.settings_path)
-    pre_env_snapshot = copy.deepcopy(settings.get("env"))
+    pre_settings_snapshot = copy.deepcopy(settings)
     env = _env_block(settings, path=paths.settings_path, create=True)
 
     desired = {
@@ -992,20 +1590,36 @@ def install(
         env.pop(LEGACY_TEAMMATE_BINARY_KEY, None)
         removed_legacy.append(LEGACY_TEAMMATE_BINARY_KEY)
 
-    env_mutation = bool(changed) or bool(removed_legacy) or not existed
-    if env_mutation:
-        _write_settings(paths.settings_path, settings)
+    (
+        permissions_allow_added,
+        permissions_created_now,
+        permissions_allow_created_now,
+    ) = _install_permission_allowlist(
+        settings,
+        path=paths.settings_path,
+        no_allowlist=no_allowlist,
+    )
+    permissions_allow_managed = _merge_unique_preserving_order(
+        _state_permissions_allow_added(previous_state),
+        permissions_allow_added,
+    )
+    permissions_created_by_anyteam = _state_permissions_bool(
+        previous_state,
+        "permissions_created_by_anyteam",
+    ) or permissions_created_now
+    permissions_allow_created_by_anyteam = _state_permissions_bool(
+        previous_state,
+        "permissions_allow_created_by_anyteam",
+    ) or permissions_allow_created_now
 
-    resolved_claude_json = (
-        Path(claude_json_path).expanduser().resolve()
-        if claude_json_path is not None
-        else default_claude_json_path()
+    settings_mutation = (
+        bool(changed)
+        or bool(removed_legacy)
+        or bool(permissions_allow_added)
+        or not existed
     )
-    resolved_state_path = (
-        Path(state_path).expanduser().resolve()
-        if state_path is not None
-        else default_state_path()
-    )
+    if settings_mutation:
+        _write_settings(paths.settings_path, settings)
     effective_prompt = prompt_fn if prompt_fn is not None else (lambda _current: False)
 
     try:
@@ -1016,12 +1630,18 @@ def install(
             settings_file_created_by_anyteam=not existed,
             codex_cli=codex_cli,
             gemini_cli=gemini_cli,
+            codex_auth=codex_auth,
+            gemini_auth=gemini_auth,
+            force_empty_used=force_empty,
+            permissions_allow_added_by_anyteam=permissions_allow_managed,
+            permissions_allowlist_skipped=no_allowlist,
+            permissions_created_by_anyteam=permissions_created_by_anyteam,
+            permissions_allow_created_by_anyteam=permissions_allow_created_by_anyteam,
         )
     except InstallError:
-        _rollback_env_block(
-            settings=settings,
+        _rollback_settings_file(
             path=paths.settings_path,
-            pre_env_snapshot=pre_env_snapshot,
+            pre_settings_snapshot=pre_settings_snapshot,
             pre_existed=existed,
         )
         raise
@@ -1035,22 +1655,28 @@ def install(
         teammate_mode=mode_result,
         codex_cli=codex_cli,
         gemini_cli=gemini_cli,
+        codex_auth=codex_auth,
+        gemini_auth=gemini_auth,
+        codex_status=codex_status,
+        gemini_status=gemini_status,
+        force_empty_used=force_empty,
+        permissions_allow_added=permissions_allow_added,
+        permissions_allow_managed=permissions_allow_managed,
+        permissions_allowlist_skipped=no_allowlist,
     )
 
 
-def _rollback_env_block(
+def _rollback_settings_file(
     *,
-    settings: dict[str, Any],
     path: Path,
-    pre_env_snapshot: Any,
+    pre_settings_snapshot: dict[str, Any],
     pre_existed: bool,
 ) -> None:
-    """Best-effort rollback of the env-block mutation performed earlier in install().
+    """Best-effort rollback of settings.json mutations performed earlier in install().
 
     Called only on post-env-write failure (currently: teammateMode prompt declined).
     If the settings file did not exist before install(), we remove it entirely.
-    Otherwise we restore the captured snapshot (or drop the `env` key if it was
-    absent originally).
+    Otherwise we restore the captured settings snapshot.
     """
     if not pre_existed:
         try:
@@ -1059,11 +1685,7 @@ def _rollback_env_block(
             pass
         return
 
-    if pre_env_snapshot is None:
-        settings.pop("env", None)
-    else:
-        settings["env"] = pre_env_snapshot
-    _write_settings(path, settings)
+    _write_settings(path, pre_settings_snapshot)
 
 
 
@@ -1117,6 +1739,9 @@ def uninstall(
     # cleanup branch below. This is a read-only peek; the mode revert below
     # handles the authoritative delete.
     settings_file_was_ours = False
+    permissions_allow_to_remove: tuple[str, ...] = ()
+    permissions_created_by_anyteam = False
+    permissions_allow_created_by_anyteam = False
     try:
         peeked_state = _load_state(resolved_state_path)
     except InstallError:
@@ -1124,6 +1749,16 @@ def uninstall(
         peeked_state = None
     if peeked_state is not None:
         settings_file_was_ours = bool(peeked_state.get("settings_file_created_by_anyteam", False))
+        permissions_allow_to_remove = _state_permissions_allow_added_strict(
+            peeked_state,
+            state_path=resolved_state_path,
+        )
+        permissions_created_by_anyteam = bool(
+            peeked_state.get("permissions_created_by_anyteam", False)
+        )
+        permissions_allow_created_by_anyteam = bool(
+            peeked_state.get("permissions_allow_created_by_anyteam", False)
+        )
 
     # teammateMode revert is independent of the env-block unwind and should
     # proceed whether or not settings.json exists. May raise InstallError
@@ -1141,6 +1776,7 @@ def uninstall(
             file_present=False,
             teammate_mode=mode_result,
             settings_file_removed=False,
+            permissions_allow_removed=(),
         )
 
     env = _env_block(settings, path=path, create=False)
@@ -1157,8 +1793,17 @@ def uninstall(
         else:
             skipped[key] = value
 
+    permissions_allow_removed = _remove_permission_allowlist_entries(
+        settings,
+        path=path,
+        entries=permissions_allow_to_remove,
+        permissions_created_by_anyteam=permissions_created_by_anyteam,
+        allow_created_by_anyteam=permissions_allow_created_by_anyteam,
+    )
+
     settings_file_removed = False
-    if removed:
+    settings_mutated = bool(removed) or bool(permissions_allow_removed)
+    if settings_mutated:
         if not env:
             settings.pop("env", None)
 
@@ -1181,6 +1826,7 @@ def uninstall(
         file_present=True,
         teammate_mode=mode_result,
         settings_file_removed=settings_file_removed,
+        permissions_allow_removed=permissions_allow_removed,
     )
 
 
@@ -1189,74 +1835,278 @@ def uninstall(
 # User-facing summary formatting
 # ---------------------------------------------------------------------------
 
-def format_install_message(result: InstallResult) -> str:
-    lines = [
+PROVIDER_STATUS_RULE = "─" * 45
+
+
+def _codex_render_status(codex: CodexCliCheck) -> ProviderStatus:
+    if not codex.found:
+        state: ProviderState = "MISSING"
+    elif codex.signed_in:
+        state = "READY"
+    else:
+        state = "NEEDS_SIGNIN"
+    return ProviderStatus(
+        provider_key="codex",
+        display_name="Codex CLI",
+        summary_name="Codex",
+        state=state,
+        version=codex.version,
+    )
+
+
+def _gemini_render_status(gemini: GeminiCliCheck) -> ProviderStatus:
+    if not gemini.found:
+        state: ProviderState = "MISSING"
+    elif gemini.signed_in:
+        state = "READY"
+    else:
+        state = "NEEDS_SIGNIN"
+    return ProviderStatus(
+        provider_key="gemini",
+        display_name="Gemini CLI",
+        summary_name="Gemini",
+        state=state,
+        version=gemini.version,
+    )
+
+
+def _provider_row(status: ProviderStatus) -> str:
+    return f"{status.display_name:<14}{status.installed_cell():<18}{status.signin_cell()}"
+
+
+def _provider_summary_entry(status: ProviderStatus) -> str:
+    return status.summary_entry()
+
+
+def _aggregate_summary_line(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    if _any_provider_ready(codex, gemini):
+        lead = "Ready"
+    elif codex.state == "NEEDS_SIGNIN" or gemini.state == "NEEDS_SIGNIN":
+        lead = "Almost ready"
+    else:
+        lead = "Not ready"
+    return f"{lead}: {_provider_summary_entry(codex)} · {_provider_summary_entry(gemini)}."
+
+
+def _format_provider_status_rows(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    return "\n".join(
+        [
+            "Provider status",
+            PROVIDER_STATUS_RULE,
+            f"{'':<14}{'Installed?':<18}{'Signed in?'}",
+            _provider_row(codex),
+            _provider_row(gemini),
+            PROVIDER_STATUS_RULE,
+        ]
+    )
+
+
+def _render_provider_status(codex: CodexCliCheck, gemini: GeminiCliCheck) -> str:
+    return _format_provider_status_rows(
+        _codex_render_status(codex),
+        _gemini_render_status(gemini),
+    )
+
+
+def _render_provider_summary(codex: CodexCliCheck, gemini: GeminiCliCheck) -> str:
+    return _aggregate_summary_line(
+        _codex_render_status(codex),
+        _gemini_render_status(gemini),
+    )
+
+
+def _render_provider_walkthrough(codex: CodexCliCheck, gemini: GeminiCliCheck) -> str:
+    return _format_provider_walkthroughs(
+        _codex_render_status(codex),
+        _gemini_render_status(gemini),
+    )
+
+
+def _format_provider_status_table(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    return "\n".join(
+        [
+            _format_provider_status_rows(codex, gemini),
+            _aggregate_summary_line(codex, gemini),
+        ]
+    )
+
+
+def _format_no_provider_explainer() -> str:
+    return "\n".join(
+        [
+            "claude-anyteam routes some Claude Code teammates to external AI CLIs (Codex, Gemini).",
+            "You need at least one signed-in CLI for it to do anything useful.",
+            "Pick whichever you have access to.",
+        ]
+    )
+
+
+def _format_codex_walkthrough(status: ProviderStatus) -> str:
+    if status.state == "READY":
+        return ""
+
+    lines = ["Codex CLI:"]
+    step = 1
+    if status.state == "MISSING":
+        lines.append(f"  {step}. Install:  {CODEX_CLI_INSTALL_COMMAND}")
+        step += 1
+    elif status.state == "NEEDS_UPGRADE":
+        suffix = f" ({status.upgrade_hint})" if status.upgrade_hint else ""
+        lines.append(
+            f"  {step}. Upgrade:  {CODEX_CLI_INSTALL_COMMAND}{suffix}"
+        )
+        step += 1
+
+    if status.state in ("MISSING", "NEEDS_SIGNIN"):
+        lines.append(f"  {step}. Sign in:  {CODEX_CLI_BINARY}     (opens an OAuth flow on first run)")
+    lines.append(f"  Docs: {CODEX_CLI_DOCS_URL}")
+    return "\n".join(lines)
+
+
+def _format_gemini_walkthrough(status: ProviderStatus) -> str:
+    if status.state == "READY":
+        return ""
+
+    lines = ["Gemini CLI:"]
+    step = 1
+    if status.state == "MISSING":
+        lines.append(f"  {step}. Install:  {GEMINI_CLI_INSTALL_COMMAND}")
+        step += 1
+    elif status.state == "NEEDS_UPGRADE":
+        suffix = f" ({status.upgrade_hint})" if status.upgrade_hint else ""
+        lines.append(f"  {step}. Upgrade:  {GEMINI_CLI_INSTALL_COMMAND}{suffix}")
+        step += 1
+
+    if status.state in ("MISSING", "NEEDS_SIGNIN"):
+        lines.append(
+            f"  {step}. Sign in:  {GEMINI_CLI_BINARY}    "
+            "(or set GEMINI_API_KEY, or configure Vertex)"
+        )
+    lines.append(f"  Docs: {GEMINI_CLI_DOCS_URL}")
+    return "\n".join(lines)
+
+
+def _format_provider_walkthroughs(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    blocks = [
+        block
+        for block in (_format_codex_walkthrough(codex), _format_gemini_walkthrough(gemini))
+        if block
+    ]
+    return "\n\n".join(blocks)
+
+
+def _format_no_provider_refusal_message() -> str:
+    return (
+        "Refusing to install — no provider is ready.\n"
+        "  Follow the steps above, then re-run `claude-anyteam install`.\n\n"
+        "  Setting up later? Pass --force-empty to install with no provider ready:\n"
+        "    claude-anyteam install --force-empty"
+    )
+
+
+def _format_provider_preamble(
+    codex: ProviderStatus,
+    gemini: ProviderStatus,
+    *,
+    force_empty: bool = False,
+) -> str:
+    blocks = [_format_provider_status_table(codex, gemini)]
+    no_provider_ready = not _any_provider_ready(codex, gemini)
+    if no_provider_ready:
+        blocks.append(_format_no_provider_explainer())
+    walkthrough = _format_provider_walkthroughs(codex, gemini)
+    if walkthrough:
+        blocks.append(walkthrough)
+    if force_empty and no_provider_ready:
+        blocks.append(
+            "Proceeding with --force-empty: claude-anyteam is installed but inert until a CLI is ready."
+        )
+    return "\n\n".join(blocks)
+
+
+def _format_no_provider_ready_message(codex: ProviderStatus, gemini: ProviderStatus) -> str:
+    blocks = [
+        _format_provider_status_table(codex, gemini),
+        _format_no_provider_explainer(),
+        _format_provider_walkthroughs(codex, gemini),
+        _format_no_provider_refusal_message(),
+    ]
+    return "\n\n".join(block for block in blocks if block)
+
+
+def format_install_message(result: InstallResult, *, include_provider_status: bool = True) -> str:
+    lines: list[str] = []
+
+    codex_status = result.codex_status or _codex_provider_status(
+        result.codex_cli or CodexCliCheck(found=False, path=None, version=None, raw_output=None),
+        result.codex_auth or AuthCheck(signed_in=False),
+    )
+    gemini_status = result.gemini_status or _gemini_provider_status(
+        result.gemini_cli or GeminiCliCheck(found=False, path=None, version=None, raw_output=None),
+        result.gemini_auth or AuthCheck(signed_in=False),
+    )
+
+    if codex_status is not None and gemini_status is not None:
+        if include_provider_status:
+            lines.append(
+                _format_provider_preamble(
+                    codex_status,
+                    gemini_status,
+                    force_empty=result.force_empty_used,
+                )
+            )
+
+    receipt_lines = [
         f"Updated {result.paths.settings_path}",
         f"Set env.{TEAMMATE_COMMAND_KEY}={result.paths.shim_path}",
         f"Set env.{TEAMMATE_BINARY_KEY}={result.paths.binary_path}",
         f"Set env.{GEMINI_TEAMMATE_BINARY_KEY}={result.paths.binary_path.with_name('gemini-anyteam')}",
     ]
     if result.removed_legacy_keys:
-        lines.append(f"Removed legacy env.{LEGACY_TEAMMATE_BINARY_KEY} entry.")
+        receipt_lines.append(f"Removed legacy env.{LEGACY_TEAMMATE_BINARY_KEY} entry.")
 
     mode = result.teammate_mode
     if mode is not None:
         if mode.wrote_value:
             if mode.previous_value is None:
-                lines.append(f"Set {TEAMMATE_MODE_KEY}=\"tmux\" in {mode.claude_json_path}")
+                receipt_lines.append(f"Set {TEAMMATE_MODE_KEY}=\"tmux\" in {mode.claude_json_path}")
             else:
-                lines.append(
+                receipt_lines.append(
                     f"Set {TEAMMATE_MODE_KEY}=\"tmux\" in {mode.claude_json_path} "
                     f"(was {mode.previous_value!r})"
                 )
         else:
-            lines.append(f"{TEAMMATE_MODE_KEY} already \"tmux\" in {mode.claude_json_path}; no change")
+            receipt_lines.append(f"{TEAMMATE_MODE_KEY} already \"tmux\" in {mode.claude_json_path}; no change")
 
-    codex_cli = result.codex_cli
-    if codex_cli is not None:
-        warning = _codex_cli_warning(codex_cli)
-        if warning is not None:
-            lines.append(warning)
-        elif codex_cli.found:
-            if codex_cli.version:
-                lines.append(f"Detected Codex CLI {codex_cli.version} at {codex_cli.path}")
-            else:
-                # Parse-fail branch: presence-only acknowledgment.
-                lines.append(f"Detected Codex CLI at {codex_cli.path}")
+    if result.permissions_allowlist_skipped:
+        receipt_lines.append("Permission allowlist skipped (--no-allowlist).")
+    else:
+        receipt_lines.append("Permission allowlist written so spawning teams won't prompt.")
 
-    gemini_cli = result.gemini_cli
-    if gemini_cli is not None:
-        warning = _gemini_cli_warning(gemini_cli)
-        if warning is not None:
-            lines.append(warning)
-        elif gemini_cli.found:
-            if gemini_cli.version:
-                lines.append(f"Detected Gemini CLI {gemini_cli.version} at {gemini_cli.path}")
-            else:
-                lines.append(f"Detected Gemini CLI at {gemini_cli.path}")
-            if gemini_cli.capabilities.get("--acp") is False:
-                lines.append("Gemini CLI ACP support was not detected; headless gemini-* routing remains available.")
-
-    lines.append("Restart Claude Code for the changes to take effect. Use codex-* or gemini-* teammate names to route to the matching backend.")
+    receipt_lines.append("Restart Claude Code for the changes to take effect. Use codex-* or gemini-* teammate names to route to the matching backend.")
     if not result.changed_anything:
-        lines.insert(1, "The existing settings already matched this install.")
-    return "\n".join(lines)
+        receipt_lines.insert(1, "The existing settings already matched this install.")
+    lines.append("\n".join(receipt_lines))
+    return "\n\n".join(lines)
 
 
 
 def format_uninstall_message(result: UninstallResult) -> str:
     lines: list[str] = []
 
+    removed_items = [f"env.{key}" for key in result.removed]
+    if result.permissions_allow_removed:
+        removed_items.append("permissions.allow entries")
+    removed_summary = ", ".join(removed_items)
+
     if not result.file_present:
         lines.append(f"No settings file found at {result.settings_path}; nothing to remove.")
     elif result.settings_file_removed:
-        removed_keys = ", ".join(f"env.{key}" for key in result.removed)
-        lines.append(f"Removed {removed_keys}")
+        lines.append(f"Removed {removed_summary}")
         lines.append(f"Deleted {result.settings_path} (empty after removal)")
-    elif result.removed:
-        removed_keys = ", ".join(f"env.{key}" for key in result.removed)
+    elif result.removed or result.permissions_allow_removed:
         lines.append(f"Updated {result.settings_path}")
-        lines.append(f"Removed {removed_keys}")
+        lines.append(f"Removed {removed_summary}")
     elif result.skipped:
         lines.append(f"Updated {result.settings_path}")
         lines.append("No claude-anyteam-managed env keys were removed; existing values were left intact.")

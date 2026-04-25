@@ -18,6 +18,7 @@ ORIENTATION_MESSAGE = (
     "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex "
     "and gemini-* route to Gemini CLI. Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
+DRIFT_WARNING = "claude-anyteam: settings drifted — run `claude-anyteam install` to repair"
 
 
 def _make_executable(path: Path, body: str) -> Path:
@@ -105,25 +106,25 @@ def test_wrapper_prints_clear_error_when_package_is_missing(tmp_path: Path) -> N
     assert "uv add claude-anyteam" in completed.stderr
 
 
-def test_session_start_hook_skips_install_when_command_is_already_configured(tmp_path: Path) -> None:
-    home = tmp_path / "home"
+def _write_hook_settings(home: Path, env_block: dict[str, str]) -> Path:
     settings_path = home / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    configured_bin = tmp_path / "configured-bin"
-    shim = _make_executable(configured_bin / "claude-anyteam-spawn-shim", "#!/bin/sh\nexit 0\n")
-    binary = _make_executable(configured_bin / "claude-anyteam", "#!/bin/sh\nexit 0\n")
-    gemini_binary = _make_executable(configured_bin / "gemini-anyteam", "#!/bin/sh\nexit 0\n")
-    settings_path.write_text(
-        json.dumps(
-            {
-                "env": {
-                    "CLAUDE_CODE_TEAMMATE_COMMAND": str(shim),
-                    "CLAUDE_ANYTEAM_BINARY": str(binary),
-                    "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
-                }
-            }
-        ),
-        encoding="utf-8",
+    settings_path.write_text(json.dumps({"env": env_block}), encoding="utf-8")
+    return settings_path
+
+
+def test_session_start_hook_prints_orientation_when_settings_are_complete(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
+    binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
+    gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+        },
     )
 
     fake_bin = tmp_path / "fake-bin"
@@ -151,36 +152,138 @@ def test_session_start_hook_skips_install_when_command_is_already_configured(tmp
     assert completed.stdout.strip() == ORIENTATION_MESSAGE
 
 
-def test_session_start_hook_repairs_missing_binary_entry(tmp_path: Path) -> None:
+def test_session_start_hook_warns_when_env_var_is_missing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": "/configured/claude-anyteam-spawn-shim",
+            "CLAUDE_ANYTEAM_BINARY": "/configured/claude-anyteam",
+        },
+    )
+
+    fake_bin = tmp_path / "fake-bin"
+    marker = tmp_path / "install-called.txt"
+    _make_executable(
+        fake_bin / "claude-anyteam",
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {marker!s}\n",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert not marker.exists()
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
+def test_session_start_hook_warns_when_configured_paths_are_stale(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(tmp_path / "missing" / "claude-anyteam-spawn-shim"),
+            "CLAUDE_ANYTEAM_BINARY": str(tmp_path / "missing" / "claude-anyteam"),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(tmp_path / "missing" / "gemini-anyteam"),
+        },
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
+def test_session_start_hook_warns_when_configured_paths_are_not_executable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    command = tmp_path / "configured" / "claude-anyteam-spawn-shim"
+    binary = tmp_path / "configured" / "claude-anyteam"
+    gemini_binary = tmp_path / "configured" / "gemini-anyteam"
+    for path in (command, binary, gemini_binary):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o644)
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+        },
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
+def test_session_start_hook_warns_when_settings_are_missing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    fake_bin = tmp_path / "fake-bin"
+    marker = tmp_path / "install-called.txt"
+    _make_executable(
+        fake_bin / "claude-anyteam",
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {marker!s}\n",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    completed = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    assert not marker.exists()
+    assert completed.stdout.strip() == DRIFT_WARNING
+
+
+def test_session_start_hook_warns_when_settings_are_malformed(tmp_path: Path) -> None:
     home = tmp_path / "home"
     settings_path = home / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    configured_bin = tmp_path / "configured-bin"
-    shim = _make_executable(configured_bin / "claude-anyteam-spawn-shim", "#!/bin/sh\nexit 0\n")
-    binary = _make_executable(configured_bin / "claude-anyteam", "#!/bin/sh\nexit 0\n")
-    settings_path.write_text(
-        json.dumps(
-            {
-                "env": {
-                    "CLAUDE_CODE_TEAMMATE_COMMAND": str(shim),
-                    "CLAUDE_ANYTEAM_BINARY": str(binary),
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    fake_bin = tmp_path / "fake-bin"
-    marker = tmp_path / "install-called.txt"
-    _make_executable(
-        fake_bin / "claude-anyteam",
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {marker!s}\n",
-    )
+    settings_path.write_text("{not json", encoding="utf-8")
 
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
 
     completed = subprocess.run(
         [str(HOOK_SCRIPT)],
@@ -191,91 +294,21 @@ def test_session_start_hook_repairs_missing_binary_entry(tmp_path: Path) -> None
     )
 
     assert completed.returncode == 0
-    assert marker.read_text(encoding="utf-8").strip() == "install"
-    assert completed.stdout.strip() == ORIENTATION_MESSAGE
-
-
-def test_session_start_hook_repairs_missing_executable_paths(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    settings_path = home / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(
-            {
-                "env": {
-                    "CLAUDE_CODE_TEAMMATE_COMMAND": "/missing/claude-anyteam-spawn-shim",
-                    "CLAUDE_ANYTEAM_BINARY": "/missing/claude-anyteam",
-                    "CLAUDE_ANYTEAM_GEMINI_BINARY": "/missing/gemini-anyteam",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    fake_bin = tmp_path / "fake-bin"
-    marker = tmp_path / "install-called.txt"
-    _make_executable(
-        fake_bin / "claude-anyteam",
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {marker!s}\n",
-    )
-
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-
-    completed = subprocess.run(
-        [str(HOOK_SCRIPT)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert completed.returncode == 0
-    assert marker.read_text(encoding="utf-8").strip() == "install"
-
-
-def test_session_start_hook_runs_install_once_when_missing(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    fake_bin = tmp_path / "fake-bin"
-    marker = tmp_path / "install-called.txt"
-    _make_executable(
-        fake_bin / "claude-anyteam",
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {marker!s}\n",
-    )
-
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
-
-    completed = subprocess.run(
-        [str(HOOK_SCRIPT)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert completed.returncode == 0
-    assert marker.read_text(encoding="utf-8").strip() == "install"
-    assert completed.stdout.strip() == ORIENTATION_MESSAGE
+    assert completed.stdout.strip() == DRIFT_WARNING
 
 
 def test_session_start_hook_uses_grep_fallback_when_python3_is_missing(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    settings_path = home / ".claude" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(
-            {
-                "env": {
-                    "CLAUDE_CODE_TEAMMATE_COMMAND": "/already/configured/claude-anyteam-spawn-shim"
-                }
-            }
-        ),
-        encoding="utf-8",
+    command = _make_executable(tmp_path / "configured" / "claude-anyteam-spawn-shim", "#!/bin/sh\n")
+    binary = _make_executable(tmp_path / "configured" / "claude-anyteam", "#!/bin/sh\n")
+    gemini_binary = _make_executable(tmp_path / "configured" / "gemini-anyteam", "#!/bin/sh\n")
+    _write_hook_settings(
+        home,
+        {
+            "CLAUDE_CODE_TEAMMATE_COMMAND": str(command),
+            "CLAUDE_ANYTEAM_BINARY": str(binary),
+            "CLAUDE_ANYTEAM_GEMINI_BINARY": str(gemini_binary),
+        },
     )
 
     fake_bin = tmp_path / "fake-bin"
@@ -303,49 +336,4 @@ def test_session_start_hook_uses_grep_fallback_when_python3_is_missing(tmp_path:
 
     assert completed.returncode == 0
     assert not marker.exists()
-
-
-def test_session_start_hook_ignores_missing_console_script(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    plugin_root = tmp_path / "plugin-root"
-    _make_executable(
-        plugin_root / "bin" / "claude-anyteam",
-        "#!/bin/sh\nexit 127\n",
-    )
-
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
-
-    completed = subprocess.run(
-        [str(HOOK_SCRIPT)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert completed.returncode == 0
-
-
-def test_session_start_hook_propagates_real_install_failures(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    plugin_root = tmp_path / "plugin-root"
-    _make_executable(
-        plugin_root / "bin" / "claude-anyteam",
-        "#!/bin/sh\nexit 2\n",
-    )
-
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
-
-    completed = subprocess.run(
-        [str(HOOK_SCRIPT)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert completed.returncode == 2
+    assert completed.stdout.strip() == ORIENTATION_MESSAGE
