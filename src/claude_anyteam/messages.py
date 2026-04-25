@@ -98,6 +98,40 @@ class PlanApprovalResponseIn(_Base):
     feedback: str | None = None
 
 
+class PermissionRequestOut(_Base):
+    type: Literal["permission_request"] = "permission_request"
+    schema_version: Literal[1] = 1
+    request_id: str
+    tool_name: str
+    tool_args: Any
+    task_id: str
+    teammate_name: str
+    trust_mode: Literal["default", "plan"]
+    label: str | None = None
+    session_id: str | None = None
+    timestamp: str = Field(default_factory=now_iso)
+
+
+class PermissionResponseIn(_Base):
+    type: Literal["permission_response"] = "permission_response"
+    request_id: str | None = Field(default=None, alias="requestId")
+    decision: Literal["allow_once", "allow_session", "deny"] | None = None
+    reason: str | None = None
+    timestamp: str | None = None
+
+
+
+
+class SteerIn(_Base):
+    type: Literal["steer"] = "steer"
+    message: str
+    task_id: str | None = Field(default=None, alias="taskId")
+    priority: Literal["normal", "urgent"] = "normal"
+    expires_after_turns: int = Field(default=1, alias="expiresAfterTurns")
+    from_: str | None = Field(default=None, alias="from")
+    timestamp: str | None = None
+
+
 class IdleNotificationOut(_Base):
     type: Literal["idle_notification"] = "idle_notification"
     from_: str = Field(alias="from")
@@ -142,6 +176,10 @@ def parse_protocol_text(text: str) -> _Base | None:
         return _safe_load(PlanApprovalRequestIn, raw)
     if t == "plan_approval_response":
         return _safe_load(PlanApprovalResponseIn, raw)
+    if t == "permission_response":
+        return _safe_load(PermissionResponseIn, raw)
+    if t == "steer":
+        return _safe_load(SteerIn, raw)
     return None
 
 

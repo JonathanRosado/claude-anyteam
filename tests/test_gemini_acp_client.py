@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from claude_anyteam.backends.gemini import acp_client
 from claude_anyteam.backends.gemini.acp_client import GeminiAcpClient
+from claude_anyteam.messages import PermissionResponseIn
 
 
 def test_method_wrappers_send_empirical_method_names(monkeypatch):
@@ -104,6 +105,71 @@ def test_request_permission_plan_cancels_and_does_not_approve_writes():
     assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
     assert c.permission_blocked is not None
     assert c.permission_blocked["trust_mode"] == "plan"
+
+
+def test_request_permission_default_bridges_allow_once(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        acp_client.pio,
+        "send_permission_request_to_lead",
+        lambda *args, **kwargs: sent.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        acp_client.pio,
+        "wait_for_permission_response",
+        lambda **kwargs: PermissionResponseIn(request_id=kwargs["request_id"], decision="allow_once"),
+    )
+    c = GeminiAcpClient(trust_mode="default", team_name="t", agent_name="gemini-a", task_id="7", approval_timeout_s=1)
+
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"toolCall": {"title": "Write file"}, "apiToken": "secret"}})
+
+    assert response == {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+    assert c.permission_blocked is None
+    assert sent[0][0][:2] == ("t", "gemini-a")
+    assert sent[0][1]["task_id"] == "7"
+    assert sent[0][1]["tool_args"]["apiToken"] == "<<redacted>>"
+
+
+def test_request_permission_default_bridges_deny(monkeypatch):
+    monkeypatch.setattr(acp_client.pio, "send_permission_request_to_lead", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        acp_client.pio,
+        "wait_for_permission_response",
+        lambda **kwargs: PermissionResponseIn(request_id=kwargs["request_id"], decision="deny", reason="too risky"),
+    )
+    c = GeminiAcpClient(trust_mode="default", team_name="t", agent_name="gemini-a", task_id="7", approval_timeout_s=1)
+
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"toolName": "edit"}})
+
+    assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+    assert c.permission_blocked is not None
+    assert c.permission_blocked["reason"] == "too risky"
+
+
+def test_request_permission_default_bridges_timeout(monkeypatch):
+    monkeypatch.setattr(acp_client.pio, "send_permission_request_to_lead", lambda *args, **kwargs: None)
+    monkeypatch.setattr(acp_client.pio, "wait_for_permission_response", lambda **kwargs: None)
+    c = GeminiAcpClient(trust_mode="default", team_name="t", agent_name="gemini-a", task_id="7", approval_timeout_s=1)
+
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"toolName": "edit"}})
+
+    assert response == {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+    assert c.permission_blocked is not None
+    assert c.permission_blocked["reason"] == "approval_timeout"
+
+
+def test_request_permission_allow_session_uses_advertised_always_option(monkeypatch):
+    monkeypatch.setattr(acp_client.pio, "send_permission_request_to_lead", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        acp_client.pio,
+        "wait_for_permission_response",
+        lambda **kwargs: PermissionResponseIn(request_id=kwargs["request_id"], decision="allow_session"),
+    )
+    c = GeminiAcpClient(trust_mode="default", team_name="t", agent_name="gemini-a", task_id="7", approval_timeout_s=1)
+
+    response = c.handle_server_request({"method": "session/request_permission", "params": {"options": [{"optionId": "allow_always"}]}})
+
+    assert response == {"outcome": {"outcome": "selected", "optionId": "allow_always"}}
 
 
 def test_gemini_acp_client_uses_process_group_flags(monkeypatch):

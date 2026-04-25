@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from claude_anyteam import protocol_io as pio
 from claude_anyteam.jsonrpc_stdio import JsonRpcStdioClient, JsonRpcStdioError
 
 
@@ -27,6 +28,19 @@ class GeminiAcpAuthenticationError(GeminiAcpError):
 TRUST_MODES = {"trusted", "default", "plan"}
 
 
+SECRET_KEY_PARTS = ("token", "secret", "password", "credential", "auth")
+
+
+def _redact_permission_value(value: Any, *, key: str | None = None) -> Any:
+    if key and any(part in key.lower() for part in SECRET_KEY_PARTS):
+        return "<<redacted>>"
+    if isinstance(value, dict):
+        return {str(k): _redact_permission_value(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_permission_value(v) for v in value]
+    return value
+
+
 def permission_request_label(params: Any) -> str:
     """Return a compact human-readable label for ACP permission details."""
     if isinstance(params, dict):
@@ -41,6 +55,24 @@ def permission_request_label(params: Any) -> str:
                 if isinstance(value, str) and value:
                     return value
     return "a tool/action"
+
+
+def _permission_option_ids(params: Any) -> set[str]:
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            option_id = value.get("optionId") or value.get("option_id") or value.get("id")
+            if isinstance(option_id, str):
+                found.add(option_id)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(params)
+    return found
 
 
 def detect_acp_flag(gemini_binary: str = "gemini") -> str:
@@ -80,6 +112,11 @@ class GeminiAcpClient(JsonRpcStdioClient):
         extra_args: list[str] | None = None,
         acp_flag: str | None = None,
         trust_mode: str = "trusted",
+        team_name: str | None = None,
+        agent_name: str | None = None,
+        task_id: str | None = None,
+        approval_timeout_s: float = 300.0,
+        approval_poll_interval_s: float = 1.0,
     ) -> None:
         if trust_mode not in TRUST_MODES:
             raise ValueError(f"Gemini ACP trust mode must be trusted, default, or plan, got {trust_mode!r}")
@@ -99,6 +136,11 @@ class GeminiAcpClient(JsonRpcStdioClient):
         self._timeout_error_cls = GeminiAcpTimeoutError
         self.trust_mode = trust_mode
         self.permission_blocked: dict[str, Any] | None = None
+        self.team_name = team_name
+        self.agent_name = agent_name
+        self.task_id = task_id
+        self.approval_timeout_s = approval_timeout_s
+        self.approval_poll_interval_s = approval_poll_interval_s
 
     def initialize(
         self,
@@ -215,20 +257,66 @@ class GeminiAcpClient(JsonRpcStdioClient):
                 return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
             params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
             label = permission_request_label(params)
-            self.permission_blocked = {
-                "trust_mode": self.trust_mode,
-                "label": label,
-                "params": params,
-            }
-            # Wake the in-flight session/prompt request so acp.run can mark the
-            # task blocked immediately instead of waiting for Gemini to settle.
-            with self._pending_lock:
-                for pending in self._pending.values():
-                    pending.error = {
-                        "code": -32001,
-                        "message": f"Gemini ACP permission denied for {label}; trust_mode={self.trust_mode}",
-                        "data": self.permission_blocked,
-                    }
-                    pending.event.set()
-            return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+            if not self.team_name or not self.agent_name:
+                self.permission_blocked = {
+                    "trust_mode": self.trust_mode,
+                    "label": label,
+                    "params": params,
+                    "reason": "approval_context_missing",
+                }
+                return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+            request_id = f"perm-{uuid.uuid4()}"
+            try:
+                pio.send_permission_request_to_lead(
+                    self.team_name,
+                    self.agent_name,
+                    request_id=request_id,
+                    tool_name=label,
+                    tool_args=_redact_permission_value(params),
+                    task_id=self.task_id or "unknown",
+                    trust_mode=self.trust_mode,
+                    label=label,
+                    session_id=params.get("sessionId") if isinstance(params.get("sessionId"), str) else None,
+                )
+                response = pio.wait_for_permission_response(
+                    team=self.team_name,
+                    teammate_name=self.agent_name,
+                    request_id=request_id,
+                    timeout_s=self.approval_timeout_s,
+                    poll_interval_s=self.approval_poll_interval_s,
+                )
+            except Exception as e:
+                self.permission_blocked = {
+                    "trust_mode": self.trust_mode,
+                    "label": label,
+                    "params": params,
+                    "request_id": request_id,
+                    "reason": "approval_bridge_error",
+                    "error": str(e),
+                }
+                return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+            if response is None:
+                self.permission_blocked = {
+                    "trust_mode": self.trust_mode,
+                    "label": label,
+                    "params": params,
+                    "request_id": request_id,
+                    "reason": "approval_timeout",
+                    "timeout_s": self.approval_timeout_s,
+                }
+                return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+            if response.decision == "deny":
+                self.permission_blocked = {
+                    "trust_mode": self.trust_mode,
+                    "label": label,
+                    "params": params,
+                    "request_id": request_id,
+                    "reason": response.reason or "denied_by_team_lead",
+                }
+                return {"outcome": {"outcome": "selected", "optionId": "cancel"}}
+            if response.decision == "allow_session":
+                option_ids = _permission_option_ids(params)
+                option_id = "allow_always" if "allow_always" in option_ids else "allow_once"
+                return {"outcome": {"outcome": "selected", "optionId": option_id}}
+            return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
         return None

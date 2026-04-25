@@ -9,8 +9,10 @@ that combine cs50victor primitives with adapter-owned message types
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
+from claude_teams._filelock import file_lock as _file_lock  # type: ignore[import-untyped]
 from claude_teams import messaging as _m  # type: ignore[import-untyped]
 from claude_teams import tasks as _t  # type: ignore[import-untyped]
 from claude_teams import teams as _teams  # type: ignore[import-untyped]
@@ -20,6 +22,8 @@ from claude_teams.models import TaskFile as _TaskFile  # type: ignore[import-unt
 from . import logger
 from .messages import (
     IdleNotificationOut,
+    PermissionRequestOut,
+    PermissionResponseIn,
     PlanApprovalRequestOut,
     ShutdownResponseOut,
     TaskCompleteOut,
@@ -237,3 +241,96 @@ def send_plan_approval_request(
 ) -> None:
     payload = PlanApprovalRequestOut(request_id=request_id, plan=plan)
     send_json_to_lead(team, sender, payload, summary=f"plan_approval:{request_id}")
+
+
+def send_permission_request_to_lead(
+    team: str,
+    sender: str,
+    *,
+    request_id: str,
+    tool_name: str,
+    tool_args: Any,
+    task_id: str,
+    trust_mode: str,
+    label: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    payload = PermissionRequestOut(
+        request_id=request_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        task_id=task_id,
+        teammate_name=sender,
+        trust_mode=trust_mode,  # type: ignore[arg-type]
+        label=label,
+        session_id=session_id,
+    )
+    send_json_to_lead(team, sender, payload, summary=f"permission_request:{request_id}")
+
+
+def _read_matching_permission_response_locked(
+    team: str,
+    teammate_name: str,
+    request_id: str,
+) -> PermissionResponseIn | None:
+    path = _m.inbox_path(team, teammate_name)
+    if not path.exists():
+        return None
+    lock_path = path.parent / ".lock"
+    with _file_lock(lock_path):
+        raw_list = json.loads(path.read_text())
+        if not isinstance(raw_list, list):
+            return None
+        matched: PermissionResponseIn | None = None
+        matched_index: int | None = None
+        for idx, entry in enumerate(raw_list):
+            try:
+                msg = _InboxMessage.model_validate(entry)
+            except Exception:
+                continue
+            if msg.read or msg.from_ != "team-lead":
+                continue
+            try:
+                raw = json.loads(msg.text)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(raw, dict) or raw.get("type") != "permission_response":
+                continue
+            try:
+                parsed = PermissionResponseIn.model_validate(raw)
+            except Exception:
+                logger.warn("permission_response.malformed", request_id=request_id)
+                continue
+            if parsed.request_id != request_id or parsed.decision is None:
+                continue
+            matched = parsed
+            matched_index = idx
+            break
+        if matched is None or matched_index is None:
+            return None
+        raw_list[matched_index]["read"] = True
+        path.write_text(json.dumps(raw_list))
+        return matched
+
+
+def wait_for_permission_response(
+    *,
+    team: str,
+    teammate_name: str,
+    request_id: str,
+    timeout_s: float,
+    poll_interval_s: float = 1.0,
+) -> PermissionResponseIn | None:
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            response = _read_matching_permission_response_locked(team, teammate_name, request_id)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warn("permission_response.read_race", request_id=request_id, error=str(e))
+            response = None
+        if response is not None:
+            return response
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(max(0.01, poll_interval_s), remaining))
