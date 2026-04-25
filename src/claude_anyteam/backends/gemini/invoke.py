@@ -318,6 +318,7 @@ def write_mcp_settings(
     if real_home:
         env["HOME"] = real_home
     data = {
+        "tools": {"core": []},
         "mcpServers": {
             WRAPPER_SERVER_ALIAS: {
                 "command": _wrapper_binary(),
