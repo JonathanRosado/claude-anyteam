@@ -22,8 +22,10 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 ## Model / effort
 
-- **No plumbed effort tiers:** Gemini teammates receive `--model` but not `--effort`; the spawn shim intentionally drops effort with `include_effort=False`. No Gemini equivalent of Codex effort tiers such as `xhigh` or `high` is currently plumbed.
-- **Effort mapping is intentionally deferred:** [Post-ship parity research §3](internal/gemini-integration/post-ship-parity-research.md#3-effort-mapping) identified `modelConfigs.customAliases` / `customOverrides` with SDK-level `thinkingBudget` / `thinkingLevel` as the theoretical mapping path, including a proposed Codex-effort-to-Gemini-thinking table. We are deferring that path because it may require writing generated model config rather than simply passing a per-turn CLI flag, and because the semantic mapping from Codex effort tiers to Gemini thinking budgets has not been empirically validated.
+- **Effort tiers are mapped through adapter-owned aliases:** Gemini teammates can receive `--effort {minimal,low,medium,high,xhigh}` from the spawn shim or `CLAUDE_ANYTEAM_GEMINI_EFFORT`. When both `--model` and effort are set, the adapter writes a generated `modelConfigs.customAliases` entry into its isolated Gemini home (`CLAUDE_ANYTEAM_GEMINI_HOME` or the per-teammate cache), then launches Gemini with `--model claude-anyteam-effort-{tier}`. The user's real `~/.gemini/settings.json` is not mutated.
+- **Gemini 2.5 mapping uses `thinkingBudget`:** `minimal=0`, `low=512`, `medium=2048`, `high=4096`, and `xhigh=8192`, always with `includeThoughts: false`. Empirical testing found `medium` was the first reliable tier; `minimal` was unstable and `low` failed the test reasoning task, so those tiers are best-effort compatibility settings rather than quality guarantees.
+- **Gemini 3 mapping uses `thinkingLevel`:** `minimal` and `low` map to `LOW`, `medium` to `MEDIUM`, and `high`/`xhigh` to `HIGH`, always with `includeThoughts: false`. Current Gemini 3-style docs expose only `LOW`, `MEDIUM`, and `HIGH`, so `xhigh` intentionally collapses to `high`; `minimal` is the lowest available level unless a non-thinking/base model alias is provided upstream.
+- **Unknown model families pass through:** The adapter only synthesizes effort aliases for model IDs beginning with `gemini-2.5` or `gemini-3`. Other models are passed through unchanged with a warning, because incompatible thinking config can fail at runtime.
 
 ## Schema-constrained output
 
