@@ -289,6 +289,7 @@ def test_install_writes_teammate_mode_when_absent(tmp_path: Path, monkeypatch, c
         "codex_cli_version": None,
         "gemini_cli_found": False,
         "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
     stdout = capsys.readouterr().out
@@ -326,6 +327,7 @@ def test_install_is_noop_when_teammate_mode_already_tmux(tmp_path: Path, monkeyp
         "codex_cli_version": None,
         "gemini_cli_found": False,
         "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
     stdout = capsys.readouterr().out
@@ -377,6 +379,7 @@ def test_install_prompts_and_overwrites_auto_when_accepted(tmp_path: Path, monke
         "codex_cli_version": None,
         "gemini_cli_found": False,
         "gemini_cli_version": None,
+        "gemini_cli_capabilities": {},
     }
 
 
@@ -1154,12 +1157,22 @@ def test_install_combines_tmux_and_codex_warnings_on_tmux_halt(
 # Gemini CLI prereq check (informational — non-blocking)
 # ---------------------------------------------------------------------------
 
+_GEMINI_ALL_CAPABILITIES = {
+    "--prompt": True,
+    "--output-format stream-json": True,
+    "--resume": True,
+    "--approval-mode yolo": True,
+    "--acp": True,
+}
+
+
 def test_install_detects_gemini_cli_when_present(tmp_path: Path, monkeypatch):
     gemini_cli = installer_mod.GeminiCliCheck(
         found=True,
         path=Path("/usr/local/bin/gemini"),
         version="0.3.1",
         raw_output="0.3.1",
+        capabilities=_GEMINI_ALL_CAPABILITIES,
     )
     result, _claude_json_path, state_path = _install_with_gemini_stub(
         tmp_path, monkeypatch, gemini_cli
@@ -1176,6 +1189,47 @@ def test_install_detects_gemini_cli_when_present(tmp_path: Path, monkeypatch):
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["gemini_cli_found"] is True
     assert state["gemini_cli_version"] == "0.3.1"
+    assert state["gemini_cli_capabilities"] == _GEMINI_ALL_CAPABILITIES
+
+
+def test_install_warns_on_missing_gemini_capabilities_but_still_succeeds(
+    tmp_path: Path,
+    monkeypatch,
+):
+    gemini_cli = installer_mod.GeminiCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/gemini"),
+        version="0.3.1",
+        raw_output="0.3.1",
+        capabilities={
+            "--prompt": True,
+            "--output-format stream-json": True,
+            "--resume": False,
+            "--approval-mode yolo": False,
+            "--acp": False,
+        },
+        missing_capabilities=("--resume", "--approval-mode yolo"),
+    )
+    result, _claude_json_path, state_path = _install_with_gemini_stub(
+        tmp_path, monkeypatch, gemini_cli
+    )
+
+    message = installer_mod.format_install_message(result)
+    assert "Warning: detected Gemini CLI at /usr/local/bin/gemini" in message
+    assert (
+        "Gemini CLI is missing required flag --resume; gemini-* teammates may not work."
+        in message
+    )
+    assert (
+        "Gemini CLI is missing required flag --approval-mode yolo; gemini-* teammates may not work."
+        in message
+    )
+    assert installer_mod.GEMINI_CLI_INSTALL_COMMAND in message
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["gemini_cli_found"] is True
+    assert state["gemini_cli_version"] == "0.3.1"
+    assert state["gemini_cli_capabilities"] == gemini_cli.capabilities
 
 
 def test_install_warns_when_gemini_cli_missing_but_still_succeeds(
@@ -1272,6 +1326,21 @@ def test_check_gemini_cli_returns_missing_when_not_on_path(monkeypatch):
     assert result.path is None
     assert result.version is None
     assert result.raw_output is None
+    assert result.capabilities == {}
+    assert result.missing_capabilities == ()
+
+
+def test_gemini_capabilities_from_help_detects_required_and_optional_flags():
+    help_text = """
+    Usage: gemini [options]
+      --prompt <prompt>
+      --output-format <text|json|stream-json>
+      --resume [session]
+      --approval-mode <default|yolo>
+      --experimental-acp
+    """
+
+    assert installer_mod._gemini_capabilities_from_help(help_text) == _GEMINI_ALL_CAPABILITIES
 
 
 def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: Path):
@@ -1282,12 +1351,19 @@ def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: 
     monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_gemini))
 
     class _Completed:
-        returncode = 0
-        stdout = "gemini 0.3.1\n"
-        stderr = ""
+        def __init__(self, stdout: str, stderr: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = stderr
 
-    def _fake_run(*_args, **_kwargs):
-        return _Completed()
+    def _fake_run(args, **_kwargs):
+        if args[-1] == "--version":
+            return _Completed("gemini 0.3.1\n")
+        if args[-1] == "--help":
+            return _Completed(
+                "--prompt --output-format stream-json --resume --approval-mode yolo --acp\n"
+            )
+        raise AssertionError(f"unexpected subprocess args: {args!r}")
 
     monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
 
@@ -1296,6 +1372,41 @@ def test_check_gemini_cli_parses_version_from_subprocess(monkeypatch, tmp_path: 
     assert result.path == fake_gemini.resolve()
     assert result.version == "0.3.1"
     assert result.raw_output == "gemini 0.3.1"
+    assert result.capabilities == _GEMINI_ALL_CAPABILITIES
+    assert result.missing_capabilities == ()
+
+
+def test_check_gemini_cli_records_missing_capabilities(monkeypatch, tmp_path: Path):
+    fake_gemini = tmp_path / "gemini"
+    fake_gemini.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_gemini.chmod(0o755)
+
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda _name: str(fake_gemini))
+
+    class _Completed:
+        def __init__(self, stdout: str, stderr: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(args, **_kwargs):
+        if args[-1] == "--version":
+            return _Completed("gemini 0.3.1\n")
+        if args[-1] == "--help":
+            return _Completed("--prompt --output-format stream-json\n")
+        raise AssertionError(f"unexpected subprocess args: {args!r}")
+
+    monkeypatch.setattr(installer_mod.subprocess, "run", _fake_run)
+
+    result = installer_mod._check_gemini_cli()
+    assert result.capabilities == {
+        "--prompt": True,
+        "--output-format stream-json": True,
+        "--resume": False,
+        "--approval-mode yolo": False,
+        "--acp": False,
+    }
+    assert result.missing_capabilities == ("--resume", "--approval-mode yolo")
 
 
 def test_parse_cli_version_rejects_garbage_tokens():

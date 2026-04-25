@@ -74,13 +74,16 @@ class GeminiCliCheck:
     """Result of probing for the Gemini CLI on PATH.
 
     Gemini CLI is required at runtime for gemini-* teammates but is not a hard
-    install prereq.
+    install prereq. Capability flags are more important than semver because
+    Gemini CLI is moving quickly.
     """
 
     found: bool
     path: Path | None
     version: str | None
     raw_output: str | None
+    capabilities: dict[str, bool] = field(default_factory=dict)
+    missing_capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -584,6 +587,24 @@ def _codex_cli_warning(check: CodexCliCheck) -> str | None:
 
 
 
+_GEMINI_REQUIRED_CAPABILITIES = (
+    "--prompt",
+    "--output-format stream-json",
+    "--resume",
+    "--approval-mode yolo",
+)
+
+
+def _gemini_capabilities_from_help(help_text: str) -> dict[str, bool]:
+    return {
+        "--prompt": "--prompt" in help_text,
+        "--output-format stream-json": "--output-format" in help_text and "stream-json" in help_text,
+        "--resume": "--resume" in help_text,
+        "--approval-mode yolo": "--approval-mode" in help_text and "yolo" in help_text,
+        "--acp": "--acp" in help_text or "--experimental-acp" in help_text,
+    }
+
+
 def _check_gemini_cli() -> GeminiCliCheck:
     found_path = shutil.which(GEMINI_CLI_BINARY)
     if not found_path:
@@ -592,26 +613,67 @@ def _check_gemini_cli() -> GeminiCliCheck:
     raw = None
     version = None
     try:
-        completed = subprocess.run([str(resolved), "--version"], capture_output=True, text=True, timeout=GEMINI_CLI_VERSION_TIMEOUT_S, check=False)
+        completed = subprocess.run(
+            [str(resolved), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=GEMINI_CLI_VERSION_TIMEOUT_S,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         completed = None
     if completed is not None and completed.returncode == 0:
         raw = ((completed.stdout or "") or (completed.stderr or "")).strip() or None
         version = _parse_cli_version(raw or "")
-    return GeminiCliCheck(found=True, path=resolved, version=version, raw_output=raw)
+
+    help_text = ""
+    try:
+        help_completed = subprocess.run(
+            [str(resolved), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=GEMINI_CLI_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        help_completed = None
+    if help_completed is not None and help_completed.returncode == 0:
+        help_text = (help_completed.stdout or "") + (help_completed.stderr or "")
+    capabilities = _gemini_capabilities_from_help(help_text)
+    missing = tuple(name for name in _GEMINI_REQUIRED_CAPABILITIES if not capabilities.get(name, False))
+    return GeminiCliCheck(
+        found=True,
+        path=resolved,
+        version=version,
+        raw_output=raw,
+        capabilities=capabilities,
+        missing_capabilities=missing,
+    )
 
 
 def _gemini_cli_warning(check: GeminiCliCheck) -> str | None:
-    if check.found:
-        return None
-    return (
-        f"Warning: the Gemini CLI (`{GEMINI_CLI_BINARY}`) was not found on PATH.\n"
-        f"  claude-anyteam is installed, but gemini-* teammates will fail to launch\n"
-        f"  until Gemini CLI is installed and authenticated. Add it with:\n"
-        f"    {GEMINI_CLI_INSTALL_COMMAND}\n"
-        f"  After installing, run `{GEMINI_CLI_BINARY}` once to sign in, or configure GEMINI_API_KEY/Vertex auth.\n"
-        f"  Setup guide: {GEMINI_CLI_DOCS_URL}"
-    )
+    if not check.found:
+        return (
+            f"Warning: the Gemini CLI (`{GEMINI_CLI_BINARY}`) was not found on PATH.\n"
+            f"  claude-anyteam is installed, but gemini-* teammates will fail to launch\n"
+            f"  until Gemini CLI is installed and authenticated. Add it with:\n"
+            f"    {GEMINI_CLI_INSTALL_COMMAND}\n"
+            f"  After installing, run `{GEMINI_CLI_BINARY}` once to sign in, or configure GEMINI_API_KEY/Vertex auth.\n"
+            f"  Setup guide: {GEMINI_CLI_DOCS_URL}"
+        )
+    if check.missing_capabilities:
+        missing_lines = "\n".join(
+            f"  Gemini CLI is missing required flag {capability}; gemini-* teammates may not work."
+            for capability in check.missing_capabilities
+        )
+        return (
+            f"Warning: detected Gemini CLI at {check.path}, but it is missing required headless capabilities.\n"
+            f"{missing_lines}\n"
+            f"  gemini-* teammates require `{GEMINI_CLI_BINARY} --help` to advertise these flags/choices. Upgrade Gemini CLI with:\n"
+            f"    {GEMINI_CLI_INSTALL_COMMAND}\n"
+            f"  Setup guide: {GEMINI_CLI_DOCS_URL}"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +726,7 @@ def install_teammate_mode(
         if gemini_cli is not None:
             state["gemini_cli_found"] = bool(gemini_cli.found)
             state["gemini_cli_version"] = gemini_cli.version
+            state["gemini_cli_capabilities"] = dict(gemini_cli.capabilities)
         return state
 
     # Case 1: absent.
@@ -1163,6 +1226,8 @@ def format_install_message(result: InstallResult) -> str:
                 lines.append(f"Detected Gemini CLI {gemini_cli.version} at {gemini_cli.path}")
             else:
                 lines.append(f"Detected Gemini CLI at {gemini_cli.path}")
+            if gemini_cli.capabilities.get("--acp") is False:
+                lines.append("Gemini CLI ACP support was not detected; headless gemini-* routing remains available.")
 
     lines.append("Restart Claude Code for the changes to take effect. Use codex-* or gemini-* teammate names to route to the matching backend.")
     if not result.changed_anything:
