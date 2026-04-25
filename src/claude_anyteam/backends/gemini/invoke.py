@@ -265,6 +265,20 @@ def write_adapter_state(
     return path
 
 
+def reset_acp_adapter_state(gemini_home: Path, *, backend: str = "acp") -> Path:
+    previous = read_adapter_state(gemini_home) if _adapter_state_path(gemini_home).exists() else {}
+    data = {
+        "headless_session_id": previous.get("headless_session_id"),
+        "acp_session_id": None,
+        "acp_storage_session_id": None,
+        "backend": backend,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    path = _adapter_state_path(gemini_home)
+    _write_atomic_json(path, data)
+    return path
+
+
 def _real_auth_settings(real_home: str | None) -> dict[str, Any]:
     """Return only the Gemini auth settings that must follow isolated HOME."""
     if not real_home:

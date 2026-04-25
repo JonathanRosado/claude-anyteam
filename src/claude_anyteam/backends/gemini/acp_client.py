@@ -13,6 +13,10 @@ class GeminiAcpError(JsonRpcStdioError):
     """Raised on Gemini ACP protocol/transport errors."""
 
 
+class GeminiAcpAuthenticationError(GeminiAcpError):
+    """Raised when Gemini ACP authentication fails."""
+
+
 class GeminiAcpClient(JsonRpcStdioClient):
     def __init__(
         self,
@@ -56,7 +60,13 @@ class GeminiAcpClient(JsonRpcStdioClient):
                 "auth": {"terminal": False},
             },
         }
-        return self.request("initialize", params, timeout=timeout)
+        result = self.request("initialize", params, timeout=timeout)
+        protocol_version = result.get("protocolVersion") if isinstance(result, dict) else None
+        if protocol_version != 1:
+            raise GeminiAcpError(
+                f"Gemini ACP initialize returned unsupported protocolVersion {protocol_version!r}; expected 1"
+            )
+        return result
 
     def authenticate(self, method_id: str, *, timeout: float = 300.0) -> dict[str, Any]:
         return self.request("authenticate", {"methodId": method_id}, timeout=timeout)

@@ -321,6 +321,13 @@ def _blocked(all_tasks: list, t) -> bool:
     return any((by_id.get(bid) is not None and by_id[bid].status not in ("completed", "deleted")) for bid in t.blocked_by)
 
 
+def _should_drop_session_after_failure(result: Any) -> bool:
+    if getattr(result, "exit_code", None) == 124:
+        return True
+    error = getattr(result, "error", None)
+    return isinstance(error, str) and "stopReason 'cancelled'" in error
+
+
 def _execute_task(state: GeminiLoopState, task) -> None:
     s = state.settings
     schema = load_schema(headless_invoke.TASK_COMPLETE_SCHEMA)
@@ -331,10 +338,22 @@ def _execute_task(state: GeminiLoopState, task) -> None:
         if attempt == 2:
             prompt += "\n\nPRIOR ATTEMPT FAILED: return ONLY the JSON object matching the schema."
         result = _backend_run(state, prompt, schema=headless_invoke.TASK_COMPLETE_SCHEMA, resume_session_id=state.gemini_session_id, ephemeral=False)
+        if result.exit_code == 0 and result.structured is not None:
+            if result.session_id:
+                state.gemini_session_id = result.session_id
+            break
+        if _should_drop_session_after_failure(result):
+            logger.warn(
+                "gemini.task.session_dropped_after_cancel",
+                task_id=task.id,
+                session_id=state.gemini_session_id or result.session_id,
+                exit_code=result.exit_code,
+                error=result.error,
+            )
+            state.gemini_session_id = None
+            break
         if result.session_id:
             state.gemini_session_id = result.session_id
-        if result.exit_code == 0 and result.structured is not None:
-            break
     if result is None or result.exit_code != 0 or result.structured is None:
         _mark_blocked(state, task, result.error if result else "Gemini invocation did not run")
         state.in_flight_task = None

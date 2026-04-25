@@ -12,7 +12,7 @@ def test_method_wrappers_send_empirical_method_names(monkeypatch):
         calls.append((method, params, timeout))
         if method in {"session/new", "session/load"}:
             return {"sessionId": "s1"}
-        return {"ok": True}
+        return {"protocolVersion": 1} if method == "initialize" else {"ok": True}
 
     notes = []
     monkeypatch.setattr(GeminiAcpClient, "request", fake_request)
@@ -47,3 +47,15 @@ def test_request_permission_auto_approves():
     c = GeminiAcpClient()
     assert c.handle_server_request({"method": "session/request_permission", "params": {}}) == {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
     assert c.handle_server_request({"method": "other", "params": {}}) is None
+
+
+def test_initialize_rejects_protocol_version_mismatch(monkeypatch):
+    monkeypatch.setattr(GeminiAcpClient, "request", lambda self, method, params=None, *, timeout=60.0: {"protocolVersion": 2})
+    c = GeminiAcpClient(gemini_binary="gemini")
+    try:
+        c.initialize()
+    except Exception as e:
+        assert "protocolVersion 2" in str(e)
+        assert "expected 1" in str(e)
+    else:
+        raise AssertionError("initialize should reject unsupported protocolVersion")

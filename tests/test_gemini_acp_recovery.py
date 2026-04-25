@@ -12,7 +12,7 @@ class RecoveringClient:
     def __init__(self, **kwargs): pass
     def start(self): pass
     def close(self): pass
-    def initialize(self): return {}
+    def initialize(self): return {"protocolVersion": 1}
     def session_load(self, **kwargs):
         self.loads.append(kwargs["session_id"])
         raise GeminiAcpError("Invalid session identifier")

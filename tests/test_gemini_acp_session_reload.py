@@ -8,7 +8,7 @@ class LoadingClient:
     def __init__(self, **kwargs): pass
     def start(self): pass
     def close(self): pass
-    def initialize(self): return {}
+    def initialize(self): return {"protocolVersion": 1}
     def session_load(self, **kwargs):
         self.loaded.append(kwargs["session_id"])
         return {}

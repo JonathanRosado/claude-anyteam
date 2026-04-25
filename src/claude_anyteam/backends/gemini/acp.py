@@ -15,7 +15,7 @@ from claude_anyteam.env import identity_env
 from claude_anyteam.schema_validation import load_schema, parse_and_validate
 
 from . import invoke
-from .acp_client import GeminiAcpClient, GeminiAcpError
+from .acp_client import GeminiAcpAuthenticationError, GeminiAcpClient, GeminiAcpError
 
 
 def feature_test(gemini_binary: str = "gemini") -> None:
@@ -77,6 +77,95 @@ def _latest_storage_session_id(gemini_home: Path) -> str | None:
         if isinstance(sid, str) and sid:
             return sid
     return None
+
+
+def _auth_method_id(method: Any) -> str | None:
+    if isinstance(method, str) and method:
+        return method
+    if isinstance(method, dict):
+        for key in ("id", "methodId", "method_id", "name"):
+            value = method.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _authenticate_if_required(client: GeminiAcpClient, initialize_result: dict[str, Any]) -> bool:
+    auth_methods = initialize_result.get("authMethods") if isinstance(initialize_result, dict) else None
+    if not auth_methods:
+        return False
+    if not isinstance(auth_methods, list):
+        raise GeminiAcpAuthenticationError(f"Gemini ACP initialize returned invalid authMethods: {auth_methods!r}")
+    method_id = next((_auth_method_id(method) for method in auth_methods if _auth_method_id(method)), None)
+    if not method_id:
+        raise GeminiAcpAuthenticationError(f"Gemini ACP authentication required but no usable auth method was advertised: {auth_methods!r}")
+    try:
+        client.authenticate(method_id)
+    except GeminiAcpError as e:
+        raise GeminiAcpAuthenticationError(f"Gemini ACP authentication failed using method {method_id!r}: {e}") from e
+    return True
+
+
+def _tool_update_text(content: Any) -> str | None:
+    if isinstance(content, dict):
+        if content.get("type") == "text" and isinstance(content.get("text"), str):
+            return content["text"]
+        nested = content.get("content")
+        if nested is not None:
+            return _tool_update_text(nested)
+    if isinstance(content, list):
+        parts = [_tool_update_text(item) for item in content]
+        text = "".join(part for part in parts if part)
+        return text or None
+    return None
+
+
+def _normalised_tool_event(update: dict[str, Any], session_id: str) -> dict[str, Any] | None:
+    kind = update.get("sessionUpdate")
+    if kind == "tool_call":
+        return {
+            "type": "tool_use",
+            "source": "gemini_acp",
+            "session_id": session_id,
+            "tool_call_id": update.get("toolCallId"),
+            "tool_name": update.get("title"),
+            "status": update.get("status"),
+            "kind": update.get("kind"),
+            "acp_update": update,
+        }
+    if kind == "tool_call_update":
+        text = _tool_update_text(update.get("content"))
+        if text is None:
+            return None
+        return {
+            "type": "tool_result",
+            "source": "gemini_acp",
+            "session_id": session_id,
+            "tool_call_id": update.get("toolCallId"),
+            "tool_name": update.get("title"),
+            "status": update.get("status"),
+            "content": text,
+            "acp_update": update,
+        }
+    return None
+
+
+def _normalize_tool_events(events: list[dict[str, Any]], session_id: str | None) -> list[dict[str, Any]]:
+    if not session_id:
+        return events
+    normalised: list[dict[str, Any]] = []
+    for ev in events:
+        normalised.append(ev)
+        if ev.get("method") != "session/update":
+            continue
+        params = ev.get("params") if isinstance(ev.get("params"), dict) else {}
+        if params.get("sessionId") not in (None, session_id):
+            continue
+        update = params.get("update") if isinstance(params.get("update"), dict) else {}
+        tool_ev = _normalised_tool_event(update, session_id)
+        if tool_ev is not None:
+            normalised.append(tool_ev)
+    return normalised
 
 
 def _session_id_from_result(result: dict[str, Any], fallback: str | None = None) -> str | None:
@@ -177,7 +266,8 @@ def run(
     client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env)
     try:
         client.start()
-        client.initialize()
+        initialize_result = client.initialize()
+        _authenticate_if_required(client, initialize_result)
         stored = None if ephemeral else adapter_state.get("acp_session_id")
         stored_storage = None if ephemeral else adapter_state.get("acp_storage_session_id")
         session_id, loaded = _ensure_session(
@@ -198,9 +288,11 @@ def run(
             except GeminiAcpError as e:
                 logger.warn("gemini_acp.set_model_failed", model=effective_model, raw_model=model, effort=effort, error=str(e))
         response = client.session_prompt(session_id=session_id, prompt=prompt, timeout=timeout_s)
-        events = client.drain_notifications()
+        events = _normalize_tool_events(client.drain_notifications(), session_id)
     except subprocess.TimeoutExpired:
-        return CodexResult(exit_code=124, structured=None, last_message="", events=events, error=f"gemini ACP timed out after {timeout_s}s", session_id=session_id)
+        if not ephemeral:
+            invoke.reset_acp_adapter_state(home)
+        return CodexResult(exit_code=124, structured=None, last_message="", events=events, error=f"gemini ACP timed out after {timeout_s}s; ACP session was dropped for the next task", session_id=session_id)
     except Exception as e:
         return CodexResult(exit_code=1, structured=None, last_message="", events=events, error=str(e), session_id=session_id)
     finally:
@@ -223,11 +315,15 @@ def run(
         exit_code = 1
 
     if session_id and not ephemeral:
-        invoke.write_adapter_state(
-            home,
-            backend="acp",
-            acp_session_id=session_id,
-        )
+        if stop_reason == "cancelled":
+            invoke.reset_acp_adapter_state(home)
+        elif error is None:
+            invoke.write_adapter_state(
+                home,
+                backend="acp",
+                acp_session_id=session_id,
+                acp_storage_session_id=_latest_storage_session_id(home),
+            )
 
     logger.info("gemini_acp.result", session_id=session_id, loaded=loaded, stop_reason=stop_reason, tool_calls=tool_call_events)
     return CodexResult(
