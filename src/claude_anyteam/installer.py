@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -100,6 +101,8 @@ class GeminiCliCheck:
     raw_output: str | None
     capabilities: dict[str, bool] = field(default_factory=dict)
     missing_capabilities: tuple[str, ...] = ()
+    signed_in: bool = False
+    signed_in_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,8 @@ class CodexCliCheck:
     path: Path | None
     version: str | None  # parsed version token (e.g. "0.124.0"); None if unparseable
     raw_output: str | None  # raw `codex --version` stdout, retained for debugging
+    signed_in: bool = False
+    signed_in_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,7 @@ class AuthCheck:
     """Non-secret result of probing a provider's local auth state."""
 
     signed_in: bool
+    signed_in_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -472,7 +478,9 @@ def _state_permissions_allow_added_strict(
     *,
     state_path: Path,
 ) -> tuple[str, ...]:
-    raw = state.get("permissions_allow_added_by_anyteam", ())
+    if "permissions_allow_added_by_anyteam" not in state:
+        return ()
+    raw = state.get("permissions_allow_added_by_anyteam")
     if not isinstance(raw, list) or not all(isinstance(entry, str) for entry in raw):
         err = InstallError(
             f"{state_path} has a malformed 'permissions_allow_added_by_anyteam' value; "
@@ -724,6 +732,7 @@ GEMINI_CLI_DOCS_URL = "https://github.com/google-gemini/gemini-cli"
 GEMINI_CLI_VERSION_TIMEOUT_S = 5
 CODEX_AUTH_PATH = Path(".codex") / "auth.json"
 GEMINI_OAUTH_CREDS_PATH = Path(".gemini") / "oauth_creds.json"
+GEMINI_GOOGLE_ACCOUNTS_PATH = Path(".gemini") / "google_accounts.json"
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_VERTEX_ENV_KEYS = ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GENAI_USE_VERTEXAI")
 
@@ -770,7 +779,14 @@ def _codex_meets_minimum(check: CodexCliCheck) -> bool | None:
 def _check_codex_cli() -> CodexCliCheck:
     found_path = shutil.which(CODEX_CLI_BINARY)
     if not found_path:
-        return CodexCliCheck(found=False, path=None, version=None, raw_output=None)
+        return CodexCliCheck(
+            found=False,
+            path=None,
+            version=None,
+            raw_output=None,
+            signed_in=False,
+            signed_in_detail="Codex CLI not found on PATH",
+        )
 
     resolved = Path(found_path).resolve()
     raw: str | None = None
@@ -791,35 +807,202 @@ def _check_codex_cli() -> CodexCliCheck:
         if raw:
             version = _parse_cli_version(raw)
 
-    return CodexCliCheck(found=True, path=resolved, version=version, raw_output=raw)
+    try:
+        signed_in, signed_in_detail = _check_codex_signin(resolved)
+    except Exception as exc:
+        signed_in, signed_in_detail = False, f"Codex sign-in check failed: {exc}"
+
+    return CodexCliCheck(
+        found=True,
+        path=resolved,
+        version=version,
+        raw_output=raw,
+        signed_in=signed_in,
+        signed_in_detail=signed_in_detail,
+    )
 
 
 def _non_empty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _load_json_object_or_none(path: Path) -> dict[str, Any] | None:
+def _read_auth_json_object(path: Path, *, label: str) -> tuple[dict[str, Any] | None, str | None]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, f"{label} file missing: {path}"
+    except OSError as exc:
+        return None, f"{label} file unreadable: {path}: {exc}"
+
+    if not text.strip():
+        return None, f"{label} file empty: {path}"
+
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"{label} file malformed: {path}: {exc.msg}"
+
     if not isinstance(raw, dict):
-        return None
+        return None, f"{label} file malformed: {path}: expected a JSON object"
+    return raw, None
+
+
+def _load_json_object_or_none(path: Path) -> dict[str, Any] | None:
+    raw, _detail = _read_auth_json_object(path, label="auth")
     return raw
+
+
+def _parse_expiry_timestamp(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            timestamp = float(stripped)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+    else:
+        return None
+
+    # Gemini stores expiry_date as milliseconds since epoch; tolerate seconds too.
+    if timestamp > 10_000_000_000:
+        timestamp /= 1000
+    return timestamp
+
+
+def _expiry_detail(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    label: str,
+    keys: tuple[str, ...] = ("expiry_date", "expires_at", "expiresAt", "expires"),
+) -> str | None:
+    now = datetime.now(timezone.utc).timestamp()
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        timestamp = _parse_expiry_timestamp(value)
+        if timestamp is None:
+            return f"{label} file malformed: {path}: invalid {key}"
+        if timestamp <= now:
+            return f"{label} credentials expired: {path}"
+    return None
+
+
+def _contains_non_empty_string(value: object) -> bool:
+    if _non_empty_string(value):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_non_empty_string(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_non_empty_string(child) for child in value)
+    return False
+
+
+def _check_codex_signin(
+    found_path: Path | str | None,
+    auth_path: Path | str | None = None,
+) -> tuple[bool, str | None]:
+    """Detect Codex local auth state without exposing token values."""
+    del found_path  # The auth file location is currently independent of the binary path.
+    try:
+        path = Path(auth_path).expanduser() if auth_path is not None else Path.home() / CODEX_AUTH_PATH
+        raw, detail = _read_auth_json_object(path, label="Codex auth")
+        if raw is None:
+            return False, detail
+
+        tokens = raw.get("tokens")
+        if tokens is not None and not isinstance(tokens, dict):
+            return False, f"Codex auth file malformed: {path}: tokens must be a JSON object"
+
+        expiry = _expiry_detail(raw, path=path, label="Codex auth")
+        if expiry is None and isinstance(tokens, dict):
+            expiry = _expiry_detail(tokens, path=path, label="Codex auth")
+        if expiry is not None:
+            return False, expiry
+
+        token_signed_in = isinstance(tokens, dict) and any(
+            _non_empty_string(tokens.get(key))
+            for key in ("access_token", "id_token", "refresh_token")
+        )
+        if _non_empty_string(raw.get("OPENAI_API_KEY")) or token_signed_in:
+            return True, None
+        return False, f"Codex auth file empty or missing credentials: {path}"
+    except Exception as exc:
+        return False, f"Codex sign-in check failed: {exc}"
+
+
+def _check_gemini_signin(
+    found_path: Path | str | None,
+    oauth_creds_path: Path | str | None = None,
+    google_accounts_path: Path | str | None = None,
+    environ: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
+    """Detect Gemini local auth state without exposing token values."""
+    del found_path  # The auth file locations are currently independent of the binary path.
+    try:
+        env = os.environ if environ is None else environ
+        if _non_empty_string(env.get(GEMINI_API_KEY_ENV)):
+            return True, None
+        if any(_non_empty_string(env.get(key)) for key in GEMINI_VERTEX_ENV_KEYS):
+            return True, None
+
+        oauth_path = (
+            Path(oauth_creds_path).expanduser()
+            if oauth_creds_path is not None
+            else Path.home() / GEMINI_OAUTH_CREDS_PATH
+        )
+        accounts_path = (
+            Path(google_accounts_path).expanduser()
+            if google_accounts_path is not None
+            else Path.home() / GEMINI_GOOGLE_ACCOUNTS_PATH
+        )
+
+        oauth_raw, oauth_detail = _read_auth_json_object(oauth_path, label="Gemini OAuth credentials")
+        if oauth_raw is not None:
+            expiry = _expiry_detail(oauth_raw, path=oauth_path, label="Gemini OAuth credentials")
+            if expiry is not None:
+                return False, expiry
+            if any(
+                _non_empty_string(oauth_raw.get(key))
+                for key in ("access_token", "id_token", "refresh_token")
+            ):
+                return True, None
+            return False, f"Gemini OAuth credentials file empty or missing credentials: {oauth_path}"
+
+        accounts_raw, accounts_detail = _read_auth_json_object(accounts_path, label="Gemini account")
+        if accounts_raw is not None:
+            active = accounts_raw.get("active")
+            if _contains_non_empty_string(active):
+                return True, None
+            return False, f"Gemini account file empty or missing active account: {accounts_path}"
+
+        if oauth_detail and accounts_detail:
+            return False, f"{oauth_detail}; {accounts_detail}"
+        return False, oauth_detail or accounts_detail
+    except Exception as exc:
+        return False, f"Gemini sign-in check failed: {exc}"
 
 
 def _check_codex_auth(auth_path: Path | str | None = None) -> AuthCheck:
     """Detect whether Codex has usable local auth without exposing secrets."""
-    path = Path(auth_path).expanduser() if auth_path is not None else Path.home() / CODEX_AUTH_PATH
-    raw = _load_json_object_or_none(path)
-    if raw is None:
-        return AuthCheck(signed_in=False)
-
-    tokens = raw.get("tokens")
-    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
-    return AuthCheck(
-        signed_in=_non_empty_string(access_token) or _non_empty_string(raw.get("OPENAI_API_KEY"))
-    )
+    signed_in, detail = _check_codex_signin(CODEX_CLI_BINARY, auth_path=auth_path)
+    return AuthCheck(signed_in=signed_in, signed_in_detail=detail)
 
 
 def _codex_cli_warning(check: CodexCliCheck) -> str | None:
@@ -894,7 +1077,14 @@ def _gemini_capabilities_from_help(help_text: str) -> dict[str, bool]:
 def _check_gemini_cli() -> GeminiCliCheck:
     found_path = shutil.which(GEMINI_CLI_BINARY)
     if not found_path:
-        return GeminiCliCheck(found=False, path=None, version=None, raw_output=None)
+        return GeminiCliCheck(
+            found=False,
+            path=None,
+            version=None,
+            raw_output=None,
+            signed_in=False,
+            signed_in_detail="Gemini CLI not found on PATH",
+        )
     resolved = Path(found_path).resolve()
     raw = None
     version = None
@@ -927,6 +1117,10 @@ def _check_gemini_cli() -> GeminiCliCheck:
         help_text = (help_completed.stdout or "") + (help_completed.stderr or "")
     capabilities = _gemini_capabilities_from_help(help_text)
     missing = tuple(name for name in _GEMINI_REQUIRED_CAPABILITIES if not capabilities.get(name, False))
+    try:
+        signed_in, signed_in_detail = _check_gemini_signin(resolved)
+    except Exception as exc:
+        signed_in, signed_in_detail = False, f"Gemini sign-in check failed: {exc}"
     return GeminiCliCheck(
         found=True,
         path=resolved,
@@ -934,29 +1128,24 @@ def _check_gemini_cli() -> GeminiCliCheck:
         raw_output=raw,
         capabilities=capabilities,
         missing_capabilities=missing,
+        signed_in=signed_in,
+        signed_in_detail=signed_in_detail,
     )
 
 
 def _check_gemini_auth(
     oauth_creds_path: Path | str | None = None,
+    google_accounts_path: Path | str | None = None,
     environ: dict[str, str] | None = None,
 ) -> AuthCheck:
     """Detect whether Gemini CLI has usable OAuth/API-key/Vertex auth."""
-    env = os.environ if environ is None else environ
-    if _non_empty_string(env.get(GEMINI_API_KEY_ENV)):
-        return AuthCheck(signed_in=True)
-    if any(_non_empty_string(env.get(key)) for key in GEMINI_VERTEX_ENV_KEYS):
-        return AuthCheck(signed_in=True)
-
-    path = (
-        Path(oauth_creds_path).expanduser()
-        if oauth_creds_path is not None
-        else Path.home() / GEMINI_OAUTH_CREDS_PATH
+    signed_in, detail = _check_gemini_signin(
+        GEMINI_CLI_BINARY,
+        oauth_creds_path=oauth_creds_path,
+        google_accounts_path=google_accounts_path,
+        environ=environ,
     )
-    raw = _load_json_object_or_none(path)
-    if raw is None:
-        return AuthCheck(signed_in=False)
-    return AuthCheck(signed_in=_non_empty_string(raw.get("access_token")))
+    return AuthCheck(signed_in=signed_in, signed_in_detail=detail)
 
 
 def _gemini_cli_warning(check: GeminiCliCheck) -> str | None:
@@ -1324,13 +1513,32 @@ def install(
     checker = prereq_check_fn if prereq_check_fn is not None else _check_terminal_multiplexer
     codex_checker = codex_cli_check_fn if codex_cli_check_fn is not None else _check_codex_cli
     gemini_checker = gemini_cli_check_fn if gemini_cli_check_fn is not None else _check_gemini_cli
-    codex_auth_checker = codex_auth_check_fn if codex_auth_check_fn is not None else _check_codex_auth
-    gemini_auth_checker = gemini_auth_check_fn if gemini_auth_check_fn is not None else _check_gemini_auth
     prereq = checker()
     codex_cli = codex_checker()
     gemini_cli = gemini_checker()
-    codex_auth = codex_auth_checker() if codex_cli.found else AuthCheck(signed_in=False)
-    gemini_auth = gemini_auth_checker() if gemini_cli.found else AuthCheck(signed_in=False)
+    if not codex_cli.found:
+        codex_auth = AuthCheck(signed_in=False, signed_in_detail=codex_cli.signed_in_detail)
+    elif codex_auth_check_fn is not None:
+        codex_auth = codex_auth_check_fn()
+    elif codex_cli.signed_in or codex_cli.signed_in_detail is not None:
+        codex_auth = AuthCheck(
+            signed_in=codex_cli.signed_in,
+            signed_in_detail=codex_cli.signed_in_detail,
+        )
+    else:
+        codex_auth = _check_codex_auth()
+
+    if not gemini_cli.found:
+        gemini_auth = AuthCheck(signed_in=False, signed_in_detail=gemini_cli.signed_in_detail)
+    elif gemini_auth_check_fn is not None:
+        gemini_auth = gemini_auth_check_fn()
+    elif gemini_cli.signed_in or gemini_cli.signed_in_detail is not None:
+        gemini_auth = AuthCheck(
+            signed_in=gemini_cli.signed_in,
+            signed_in_detail=gemini_cli.signed_in_detail,
+        )
+    else:
+        gemini_auth = _check_gemini_auth()
     codex_status = _codex_provider_status(codex_cli, codex_auth)
     gemini_status = _gemini_provider_status(gemini_cli, gemini_auth)
 
