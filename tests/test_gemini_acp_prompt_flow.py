@@ -16,7 +16,9 @@ class FakeClient:
     def start(self): pass
     def close(self): pass
     def initialize(self): return {"protocolVersion": 1}
-    def session_new(self, **kwargs): return {"sessionId": "live-1"}
+    def session_new(self, **kwargs):
+        self.session_new_kwargs = kwargs
+        return {"sessionId": "live-1"}
     def set_session_mode(self, **kwargs): return {}
     def unstable_set_session_model(self, **kwargs): return {}
     def session_prompt(self, **kwargs):
@@ -42,6 +44,11 @@ def test_acp_run_structured_result_and_state(tmp_path, monkeypatch):
     assert result.structured == {"files_changed": [], "summary": "done"}
     assert result.session_id == "live-1"
     assert result.tool_call_events == 1
+    mcp_servers = FakeClient.instances[0].session_new_kwargs["mcp_servers"]
+    assert isinstance(mcp_servers, list)
+    assert mcp_servers[0]["name"] == "anyteam"
+    assert mcp_servers[0]["args"] == ["--team", "t", "--name", "a"]
+    assert isinstance(mcp_servers[0]["env"], list)
     state = json.loads((home / ".claude-anyteam" / "state.json").read_text())
     assert state["backend"] == "acp"
     assert state["acp_session_id"] == "live-1"

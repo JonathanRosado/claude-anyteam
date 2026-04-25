@@ -52,6 +52,7 @@ def _extract_json_candidate(text: str) -> str:
 
 
 def _mcp_servers(team: str, agent: str, real_home: str | None) -> list[dict[str, Any]]:
+    """Return ACP session/new inline MCP server config in array shape."""
     env = identity_env(os.environ, team=team, name=agent)
     if real_home:
         env["HOME"] = real_home
