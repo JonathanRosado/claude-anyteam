@@ -50,3 +50,24 @@ def test_loop_surfaces_permission_block_with_details():
     assert run_mock.call_count == 1
     assert blocked == [("7", result.error)]
     assert state.gemini_session_id is None
+
+
+def test_backend_run_passes_task_id_to_acp(monkeypatch):
+    settings = GeminiSettings(
+        team_name="t",
+        agent_name="a",
+        cwd=Path("/tmp").resolve(),
+        poll_interval_s=0.01,
+        color="cyan",
+        plan_mode_required=False,
+        backend="acp",
+        trust_mode="default",
+    )
+    state = GeminiLoopState(settings=settings)
+    calls = []
+    monkeypatch.setattr(loop.acp_invoke, "run", lambda prompt, **kwargs: calls.append((prompt, kwargs)) or CodexResult(exit_code=0, structured=None, last_message="", events=[]))
+
+    loop._backend_run(state, "prompt", task_id="7")
+
+    assert calls[0][1]["task_id"] == "7"
+    assert calls[0][1]["trust_mode"] == "default"

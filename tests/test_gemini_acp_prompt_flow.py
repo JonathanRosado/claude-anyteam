@@ -201,6 +201,12 @@ def test_acp_run_trust_modes_map_to_acp_session_modes(tmp_path, monkeypatch):
         result = acp.run("prompt", cwd=tmp_path, gemini_home=tmp_path / f"home-{trust_mode}", trust_mode=trust_mode)
         assert result.exit_code == 0
         assert ModeRecordingClient.init_kwargs[0]["trust_mode"] == trust_mode
+        if trust_mode == "trusted":
+            assert ModeRecordingClient.init_kwargs[0]["team_name"] is None
+        else:
+            assert ModeRecordingClient.init_kwargs[0]["team_name"] == "default"
+            assert ModeRecordingClient.init_kwargs[0]["agent_name"] == "gemini"
+            assert ModeRecordingClient.init_kwargs[0]["approval_timeout_s"] == 300.0
         assert ModeRecordingClient.modes == [{"session_id": "live-1", "mode_id": acp_mode}]
 
 

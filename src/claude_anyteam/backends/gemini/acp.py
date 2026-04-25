@@ -20,6 +20,9 @@ from claude_anyteam.schema_validation import load_schema, parse_and_validate
 from . import crash_hygiene, invoke
 
 TRUST_TO_ACP_MODE = {"trusted": "yolo", "default": "default", "plan": "plan"}
+APPROVAL_TIMEOUT_ENV = "CLAUDE_ANYTEAM_GEMINI_APPROVAL_TIMEOUT"
+DEFAULT_APPROVAL_TIMEOUT_S = 300.0
+
 from .acp_client import (
     GeminiAcpAuthenticationError,
     GeminiAcpClient,
@@ -28,7 +31,6 @@ from .acp_client import (
     detect_acp_flag,
     permission_request_label,
 )
-
 
 _ACTIVE_CLIENTS: set[GeminiAcpClient] = set()
 _ACTIVE_CLIENTS_LOCK = threading.Lock()
@@ -266,6 +268,12 @@ def _assistant_text_and_tools(events: list[dict[str, Any]], session_id: str) -> 
 def _permission_block_message(block: dict[str, Any]) -> str:
     label = block.get("label") or permission_request_label(block.get("params"))
     trust_mode = block.get("trust_mode") or "default"
+    reason = block.get("reason")
+    if reason == "approval_timeout":
+        timeout = block.get("timeout_s")
+        return f"Gemini permission request for {label} timed out after {timeout}s; task blocked."
+    if reason:
+        return f"Gemini permission request denied for {label}; trust_mode={trust_mode}; reason={reason}."
     return (
         f"Gemini requested permission for {label}; trust_mode={trust_mode}; "
         "rerun with CLAUDE_ANYTEAM_GEMINI_TRUST=trusted to allow."
@@ -298,6 +306,25 @@ def _cancel_session_quietly(client: GeminiAcpClient, session_id: str | None) -> 
         logger.warn("gemini_acp.cancel_failed", session_id=session_id, error=str(e))
 
 
+def _approval_timeout_s(prompt_timeout_s: float) -> float:
+    raw = os.environ.get(APPROVAL_TIMEOUT_ENV)
+    timeout = DEFAULT_APPROVAL_TIMEOUT_S
+    if raw not in (None, ""):
+        try:
+            timeout = float(raw)
+        except ValueError:
+            logger.warn("gemini_acp.approval_timeout_invalid", value=raw, default=DEFAULT_APPROVAL_TIMEOUT_S)
+            timeout = DEFAULT_APPROVAL_TIMEOUT_S
+    if timeout < 1.0:
+        logger.warn("gemini_acp.approval_timeout_clamped_min", value=timeout)
+        timeout = 1.0
+    max_timeout = max(1.0, prompt_timeout_s - 1.0)
+    if timeout > max_timeout:
+        logger.warn("gemini_acp.approval_timeout_clamped_max", value=timeout, max=max_timeout)
+        timeout = max_timeout
+    return timeout
+
+
 def run(
     prompt: str,
     *,
@@ -312,6 +339,7 @@ def run(
     gemini_home: Path | None = None,
     ephemeral: bool = False,
     trust_mode: str = "trusted",
+    task_id: str | None = None,
 ) -> CodexResult:
     if trust_mode not in TRUST_TO_ACP_MODE:
         raise ValueError(f"Gemini trust mode must be trusted, default, or plan, got {trust_mode!r}")
@@ -345,7 +373,15 @@ def run(
     loaded = False
     logger.info("gemini_acp.invoke", cwd=str(cwd), gemini_home=str(home), schema=str(schema) if schema else None, resumed=bool(resume_session_id), model=model, effort=effort, effective_model=effective_model, trust_mode=trust_mode)
 
-    client = GeminiAcpClient(gemini_binary=gemini_binary, env=sub_env, trust_mode=trust_mode)
+    client = GeminiAcpClient(
+        gemini_binary=gemini_binary,
+        env=sub_env,
+        trust_mode=trust_mode,
+        team_name=team if trust_mode != "trusted" else None,
+        agent_name=agent if trust_mode != "trusted" else None,
+        task_id=task_id,
+        approval_timeout_s=_approval_timeout_s(timeout_s),
+    )
     try:
         client.start()
         register_active_client(client)

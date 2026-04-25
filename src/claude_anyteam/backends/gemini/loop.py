@@ -106,6 +106,7 @@ def _backend_run(
     schema=None,
     resume_session_id: str | None = None,
     ephemeral: bool = False,
+    task_id: str | None = None,
 ):
     s = state.settings
     runner = acp_invoke if s.backend == "acp" else headless_invoke
@@ -124,6 +125,7 @@ def _backend_run(
         kwargs["resume_session_id"] = None if ephemeral else resume_session_id
         kwargs["ephemeral"] = ephemeral
         kwargs["trust_mode"] = s.trust_mode
+        kwargs["task_id"] = task_id
     else:
         kwargs["resume_session_id"] = resume_session_id
     return runner.run(prompt, **kwargs)
@@ -369,7 +371,7 @@ def _execute_task(state: GeminiLoopState, task) -> None:
         prompt += "\n\n# Output contract\n" + inline_schema_prompt_fragment(schema)
         if attempt == 2:
             prompt += "\n\nPRIOR ATTEMPT FAILED: return ONLY the JSON object matching the schema."
-        result = _backend_run(state, prompt, schema=headless_invoke.TASK_COMPLETE_SCHEMA, resume_session_id=state.gemini_session_id, ephemeral=False)
+        result = _backend_run(state, prompt, schema=headless_invoke.TASK_COMPLETE_SCHEMA, resume_session_id=state.gemini_session_id, ephemeral=False, task_id=str(task.id))
         if result.exit_code == 0 and result.structured is not None:
             if result.session_id:
                 state.gemini_session_id = result.session_id
