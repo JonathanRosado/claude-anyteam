@@ -72,6 +72,30 @@ def test_team_lead_steer_without_task_id_injects_next_task_once():
     assert not prompts[0].startswith("# Team-lead next-turn steer")
 
 
+
+def test_team_lead_plain_text_steer_marker_injects_next_task_once():
+    state = GeminiLoopState(settings=_settings())
+    msg = SimpleNamespace(
+        from_="team-lead",
+        text="STEER: do X",
+    )
+    loop._handle_message(state, msg)
+    assert len(state.queued_steers) == 1
+
+    prompts: list[str] = []
+    with (
+        patch.object(loop, "_backend_run", side_effect=lambda _state, prompt, **_kw: prompts.append(prompt) or _success()),
+        patch.object(loop.pio, "update_task"),
+        patch.object(loop.pio, "send_task_complete"),
+    ):
+        loop._execute_task(state, _task("7"))
+
+    assert len(prompts) == 1
+    assert prompts[0].startswith("# Team-lead next-turn steer")
+    assert "do X" in prompts[0]
+    assert "# Original task prompt" in prompts[0]
+    assert state.queued_steers == []
+
 def test_matching_task_id_steer_injects_and_nonmatching_is_retained():
     state = GeminiLoopState(
         settings=_settings(),

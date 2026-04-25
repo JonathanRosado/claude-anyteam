@@ -5,7 +5,7 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 ## App-server / TUI presence
 
 - **No direct Codex `app-server` sidecar equivalent:** ACP (`gemini --acp`) is JSON-RPC 2.0 over stdio, not an HTTP app server. The existing TUI/app-server client is not compatible with it.
-- **Next-turn steer only, not mid-token-stream parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP now supports **next-turn steer** via `SendMessage(message={"type":"steer", ...})`: structured `team-lead` steer messages are queued and prepended to the next task `session/prompt` boundary. This is closer than no steering, but it is not Codex mid-token-stream `turn/steer` parity.
+- **Next-turn steer only, not mid-token-stream parity:** Codex app-server can inject mid-turn inbox prose with `turn/steer`. Gemini ACP now supports **next-turn steer**: `team-lead` steer messages are queued and prepended to the next task `session/prompt` boundary. Until the host `SendMessage` schema accepts structured steer bodies, leads should send practical steer messages as plain text with the marker `STEER: ...`. The structured `{"type":"steer", ...}` shape is also accepted for future direct-protocol use. This is closer than no steering, but it is not Codex mid-token-stream `turn/steer` parity.
 
 ## Protocol and streaming
 

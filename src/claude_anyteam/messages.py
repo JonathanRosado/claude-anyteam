@@ -161,6 +161,9 @@ def parse_protocol_text(text: str) -> _Base | None:
     """
     import json
 
+    if isinstance(text, str) and text[:6].lower() == "steer:":
+        return SteerIn(message=text[6:].strip())
+
     try:
         raw = json.loads(text)
     except (ValueError, TypeError):
