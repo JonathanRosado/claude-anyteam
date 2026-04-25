@@ -17,8 +17,11 @@ from claude_anyteam.messages import PlanApprovalRequestIn, ShutdownRequestIn, pa
 from claude_anyteam.registration import BackendMetadata, deregister, register
 from claude_anyteam.schema_validation import inline_schema_prompt_fragment, load_schema
 
-from . import invoke, prompts
+from . import acp as acp_invoke, invoke as headless_invoke, prompts
 from .config import GeminiSettings
+
+# Backwards-compatible alias for tests/extensions that monkeypatch loop.invoke.
+invoke = headless_invoke
 
 
 @dataclass
@@ -32,7 +35,7 @@ class GeminiLoopState:
 
 
 def run(settings: GeminiSettings) -> int:
-    invoke.feature_test(settings.gemini_binary)
+    _backend_feature_test(settings)
     register(
         settings,
         BackendMetadata(
@@ -65,6 +68,39 @@ def run(settings: GeminiSettings) -> int:
         else:
             logger.warn("gemini.loop.exit_without_deregister", in_flight_task=state.in_flight_task)
     return exit_code
+
+
+def _backend_feature_test(settings: GeminiSettings) -> None:
+    if settings.backend == "acp":
+        acp_invoke.feature_test(settings.gemini_binary)
+    else:
+        headless_invoke.feature_test(settings.gemini_binary)
+
+
+def _backend_run(
+    state: GeminiLoopState,
+    prompt: str,
+    *,
+    schema=None,
+    resume_session_id: str | None = None,
+    ephemeral: bool = False,
+):
+    s = state.settings
+    runner = acp_invoke if s.backend == "acp" else headless_invoke
+    kwargs = {
+        "cwd": s.cwd,
+        "schema": schema,
+        "gemini_binary": s.gemini_binary,
+        "wrapper_identity": (s.team_name, s.agent_name),
+        "model": s.model,
+        "gemini_home": s.gemini_home,
+    }
+    if s.backend == "acp":
+        kwargs["resume_session_id"] = None if ephemeral else resume_session_id
+        kwargs["ephemeral"] = ephemeral
+    else:
+        kwargs["resume_session_id"] = resume_session_id
+    return runner.run(prompt, **kwargs)
 
 
 def _main_loop(state: GeminiLoopState) -> None:
@@ -118,7 +154,7 @@ def _handle_prose(state: GeminiLoopState, msg: Any) -> None:
     prompt = prompts.prose_reply_prompt(sender=sender, body=msg.text, agent_name=s.agent_name, team_name=s.team_name)
     reply: str | None = None
     try:
-        result = invoke.run(prompt, cwd=s.cwd, gemini_binary=s.gemini_binary, wrapper_identity=(s.team_name, s.agent_name), model=s.model, gemini_home=s.gemini_home)
+        result = _backend_run(state, prompt, ephemeral=True)
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
     except Exception as e:
@@ -183,19 +219,11 @@ def _handle_plan_approval(state: GeminiLoopState, payload: PlanApprovalRequestIn
     logger.info("gemini.plan.request_received", request_id=req_id, task_id=target.id)
 
     for attempt in (1, 2):
-        schema = load_schema(invoke.PLAN_SCHEMA)
+        schema = load_schema(headless_invoke.PLAN_SCHEMA)
         prompt = prompts.plan_prompt(target, tighten=attempt == 2, agent_name=s.agent_name, team_name=s.team_name)
         prompt += "\n\n# Output contract\n" + inline_schema_prompt_fragment(schema)
         try:
-            result = invoke.run(
-                prompt,
-                cwd=s.cwd,
-                schema=invoke.PLAN_SCHEMA,
-                gemini_binary=s.gemini_binary,
-                wrapper_identity=(s.team_name, s.agent_name),
-                model=s.model,
-                gemini_home=s.gemini_home,
-            )
+            result = _backend_run(state, prompt, schema=headless_invoke.PLAN_SCHEMA, ephemeral=True)
         except Exception as e:
             logger.error("gemini.plan.crash", task_id=target.id, error=str(e))
             result = None
@@ -294,23 +322,14 @@ def _blocked(all_tasks: list, t) -> bool:
 
 def _execute_task(state: GeminiLoopState, task) -> None:
     s = state.settings
-    schema = load_schema(invoke.TASK_COMPLETE_SCHEMA)
+    schema = load_schema(headless_invoke.TASK_COMPLETE_SCHEMA)
     result = None
     for attempt in (1, 2):
         prompt = prompts.task_prompt(task, agent_name=s.agent_name, team_name=s.team_name)
         prompt += "\n\n# Output contract\n" + inline_schema_prompt_fragment(schema)
         if attempt == 2:
             prompt += "\n\nPRIOR ATTEMPT FAILED: return ONLY the JSON object matching the schema."
-        result = invoke.run(
-            prompt,
-            cwd=s.cwd,
-            schema=invoke.TASK_COMPLETE_SCHEMA,
-            gemini_binary=s.gemini_binary,
-            wrapper_identity=(s.team_name, s.agent_name),
-            resume_session_id=state.gemini_session_id,
-            model=s.model,
-            gemini_home=s.gemini_home,
-        )
+        result = _backend_run(state, prompt, schema=headless_invoke.TASK_COMPLETE_SCHEMA, resume_session_id=state.gemini_session_id, ephemeral=False)
         if result.session_id:
             state.gemini_session_id = result.session_id
         if result.exit_code == 0 and result.structured is not None:

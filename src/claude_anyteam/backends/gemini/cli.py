@@ -9,7 +9,7 @@ from .loop import run
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="gemini-anyteam", description="Route gemini-* teammates through Gemini CLI headless mode.")
+    p = argparse.ArgumentParser(prog="gemini-anyteam", description="Route gemini-* teammates through Gemini CLI.")
     p.add_argument("--team", help="Team name (overrides CLAUDE_ANYTEAM_TEAM)")
     p.add_argument("--name", help="Teammate name within the team (overrides CLAUDE_ANYTEAM_NAME)")
     p.add_argument("--cwd", help="Working directory for Gemini invocations")
@@ -19,6 +19,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gemini-binary", help="Gemini CLI binary name (default: gemini)")
     p.add_argument("--model", help="Gemini model slug passed as --model. Overrides CLAUDE_ANYTEAM_MODEL.")
     p.add_argument("--gemini-home", help="Adapter-owned HOME root for Gemini config/session state")
+    p.add_argument("--backend", choices=("headless", "acp"), help="Gemini backend transport (default: headless)")
     return p
 
 
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
         "gemini_binary": ns.gemini_binary,
         "model": ns.model,
         "gemini_home": ns.gemini_home,
+        "backend": ns.backend,
     })
     return run(settings)
 

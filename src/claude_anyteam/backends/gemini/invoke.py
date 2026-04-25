@@ -138,6 +138,7 @@ def read_adapter_state(gemini_home: Path) -> dict[str, Any]:
         return {
             "headless_session_id": None,
             "acp_session_id": None,
+            "acp_storage_session_id": None,
             "backend": "headless",
             "updated_at": None,
         }
@@ -147,6 +148,7 @@ def read_adapter_state(gemini_home: Path) -> dict[str, Any]:
         return {
             "headless_session_id": None,
             "acp_session_id": None,
+            "acp_storage_session_id": None,
             "backend": "headless",
             "updated_at": None,
         }
@@ -154,11 +156,13 @@ def read_adapter_state(gemini_home: Path) -> dict[str, Any]:
         return {
             "headless_session_id": None,
             "acp_session_id": None,
+            "acp_storage_session_id": None,
             "backend": "headless",
             "updated_at": None,
         }
     data.setdefault("headless_session_id", None)
     data.setdefault("acp_session_id", None)
+    data.setdefault("acp_storage_session_id", None)
     data.setdefault("backend", "headless")
     data.setdefault("updated_at", None)
     return data
@@ -170,11 +174,13 @@ def write_adapter_state(
     backend: str,
     headless_session_id: str | None = None,
     acp_session_id: str | None = None,
+    acp_storage_session_id: str | None = None,
 ) -> Path:
     previous = read_adapter_state(gemini_home) if _adapter_state_path(gemini_home).exists() else {}
     data = {
         "headless_session_id": headless_session_id if headless_session_id is not None else previous.get("headless_session_id"),
         "acp_session_id": acp_session_id if acp_session_id is not None else previous.get("acp_session_id"),
+        "acp_storage_session_id": acp_storage_session_id if acp_storage_session_id is not None else previous.get("acp_storage_session_id"),
         "backend": backend,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
