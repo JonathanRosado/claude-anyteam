@@ -35,10 +35,11 @@ The Gemini backend has meaningful feature parity with the Codex backend, but it 
 
 - **CLI validation is shallow:** `_check_gemini_cli` only runs `gemini --version` and parses a semver-ish token. It does not enforce a minimum version or verify capability flags, unlike the Gemini-adjacent Codex check. A missing or outdated Gemini CLI surfaces as a non-blocking warning only.
 
-## Auth
+## Auth and security
 
 - **Only the known auth subtree is merged into isolated settings:** The adapter merges only `security.auth` from the user's real `~/.gemini/settings.json` into isolated per-session settings. Other auth-related state, such as account selection beyond `selectedType` or device codes, is not propagated. If Gemini introduces richer auth state, this merge will need to widen.
 - **Config isolation remains a tradeoff:** The adapter writes MCP settings under an isolated Gemini home and copies selected Gemini auth cache files when present. Operators should still prefer `GEMINI_API_KEY` or Vertex/ADC environment auth for unattended teammates.
+- **ACP YOLO trust model:** ACP YOLO mode plus auto-approving every `session/request_permission` with `allow_once` is functionally equivalent to headless `--approval-mode yolo`. Treat Gemini teammates as fully trusted code-execution agents. Untrusted task text could instruct broad filesystem/shell actions or misleading inter-teammate messaging.
 
 ## Open questions
 
