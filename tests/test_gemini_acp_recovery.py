@@ -78,6 +78,8 @@ class RuntimeStateClient(RecoveringClient):
 def test_successful_acp_session_persists_adapter_and_gemini_pids(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setattr(acp, "GeminiAcpClient", RuntimeStateClient)
+    if hasattr(acp, "crash_hygiene"):
+        monkeypatch.setattr(acp.crash_hygiene, "clear_acp_child", lambda home: None)
     result = acp.run("prompt", cwd=tmp_path, gemini_home=home, wrapper_identity=("team", "agent"))
 
     assert result.exit_code == 0

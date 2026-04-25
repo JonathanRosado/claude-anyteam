@@ -113,6 +113,34 @@ def test_notifications_timeout_and_dispatcher_server_request():
         client.close()
 
 
+def test_process_group_launch_and_close_uses_killpg(monkeypatch):
+    fake = _FakeProcess(lambda msg: iter([]))
+    fake.pid = 4242
+    popen_kwargs = {}
+
+    def fake_popen(*args, **kwargs):
+        popen_kwargs.update(kwargs)
+        return fake
+
+    killpg_calls = []
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("claude_anyteam.jsonrpc_stdio.os.name", "posix")
+    monkeypatch.setattr("claude_anyteam.jsonrpc_stdio.os.getpgid", lambda pid: 4242)
+    monkeypatch.setattr("claude_anyteam.jsonrpc_stdio.os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+    client = JsonRpcStdioClient(
+        argv=["fake"],
+        log_prefix="test",
+        start_new_session=True,
+        terminate_process_group=True,
+    )
+    client.start()
+    assert popen_kwargs["start_new_session"] is True
+    assert client.pid == 4242
+    assert client.pgid == 4242
+    client.close()
+    assert killpg_calls
+
+
 def test_request_timeout_unblocks_on_close():
     client, _ = _client(lambda msg: iter([]))
     try:
