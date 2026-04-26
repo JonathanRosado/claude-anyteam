@@ -1,0 +1,3 @@
+# synthesized: Claude Code plugin update step failed after settings/plugin install succeeded.
+error: failed to pull latest plugin manifest from https://github.com/JonathanRosado/claude-anyteam
+fatal: unable to access GitHub: transient 502 Bad Gateway

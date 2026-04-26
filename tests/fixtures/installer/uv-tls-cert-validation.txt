@@ -1,0 +1,4 @@
+# synthesized: Node/uv TLS failure on a corporate network with intercepted HTTPS certificates.
+error: failed to fetch https://pypi.org/simple/claude-anyteam
+  Caused by: unable to verify the first certificate
+  code: SELF_SIGNED_CERT_IN_CHAIN

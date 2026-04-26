@@ -1,5 +1,3 @@
-# synthesized: shell/cmd stderr when the Kimi CLI binary is missing from PATH.
+# synthesized: POSIX shell stderr when the Kimi CLI binary is missing from PATH.
 kimi: command not found
-
-'kimi' is not recognized as an internal or external command,
-operable program or batch file.
+# Windows variant: 'kimi' is not recognized as an internal or external command, operable program or batch file.

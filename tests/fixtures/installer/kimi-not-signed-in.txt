@@ -1,3 +1,2 @@
 # synthesized: Kimi CLI auth failure when local credentials/session are unavailable.
-Error: credentials not found for Kimi CLI
-You are not signed in to Kimi. Run `kimi login` and try again.
+error: Kimi credentials not found at ~/.kimi/credentials/kimi-code.json. Run `kimi login`.

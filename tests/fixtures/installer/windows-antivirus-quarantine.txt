@@ -1,0 +1,4 @@
+# synthesized: Windows Defender quarantines a wheel during uv tool install.
+error: failed to extract wheel claude_anyteam-0.5.0-py3-none-any.whl
+Caused by: Operation did not complete successfully because the file contains a virus or potentially unwanted software.
+Windows Defender threat detected and quarantined the file.

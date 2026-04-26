@@ -1,0 +1,3 @@
+# synthesized: uv interpreter detection failure while Conda is active.
+error: could not find a usable Python interpreter for the isolated tool install
+hint: active conda environment may be shadowing python on PATH

@@ -1,0 +1,3 @@
+# synthesized: uv lock contention while another tool install is running.
+error: failed to acquire lock for /home/alice/.local/share/uv/tool-state.lock
+hint: another uv process may still be installing a tool

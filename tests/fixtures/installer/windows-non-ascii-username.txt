@@ -1,0 +1,3 @@
+# synthesized: Windows install error under a non-ASCII user profile path.
+error: failed to install claude-anyteam under C:\Users\José\AppData\Roaming\uv\tools\claude-anyteam
+Caused by: UnicodeDecodeError while normalizing the user profile path

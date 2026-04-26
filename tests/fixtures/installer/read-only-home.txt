@@ -1,0 +1,3 @@
+# synthesized: container install with a read-only home directory.
+OSError: [Errno 30] Read-only file system: '/home/alice/.claude/settings.json'
+claude_anyteam.installer.InstallError: Operation not permitted writing home directory state
