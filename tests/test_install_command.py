@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 from typing import Any
@@ -194,6 +195,266 @@ def _ready_install_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
     _stub_prereq_found(monkeypatch)
     monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
     return settings_path, claude_json_path, state_path, bin_dir
+
+
+def _assert_install_error_fields(
+    exc: installer_mod.InstallError,
+    *,
+    title: str,
+    explanation: str,
+    action: str,
+    severity: installer_mod.InstallSeverity,
+) -> None:
+    assert exc.title == title
+    assert explanation in exc.explanation
+    assert action in exc.action
+    assert exc.severity == severity
+
+
+# ---------------------------------------------------------------------------
+# Structured InstallError diagnostics (Python-side installer hardening)
+# ---------------------------------------------------------------------------
+
+def test_install_error_fields_for_settings_json_corrupt(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _ready_install_paths(tmp_path, monkeypatch)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(installer_mod.InstallError) as excinfo:
+        installer_mod.install(
+            settings_path=settings_path,
+            claude_json_path=claude_json_path,
+            state_path=state_path,
+            argv0=str(bin_dir / "claude-anyteam"),
+        )
+
+    _assert_install_error_fields(
+        excinfo.value,
+        title="Your Claude Code settings file is corrupted",
+        explanation="Your Claude Code settings file is corrupted (not valid JSON).",
+        action="settings.json.broken",
+        severity="hard-stop",
+    )
+    assert "is not valid JSON" in (excinfo.value.details or "")
+
+
+def test_install_error_fields_for_settings_json_locked(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _ready_install_paths(tmp_path, monkeypatch)
+
+    def _raise_locked(path: Path, _payload: dict[str, Any]) -> None:
+        if path == settings_path.resolve():
+            raise OSError(errno.EACCES, "Permission denied")
+        raise AssertionError(f"unexpected write to {path}")
+
+    monkeypatch.setattr(installer_mod, "_atomic_write_json", _raise_locked)
+
+    with pytest.raises(installer_mod.InstallError) as excinfo:
+        installer_mod.install(
+            settings_path=settings_path,
+            claude_json_path=claude_json_path,
+            state_path=state_path,
+            argv0=str(bin_dir / "claude-anyteam"),
+        )
+
+    _assert_install_error_fields(
+        excinfo.value,
+        title="Can't write your Claude Code settings file",
+        explanation="likely Claude Code is running",
+        action="Quit Claude Code",
+        severity="hard-stop",
+    )
+    assert "Permission denied" in (excinfo.value.details or "")
+
+
+def test_install_error_fields_for_claude_json_malformed(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _ready_install_paths(tmp_path, monkeypatch)
+    claude_json_path.parent.mkdir(parents=True, exist_ok=True)
+    claude_json_path.write_text("[", encoding="utf-8")
+
+    with pytest.raises(installer_mod.InstallError) as excinfo:
+        installer_mod.install(
+            settings_path=settings_path,
+            claude_json_path=claude_json_path,
+            state_path=state_path,
+            argv0=str(bin_dir / "claude-anyteam"),
+        )
+
+    _assert_install_error_fields(
+        excinfo.value,
+        title="Your Claude Code config file is corrupted",
+        explanation="Your Claude Code config",
+        action=".claude.json.broken",
+        severity="hard-stop",
+    )
+    assert "is not valid JSON" in (excinfo.value.details or "")
+    assert not settings_path.exists(), "post-settings failure should roll back settings.json"
+
+
+def test_install_error_fields_for_provider_version_probe_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    codex_cli = installer_mod.CodexCliCheck(
+        found=True,
+        path=Path("/usr/local/bin/codex"),
+        version=None,
+        raw_output="codex exploded",
+        signed_in=True,
+        version_probe_error="`codex --version` exited with code 2.",
+    )
+
+    result, _claude_json_path, _state_path = _install_with_codex_stub(
+        tmp_path,
+        monkeypatch,
+        codex_cli,
+    )
+
+    assert len(result.diagnostics) == 1
+    _assert_install_error_fields(
+        result.diagnostics[0],
+        title="Found `codex` but couldn't read its version",
+        explanation="didn't return a recognizable version",
+        action="codex --version",
+        severity="soft",
+    )
+
+
+def test_install_error_fields_for_provider_not_signed_in(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _ready_install_paths(tmp_path, monkeypatch)
+    codex_cli = _codex_cli_ready(signed_in=False)
+    gemini_cli = _gemini_cli_ready(signed_in=False)
+
+    with pytest.raises(installer_mod.InstallError) as excinfo:
+        installer_mod.install(
+            settings_path=settings_path,
+            claude_json_path=claude_json_path,
+            state_path=state_path,
+            argv0=str(bin_dir / "claude-anyteam"),
+            codex_cli_check_fn=lambda: codex_cli,
+            codex_auth_check_fn=lambda: _auth(False),
+            gemini_cli_check_fn=lambda: gemini_cli,
+            gemini_auth_check_fn=lambda: _auth(False),
+            kimi_cli_check_fn=lambda: _kimi_cli_missing(),
+        )
+
+    _assert_install_error_fields(
+        excinfo.value,
+        title="No provider CLI is signed in",
+        explanation="none of the detected providers are ready",
+        action="codex login",
+        severity="blocker",
+    )
+    assert "gemini login" in excinfo.value.action
+    assert "kimi login" in excinfo.value.action
+    assert getattr(excinfo.value, "cli_exit_code") == installer_mod.INSTALL_ERROR_EXIT_NO_PROVIDER
+
+
+def test_install_error_fields_for_plugin_registration_failure(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _ready_install_paths(tmp_path, monkeypatch)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(bin_dir / "claude-anyteam"),
+        register_plugin=True,
+        plugin_registration_fn=lambda: installer_mod._plugin_registration_error(
+            "`claude` was not found on PATH."
+        ),
+    )
+
+    assert len(result.diagnostics) == 1
+    _assert_install_error_fields(
+        result.diagnostics[0],
+        title="Couldn't register the Claude Code plugin",
+        explanation="spawn shim still works without plugin registration",
+        action="claude plugin install JonathanRosado/claude-anyteam",
+        severity="soft",
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected_command"),
+    [
+        ("linux", "sudo apt install tmux"),
+        ("darwin", "brew install tmux"),
+    ],
+)
+def test_install_error_fields_for_multiplexer_missing(
+    tmp_path: Path,
+    monkeypatch,
+    platform: str,
+    expected_command: str,
+):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+    _stub_prereq_missing(monkeypatch, platform=platform)
+    _stub_provider_checks(monkeypatch)
+
+    with pytest.raises(installer_mod.InstallError) as excinfo:
+        installer_mod.install(
+            settings_path=settings_path,
+            claude_json_path=claude_json_path,
+            state_path=state_path,
+            argv0=str(bin_dir / "claude-anyteam"),
+        )
+
+    _assert_install_error_fields(
+        excinfo.value,
+        title="A required terminal tool is missing",
+        explanation="claude-anyteam needs tmux on Linux/macOS",
+        action=expected_command,
+        severity="blocker",
+    )
+
+
+def test_install_windows_skips_multiplexer_failure_path(tmp_path: Path, monkeypatch):
+    settings_path, claude_json_path, state_path, bin_dir = _fresh_paths(tmp_path)
+    _make_executable(bin_dir / "claude-anyteam")
+    _make_executable(bin_dir / "claude-anyteam-spawn-shim")
+    monkeypatch.setattr(installer_mod, "_platform_name", lambda: "windows")
+    _stub_provider_checks(monkeypatch)
+    monkeypatch.setattr(installer_mod.shutil, "which", lambda name: None)
+
+    result = installer_mod.install(
+        settings_path=settings_path,
+        claude_json_path=claude_json_path,
+        state_path=state_path,
+        argv0=str(bin_dir / "claude-anyteam"),
+    )
+
+    assert result.prereq is not None
+    assert result.prereq.platform == "windows"
+    assert result.prereq.found is True
+    assert settings_path.exists()
+
+
+def test_install_command_renders_structured_install_error_box(monkeypatch, capsys):
+    structured = installer_mod.InstallError(
+        title="Friendly title",
+        explanation="Plain English explanation.",
+        action="Run `fix-it`.\nThen retry.",
+        severity="blocker",
+        details="raw traceback line",
+    )
+
+    def _raise_install_error(**_kwargs: Any) -> installer_mod.InstallResult:
+        raise structured
+
+    monkeypatch.setattr(cli_mod, "install_settings", _raise_install_error)
+
+    exit_code = cli_mod._install_command(no_input=True)
+
+    assert exit_code == installer_mod.INSTALL_ERROR_EXIT_GENERIC
+    err = capsys.readouterr().err
+    assert "INSTALL FAILED" in err
+    assert "Friendly title" in err
+    assert "Plain English explanation." in err
+    assert "Next step: Run `fix-it`." in err
+    assert "Then retry." in err
+    assert "Severity: blocker" in err
+    assert "Raw details (for debugging):" in err
 
 
 # ---------------------------------------------------------------------------
@@ -794,8 +1055,47 @@ def test_install_skips_multiplexer_check_on_windows(
 
     exit_code = cli_mod.main(_install_argv(settings_path, claude_json_path, state_path))
     assert exit_code == 0
-    assert "winget install psmux" not in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "winget install psmux" not in captured.err
+    assert "single-terminal mode" in captured.out
     assert settings_path.exists()
+
+
+def test_windows_corrupt_settings_action_uses_powershell_paths(
+    tmp_path: Path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(installer_mod.sys, "platform", "win32")
+
+    error = installer_mod._settings_corrupt_error(
+        home / ".claude" / "settings.json",
+        "bad json",
+        not_json=True,
+    )
+
+    assert "Move-Item -LiteralPath" in error.action
+    assert "~\\.claude\\settings.json" in error.action
+    assert "`mv " not in error.action
+
+
+def test_windows_settings_lock_mentions_antivirus(
+    tmp_path: Path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(installer_mod.sys, "platform", "win32")
+
+    error = installer_mod._settings_write_error(
+        home / ".claude" / "settings.json",
+        OSError(errno.EBUSY, "resource busy"),
+    )
+
+    assert "antivirus" in error.explanation
+    assert "PowerShell" in error.action
+    assert "Windows Defender" in error.action
 
 
 # ---------------------------------------------------------------------------
