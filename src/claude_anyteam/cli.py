@@ -31,8 +31,11 @@ def _build_run_parser() -> argparse.ArgumentParser:
         description="Route Codex- and Gemini-backed teammates into Claude Code with the claude-anyteam adapter.",
         epilog=(
             "Management commands:\n"
-            "  claude-anyteam install    Persist the claude-anyteam shim in ~/.claude/settings.json\n"
-            "  claude-anyteam uninstall  Remove the installed Codex/Gemini teammate shim settings"
+            "  claude-anyteam install      Persist the claude-anyteam shim in ~/.claude/settings.json\n"
+            "  claude-anyteam uninstall    Remove the installed Codex/Gemini teammate shim settings\n"
+            "  claude-anyteam team-agent   Write per-teammate model/effort to ~/.claude/teams/<team>/agents/<agent>.json\n"
+            "  claude-anyteam team-patch   Patch agentType post-spawn so wrapper MCP validation passes\n"
+            "  claude-anyteam team-roster  Print one-line-per-member team summary"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -301,6 +304,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.state_path is not None:
                 kwargs["state_path"] = args.state_path
             return _uninstall_command(**kwargs)
+        if command in ("team-agent", "team-patch", "team-roster"):
+            from . import team_cli
+            return team_cli.main_dispatch(command, argv[1:])
 
     args = _parse_args(argv)
 

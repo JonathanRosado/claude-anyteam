@@ -43,6 +43,9 @@ RECOMMENDED_ALLOWLIST_ENTRIES = (
     "Bash(pkill -f gemini-anyteam *)",
     "Bash(pkill -f claude-anyteam *)",
     "Bash(mkdir -p ~/.claude/teams/**)",
+    "Bash(claude-anyteam team-agent *)",
+    "Bash(claude-anyteam team-patch *)",
+    "Bash(claude-anyteam team-roster *)",
 )
 
 MANAGED_BINARY_KEYS = (TEAMMATE_BINARY_KEY, GEMINI_TEAMMATE_BINARY_KEY, LEGACY_TEAMMATE_BINARY_KEY)
