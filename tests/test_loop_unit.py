@@ -122,7 +122,7 @@ def test_shutdown_duplicate_request_id_ignored():
     assert m.call_count == 0
 
 
-def _fake_codex_result(reply: str = "Four.", exit_code: int = 0):
+def _fake_codex_result(reply: str = "Four.", exit_code: int = 0, tool_call_events: int = 0):
     from claude_anyteam import codex as codex_mod
     return codex_mod.CodexResult(
         exit_code=exit_code,
@@ -130,6 +130,7 @@ def _fake_codex_result(reply: str = "Four.", exit_code: int = 0):
         last_message=reply,
         events=[],
         error=None if exit_code == 0 else "oops",
+        tool_call_events=tool_call_events,
     )
 
 
@@ -200,6 +201,36 @@ def test_prose_message_fresh_exec_path_replies_to_sender():
     # Lineage slots must be clean after a prose invocation.
     assert state.app_server_last_thread_id is None
     assert state.codex_session_id is None
+
+
+def test_prose_message_skips_fallback_when_codex_used_send_message_tool():
+    """Regression for cross-backend prose-double-send bug exposed by Kimi.
+
+    When Codex follows the prose-prompt instruction to deliver the reply via
+    the `send_message` MCP tool, last_message is empty by design. The adapter
+    must NOT then send a canned fallback on top of the real reply.
+    Detected via tool_call_events > 0. Same fix shape as the Kimi adapter
+    PR #11 (commit e5a3fdb).
+    """
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="hello", from_="peer-bob")
+
+    sent: list[tuple] = []
+
+    with (
+        patch.object(
+            loop_mod.codex_mod, "app_server_invoke",
+            return_value=_fake_codex_result("", exit_code=0, tool_call_events=1),
+        ),
+        patch.object(
+            loop_mod.pio, "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_message(state, msg)
+
+    # No fallback sent — model delivered via tool already.
+    assert sent == []
 
 
 def test_prose_message_codex_fail_sends_fallback_ack():
