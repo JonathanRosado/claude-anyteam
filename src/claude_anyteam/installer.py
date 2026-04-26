@@ -2596,17 +2596,6 @@ def _provider_summary_entry(status: ProviderStatus) -> str:
     return status.summary_entry()
 
 
-def _provider_statuses_for_display(*statuses: ProviderStatus) -> tuple[ProviderStatus, ...]:
-    # Kimi is currently optional/next-up in many installs. Keep the legacy
-    # Codex/Gemini-only display unless Kimi is actually detected, while still
-    # allowing Kimi to make the install pass when it is ready.
-    return tuple(
-        status
-        for status in statuses
-        if status.provider_key != "kimi" or status.state != "MISSING"
-    )
-
-
 def _coerce_provider_statuses(
     first: ProviderStatus | tuple[ProviderStatus, ...] | list[ProviderStatus],
     *rest: ProviderStatus,
