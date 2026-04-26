@@ -78,7 +78,15 @@ Claude Code's Agent Teams UI only passes name, team, and plan-mode to the spawn 
 ~/.claude/teams/<team>/agents/<agent-name>.json
 ```
 
-Example:
+**Use the `claude-anyteam team-agent` CLI to write this file.** It is the typed, allowlisted contract for managing per-teammate config — preferred over hand-written JSON or `Write` tool calls:
+
+```bash
+claude-anyteam team-agent codex-alice --team build --model gpt-5.5 --effort xhigh
+claude-anyteam team-agent gemini-bob  --team build --model gemini-3-pro-preview --effort high
+claude-anyteam team-agent codex-alice --team build --remove                       # delete the file
+```
+
+The CLI writes atomically, validates the agent/team names against path-traversal, drops unknown keys (only `model` / `effort` are honored), and is idempotent — re-running with the same args is a no-op. The on-disk shape is JSON that the shim reads at spawn time:
 
 ```json
 {
@@ -97,6 +105,18 @@ Behavior:
 - Native (`claude-*`) teammates — the file is not consulted; native dispatch is always pass-through.
 
 Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT` for Codex, `CLAUDE_ANYTEAM_GEMINI_EFFORT` / `CLAUDE_ANYTEAM_GEMINI_TRUST` for Gemini) → adapter defaults → backend CLI defaults.
+
+## Team management CLI
+
+Three subcommands of `claude-anyteam` cover the routine team-management writes that previously required `Write`/`Edit`/`Bash` calls. They are all allowlisted by the installer (`Bash(claude-anyteam team-* *)`) so coordinating leads never hit a permission prompt.
+
+| Command | Purpose |
+|---|---|
+| `claude-anyteam team-agent <name> --team <team> [--model X] [--effort Y]` | Write `~/.claude/teams/<team>/agents/<name>.json`. Whitelisted keys: `model`, `effort`. Use `--remove` to delete. `--print-path` emits the file path on stdout. |
+| `claude-anyteam team-patch <name> --team <team>` <br> `claude-anyteam team-patch --team <team> --all-external` | Set `agentType="claude-anyteam"` on a routed-adapter member in `~/.claude/teams/<team>/config.json`. The host `Agent(...)` tool spawns external-LLM teammates with `agentType="general-purpose"` which the wrapper MCP rejects; this command is the post-spawn fixup. `--all-external` patches every `codex-*`, `gemini-*`, or `kimi-*` member at once. |
+| `claude-anyteam team-roster --team <team>` <br> `claude-anyteam team-roster --team <team> --json` | Print a one-line-per-member roster summary (or a JSON array) so a coordinating LLM can introspect the team without parsing config.json. |
+
+All three commands fail with exit 1 (or 2 for argparse errors) on missing teams, missing members, or malformed input — never silently. They are safe to run from automation and idempotent on no-op runs.
 
 ## Shim configuration
 

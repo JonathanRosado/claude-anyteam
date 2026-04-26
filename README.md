@@ -54,6 +54,17 @@ alice            → native Claude (unchanged)
 
 Codex- and Gemini-prefixed names appear in your TUI presence line exactly like native teammates. Single-terminal mode or tmux — both work.
 
+For per-teammate model/effort, use the `claude-anyteam team-agent` CLI (typed contract, atomic, allowlisted — preferred over hand-edits to `~/.claude/teams/`):
+
+```bash
+claude-anyteam team-agent codex-alice    --team build --model gpt-5.5 --effort xhigh
+claude-anyteam team-agent gemini-bob     --team build --model gemini-3-pro-preview --effort high
+claude-anyteam team-patch --team build --all-external   # set agentType=claude-anyteam on every codex-/gemini- member
+claude-anyteam team-roster --team build                  # one-line-per-member summary
+```
+
+See `docs/configuration.md#team-management-cli` for full reference.
+
 ## Why it feels native
 
 <table>

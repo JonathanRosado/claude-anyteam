@@ -16,7 +16,8 @@ HELP_SKILL = REPO_ROOT / "skills" / "help" / "SKILL.md"
 STATUS_SKILL = REPO_ROOT / "skills" / "status" / "SKILL.md"
 ORIENTATION_MESSAGE = (
     "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex "
-    "and gemini-* route to Gemini CLI. Docs: https://github.com/JonathanRosado/claude-anyteam"
+    "and gemini-* route to Gemini CLI. Use `claude-anyteam team-agent|team-patch|team-roster` "
+    "for team config (preferred over hand-edits). Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
 DRIFT_WARNING = "claude-anyteam: settings drifted — run `claude-anyteam install` to repair"
 
