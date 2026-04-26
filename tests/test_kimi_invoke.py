@@ -49,6 +49,45 @@ def _patch_kimi_run(
     return calls
 
 
+def test_feature_test_forces_wide_columns_so_help_flags_render_intact(monkeypatch, tmp_path):
+    """Regression: kimi --help truncates `--mcp-config-file` to `--mcp-config-fi…`
+    at narrow terminal widths, breaking the substring probe. feature_test must
+    pass COLUMNS=2000 (or similar wide value) when invoking --help so every
+    flag name renders intact regardless of the parent terminal size.
+    """
+    seen_envs: list[dict[str, str] | None] = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        # Track --help invocations to inspect the env passed in
+        if args[-1] == "--help":
+            seen_envs.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="--print --output-format --mcp-config-file --no-thinking",
+                stderr="",
+            )
+        if args[-1] == "info":
+            return subprocess.CompletedProcess(
+                args, 0, stdout="kimi-cli version: 1.39.0\n", stderr=""
+            )
+        # Smoke run
+        return subprocess.CompletedProcess(args, 0, stdout='{"role":"assistant","content":"KIMI_FEATURE_OK"}\n', stderr="")
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda b: f"/usr/bin/{b}")
+
+    invoke.feature_test("kimi")
+
+    assert seen_envs, "--help was not invoked"
+    help_env = seen_envs[0]
+    assert help_env is not None, "feature_test must pass an explicit env to --help"
+    assert help_env.get("COLUMNS") == "2000", (
+        "feature_test must set COLUMNS=2000 so kimi typer/rich help does not "
+        "truncate flag names like --mcp-config-file → --mcp-config-fi…"
+    )
+
+
 def test_simple_assistant_text_returns_final_message():
     events, last, tool_calls = invoke._parse_stdout(_read("simple_assistant_text.jsonl"))
     assert last == "KIMI_SIMPLE_OK"

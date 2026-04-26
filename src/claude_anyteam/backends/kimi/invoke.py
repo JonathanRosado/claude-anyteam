@@ -225,7 +225,20 @@ def feature_test(kimi_binary: str = "kimi") -> None:
         raise RuntimeError(f"kimi binary not found on PATH (expected {kimi_binary!r}). Install and authenticate Kimi CLI.")
     try:
         info = subprocess.run([kimi_binary, "info"], capture_output=True, text=True, timeout=10, check=True)
-        help_out = subprocess.run([kimi_binary, "--help"], capture_output=True, text=True, timeout=10, check=True)
+        # Kimi's typer/rich help truncates long flag names with "…" at narrow
+        # terminal widths (e.g. `--mcp-config-fi…`), which breaks the
+        # substring probe below. Force a wide column count so every flag
+        # name renders intact regardless of the parent terminal size.
+        help_env = dict(os.environ)
+        help_env["COLUMNS"] = "2000"
+        help_out = subprocess.run(
+            [kimi_binary, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+            env=help_env,
+        )
     except (subprocess.SubprocessError, OSError) as exc:
         raise RuntimeError(f"could not probe Kimi CLI {kimi_binary!r}: {exc}") from exc
     help_text = (help_out.stdout or "") + (help_out.stderr or "")
