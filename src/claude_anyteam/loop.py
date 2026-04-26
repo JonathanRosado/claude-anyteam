@@ -16,7 +16,7 @@ Safety properties:
 - Exit-exit cleanup: on SIGTERM/SIGINT, if a task is in-flight it stays
   `in_progress` (lead can reclaim via reset_owner_tasks) but the loop
   deregisters before exiting.
-- Every cs50victor call is wrapped so a transient FS race doesn't kill
+- Every team-protocol call is wrapped so a transient FS race doesn't kill
   the loop — it logs and continues to next poll.
 """
 
@@ -86,6 +86,21 @@ def run(settings: Settings) -> int:
         _main_loop(state)
     except Exception as e:
         logger.error("loop.crash", error=str(e))
+        # Persist a structured incident so the lead can find this via
+        # `claude-anyteam diagnose`. Without this the only crash signal
+        # is stderr in a tmux pane the lead may not be reading.
+        try:
+            from . import diagnostics as _diag
+            _diag.record_incident(
+                team=settings.team_name,
+                agent=settings.agent_name,
+                backend="codex",
+                error_class="adapter_crash",
+                summary=str(e),
+            )
+        except Exception:
+            # Diagnostics is best-effort; never let it mask the original error.
+            pass
         exit_code = 1
     finally:
         # Deregister on a clean approved shutdown. SIGTERM-mid-task is NOT
@@ -118,8 +133,8 @@ def _main_loop(state: LoopState) -> None:
 
     while not state.approved_shutdown:
         # 1. Drain inbox. Use read_own_inbox so the "self-only" invariant is
-        # asserted at call time — cs50victor's mark_as_read rewrites the file,
-        # and touching another teammate's inbox would corrupt its schema.
+        # asserted at call time — the protocol mark-as-read path rewrites the
+        # file, and touching another teammate's inbox would corrupt its schema.
         messages = pio.read_own_inbox(s.team_name, s.agent_name, s.agent_name)
         for m in messages:
             _handle_message(state, m)
@@ -216,6 +231,7 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
                 codex_binary=s.codex_binary,
                 model=s.model,
                 effort=s.effort,
+                overall_timeout_s=s.turn_timeout_s,
                 # No resume_thread_id — ephemeral, not chained to task lineage.
             )
         else:
@@ -251,11 +267,30 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
         return
 
     if reply is None:
-        # Codex couldn't produce a reply — fall back to a minimal ack.
-        reply = (
-            f"I received your message. I am a Codex adapter and ran into a "
-            f"problem generating a reply. Please contact team-lead if this "
-            f"message requires a response."
+        # Codex couldn't produce a reply — record full error context to a
+        # per-incident diagnostic file and embed the incident_id in the
+        # user-facing reply so the lead can run
+        # `claude-anyteam diagnose --incident <id>` to recover details
+        # without us leaking raw error strings into chat.
+        from . import diagnostics  # local import keeps loop.py import graph thin
+        error_class = diagnostics.classify_failure(result)
+        incident_id = diagnostics.record_incident(
+            team=s.team_name,
+            agent=s.agent_name,
+            backend="codex",
+            error_class=error_class,
+            summary=(result.error if result is not None and result.error else "no reply produced"),
+            sender=sender,
+            payload={
+                "exit_code": (result.exit_code if result is not None else None),
+                "tool_call_events": (getattr(result, "tool_call_events", 0) if result is not None else 0),
+                "error": (result.error if result is not None else None),
+            },
+        )
+        reply = diagnostics.fallback_message(
+            backend="codex",
+            incident_id=incident_id,
+            error_class=error_class,
         )
 
     try:
@@ -812,6 +847,7 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
         mid_turn_hook=_mid_turn_hook,
         model=s.model,
         effort=s.effort,
+        overall_timeout_s=s.turn_timeout_s,
         resume_thread_id=state.app_server_last_thread_id,
     )
 
@@ -861,4 +897,3 @@ def _mark_blocked(state: LoopState, task, reason: str) -> None:
         )
     except Exception as e:
         logger.warn("task.block_msg_fail", task_id=task.id, error=str(e))
-

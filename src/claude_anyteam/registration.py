@@ -118,9 +118,24 @@ def register(settings: Settings, metadata: BackendMetadata | None = None) -> dic
             raise RegistrationError(f"team config at {cfg_path} has no `members` array")
 
         added = False
+        upgraded_fields: list[str] = []
         for existing in members:
             if isinstance(existing, dict) and existing.get("name") == settings.agent_name:
                 entry = existing
+                # Self-heal: if the host's Agent-tool spawn left stale
+                # agentType/backendType on our row (e.g. agentType="general-purpose"
+                # before team-patch ran), upgrade in place. Without this, the
+                # wrapper's send_message MCP allowlist stays wrong for the rest
+                # of the session even though the on-disk config has been corrected.
+                if existing.get("agentType") != metadata.agent_type:
+                    existing["agentType"] = metadata.agent_type
+                    upgraded_fields.append("agentType")
+                if existing.get("backendType") != metadata.backend_type:
+                    existing["backendType"] = metadata.backend_type
+                    upgraded_fields.append("backendType")
+                if upgraded_fields:
+                    serialized = json.dumps(cfg, indent=2) + "\n"
+                    _atomic_write_text(cfg_path, serialized)
                 break
         else:
             entry = {
@@ -155,6 +170,13 @@ def register(settings: Settings, metadata: BackendMetadata | None = None) -> dic
             team=settings.team_name,
             name=settings.agent_name,
             agent_id=entry["agentId"],
+        )
+    elif upgraded_fields:
+        logger.info(
+            "registration.upgraded",
+            team=settings.team_name,
+            name=settings.agent_name,
+            fields=upgraded_fields,
         )
     else:
         logger.info(

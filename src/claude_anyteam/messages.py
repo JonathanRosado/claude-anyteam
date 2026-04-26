@@ -1,7 +1,7 @@
 """Protocol message payloads carried inside InboxMessage.text as JSON.
 
-cs50victor defines several of these in `claude_teams.models` — we reuse those
-where the schema matches and define the remaining ones (idle_notification
+`claude_teams.models` defines several of these payloads; we reuse those where
+the schema matches and define the remaining ones (idle_notification
 *outbound*, plan_approval_request, plan_approval_response, task_complete)
 here.
 
@@ -40,8 +40,8 @@ class ShutdownRequestIn(_Base):
     """Inbound shutdown request.
 
     The wire format is ambiguous — SendMessage legacy docs reference
-    `request_id` (snake), cs50victor emits `requestId` (camel). We accept
-    either and echo back whichever key the request used.
+    `request_id` (snake), while the team protocol emits `requestId` (camel).
+    We accept either and echo back whichever key the request used.
     """
 
     type: Literal["shutdown_request"] = "shutdown_request"

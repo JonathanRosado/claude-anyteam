@@ -1,9 +1,9 @@
-"""Thin wrapper around cs50victor's protocol I/O functions.
+"""Helpers around the team-protocol I/O surface.
 
-Insulates the rest of the adapter from cs50victor's module layout so that
-future upstream refactors are contained to this file. Also provides helpers
-that combine cs50victor primitives with adapter-owned message types
-(idle_notification, task_complete, plan_approval_request outbound).
+Inbox reads, task list reads, and atomic message sends are centralised here
+so the rest of the adapter doesn't reach into `claude_teams` directly. The
+module also provides helpers for adapter-owned message types
+(`idle_notification`, `task_complete`, `plan_approval_request` outbound).
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ def read_inbox(team: str, name: str, *, mark_as_read: bool = True) -> list[_Inbo
     caller should retry on the next poll.
 
     NOTE: For the control loop, prefer `read_own_inbox(team, self_name)` —
-    cs50victor's `read_inbox(..., mark_as_read=True)` rewrites the entire
-    inbox file using its own serializer, which would clobber another
+    the team-protocol `read_inbox(..., mark_as_read=True)` path rewrites the
+    entire inbox file using its own serializer, which would clobber another
     teammate's inbox if called by mistake. `read_own_inbox` asserts the
     invariant that we only mutate our own file.
     """
@@ -60,9 +60,9 @@ def read_own_inbox(team: str, self_name: str, agent_name: str) -> list[_InboxMes
     """Read and mark-as-read the adapter's own inbox.
 
     Raises AssertionError if `agent_name` is not our own name. This guards
-    against catastrophic data loss: cs50victor's `read_inbox(..., mark_as_read=True)`
-    rewrites the target inbox file with its own Pydantic serializer, which
-    would strip harness-written fields from another teammate's file.
+    against catastrophic data loss: the mark-as-read path rewrites the target
+    inbox file with the protocol Pydantic serializer, which would strip
+    harness-written fields from another teammate's file.
 
     Use this from the control loop; use `read_inbox(..., mark_as_read=False)`
     for read-only probes of anyone's inbox.
@@ -101,8 +101,8 @@ def claim_task(team: str, task_id: str, owner: str, active_form: str) -> _TaskFi
     from claude_teams import tasks as _cs_tasks
     from claude_teams._filelock import file_lock as _file_lock
 
-    # Resolve via cs50victor's module-level TASKS_DIR so tests that monkeypatch
-    # it to a tmp_path resolve to the same location our inline write targets.
+    # Resolve via `claude_teams.tasks.TASKS_DIR` so tests that monkeypatch it
+    # to a tmp_path resolve to the same location our inline write targets.
     tasks_dir = _cs_tasks.TASKS_DIR / team
     lock_path = tasks_dir / ".lock"
     task_path = tasks_dir / f"{task_id}.json"
@@ -120,7 +120,7 @@ def claim_task(team: str, task_id: str, owner: str, active_form: str) -> _TaskFi
                 "cannot claim"
             )
         # Inline write: mutate the TaskFile and serialize back to disk with
-        # the same `model_dump` shape cs50victor's `update_task` uses.
+        # the same `model_dump` shape the protocol task writer uses.
         current.status = "in_progress"
         current.owner = owner
         current.active_form = active_form

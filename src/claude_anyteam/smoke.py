@@ -1,7 +1,7 @@
 """M1 smoke test.
 
-Proves cs50victor's protocol I/O library works in-process, by reading the
-live `claude-anyteam` team config + task list and printing them.
+Proves the team-protocol I/O library works in-process by reading the live
+`claude-anyteam` team config + task list and printing them.
 
 Run via:  uv run python -m claude_anyteam.smoke
 """

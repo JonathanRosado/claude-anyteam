@@ -135,7 +135,10 @@ def test_handle_prose_falls_back_when_no_tool_and_no_text(tmp_path: Path, monkey
 
     loop._handle_prose(state, msg)
 
-    # Fallback sent because model didn't deliver via tool either.
+    # Fallback sent because model didn't deliver via tool either. Reply
+    # carries the incident_id and backend identity per diagnostics.fallback_message.
     assert len(send_prose_calls) == 1
     sent_args, _ = send_prose_calls[0]
-    assert "could not generate a reply" in sent_args[3]
+    assert "couldn't generate a reply" in sent_args[3]
+    assert "incident=inc-" in sent_args[3]
+    assert "adapter=kimi" in sent_args[3]

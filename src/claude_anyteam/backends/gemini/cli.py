@@ -20,7 +20,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", help="Gemini model slug passed as --model. Overrides CLAUDE_ANYTEAM_MODEL.")
     p.add_argument("--effort", choices=sorted(GEMINI_EFFORTS), help="Gemini thinking effort tier. Overrides CLAUDE_ANYTEAM_GEMINI_EFFORT.")
     p.add_argument("--gemini-home", help="Adapter-owned HOME root for Gemini config/session state")
-    p.add_argument("--backend", choices=("headless", "acp"), help="Gemini backend transport (default: headless)")
+    p.add_argument(
+        "--backend",
+        choices=("headless", "acp"),
+        help=(
+            "Gemini backend transport (default: acp). ACP enables mid-turn "
+            "steering and persistent sessions. Pass `--backend headless` if "
+            "your Gemini CLI is too old to support `--acp`/`--experimental-acp`."
+        ),
+    )
     p.add_argument("--trust", choices=sorted(GEMINI_TRUST_MODES), help="ACP trust policy for permission requests (default: trusted)")
     return p
 

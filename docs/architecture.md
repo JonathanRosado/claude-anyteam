@@ -61,11 +61,13 @@ Each layer has one job. The shim is a dispatcher. The adapter is the protocol im
 
 **Fresh-exec (Codex opt-out).** Each task spawns `codex exec` fresh. Second and subsequent tasks use `codex exec resume <session_id>` so context carries forward. No mid-task reactivity, but simpler operationally. Enable with `--no-app-server` or `CLAUDE_ANYTEAM_APP_SERVER=false`.
 
-### Gemini path (headless only; ACP not yet wired)
+### Gemini path (ACP by default since v0.6.0)
 
-Gemini teammates currently run through the Gemini CLI in headless mode: `gemini --prompt ... --output-format stream-json`. The adapter writes an isolated `.gemini/settings.json` that exposes the narrowed anyteam MCP wrapper, streams Gemini output back through the same team protocol, and records task completion in the leader inbox.
+Gemini teammates default to the ACP transport (`gemini --acp`/`--experimental-acp`), which gives the adapter mid-turn steering and persistent sessions and closes most of the productivity gap relative to Codex App Server. The legacy headless path (`gemini --prompt ... --output-format stream-json`) is still available via `--backend headless` or `CLAUDE_ANYTEAM_GEMINI_BACKEND=headless` for older Gemini CLIs that lack the `--acp` flag.
 
-Gemini does not yet have Codex App Server parity: ACP / mid-turn steering and `thread/fork`-style cross-task memory are documented limitations. See [Gemini adapter limitations](gemini-adapter-limitations.md).
+In either mode, the adapter writes an isolated `.gemini/settings.json` exposing the narrowed anyteam MCP wrapper, streams Gemini output back through the same team protocol, and records task completion in the leader inbox.
+
+Documented limitations live in [Gemini adapter limitations](gemini-adapter-limitations.md). The default flip from headless → ACP is tracked in `bug-triage/B4-gemini-productivity.md` (the structural amplifier finding).
 
 ### Kimi path (headless stream-json)
 

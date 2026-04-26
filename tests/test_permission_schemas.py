@@ -1,13 +1,12 @@
 from pathlib import Path
 import jsonschema
 
+from claude_anyteam.codex import SCHEMAS_DIR
 from claude_anyteam.schema_validation import load_schema
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_permission_request_schema_accepts_valid_and_rejects_malformed():
-    schema = load_schema(ROOT / "schemas" / "permission_request.schema.json")
+    schema = load_schema(SCHEMAS_DIR / "permission_request.schema.json")
     valid = {
         "type": "permission_request",
         "schema_version": 1,
@@ -42,7 +41,7 @@ def test_permission_request_schema_accepts_valid_and_rejects_malformed():
 
 
 def test_permission_response_schema_accepts_valid_and_rejects_malformed():
-    schema = load_schema(ROOT / "schemas" / "permission_response.schema.json")
+    schema = load_schema(SCHEMAS_DIR / "permission_response.schema.json")
     valid = {
         "type": "permission_response",
         "schema_version": 1,

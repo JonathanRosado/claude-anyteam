@@ -101,7 +101,7 @@ def _resolve_binary(default_name: str, *env_vars: str, fallback_name: str | None
     return shutil.which(default_name) or (shutil.which(fallback_name) if fallback_name else None)
 
 
-_AGENT_CONFIG_KEYS = ("model", "effort")
+_AGENT_CONFIG_KEYS = ("model", "effort", "turn_timeout_s")
 
 
 def _agent_config_path(team_name: str, agent_name: str) -> str:
@@ -152,8 +152,13 @@ def _load_agent_config(team_name: str | None, agent_name: str | None) -> dict[st
     out: dict[str, str] = {}
     for key in _AGENT_CONFIG_KEYS:
         value = raw.get(key)
+        # Accept both string and numeric (for turn_timeout_s); stringify
+        # uniformly so the downstream argv builder can pass it as a CLI flag
+        # without further branching.
         if isinstance(value, str) and value:
             out[key] = value
+        elif isinstance(value, (int, float)):
+            out[key] = str(value)
     return out
 
 
@@ -257,6 +262,8 @@ def _adapter_argv(binary: str, parsed: ParsedArgs, *, include_effort: bool) -> t
         argv.extend(["--model", agent_config["model"]])
     if include_effort and "effort" in agent_config:
         argv.extend(["--effort", agent_config["effort"]])
+    if "turn_timeout_s" in agent_config:
+        argv.extend(["--turn-timeout-s", agent_config["turn_timeout_s"]])
     return argv, agent_config
 
 def main(argv: list[str] | None = None) -> int:

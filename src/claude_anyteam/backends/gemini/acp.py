@@ -69,7 +69,20 @@ def feature_test(gemini_binary: str = "gemini") -> None:
         raise RuntimeError(f"could not probe Gemini CLI {gemini_binary!r}: {e}") from e
     help_text = (help_out.stdout or "") + (help_out.stderr or "")
     if "--acp" not in help_text and "--experimental-acp" not in help_text:
-        raise RuntimeError(f"Gemini CLI is missing required ACP flag --acp; found version {(version.stdout or version.stderr).strip()}")
+        # v0.6.0 made ACP the default transport. Older Gemini CLIs that lack
+        # the --acp/--experimental-acp flag need to opt back to headless
+        # explicitly until they upgrade. Error message points the user at
+        # both the upgrade path and the opt-out so they're not stuck.
+        version_str = (version.stdout or version.stderr).strip()
+        raise RuntimeError(
+            "Gemini CLI is missing required ACP flag --acp / --experimental-acp "
+            f"(version {version_str!r}). Either upgrade your Gemini CLI to a "
+            "version that supports ACP, or pass --backend headless (or set "
+            "CLAUDE_ANYTEAM_GEMINI_BACKEND=headless) to use the legacy "
+            "single-shot transport. ACP is the default since v0.6.0 because "
+            "headless single-shot is the structural amplifier for the B4 "
+            "productivity gap in mixed-backend teams."
+        )
     logger.info(
         "gemini_acp.version",
         binary=resolved,

@@ -48,8 +48,8 @@ def main() -> int:
 
     register(settings)
 
-    # 1. Read the team config through cs50victor in-process — confirms the
-    #    adapter sees its own entry reflected.
+    # 1. Read the team config through the protocol implementation in-process —
+    #    confirms the adapter sees its own entry reflected.
     cfg = protocol_io.read_config(TEAM)
     own = next((m for m in cfg.members if m.name == NAME), None)
     if own is None:
@@ -57,7 +57,7 @@ def main() -> int:
         return 1
     logger.info("m1.roundtrip.self_visible", agent_id=own.agent_id)
 
-    # 2. Send a probe message to team-lead via cs50victor's send_plain_message.
+    # 2. Send a probe message to team-lead via the protocol send helper.
     protocol_io.send_prose_to_lead(
         TEAM,
         NAME,

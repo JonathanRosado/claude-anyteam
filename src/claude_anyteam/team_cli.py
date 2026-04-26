@@ -28,10 +28,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 # Effort whitelist mirrors the per-backend allowlists (Codex/Gemini/Kimi all
 # accept the same five-tier scale). If a future backend diverges, this
@@ -40,7 +42,7 @@ EFFORT_CHOICES = ("minimal", "low", "medium", "high", "xhigh")
 
 # Whitelisted keys mirror spawn_shim._AGENT_CONFIG_KEYS; expanding this set
 # requires extending the shim too.
-AGENT_CONFIG_KEYS = ("model", "effort")
+AGENT_CONFIG_KEYS = ("model", "effort", "turn_timeout_s")
 
 # Default post-spawn agentType for codex-/gemini-/kimi- teammates. The Agent
 # tool spawns them with ``agentType="general-purpose"``, which fails wrapper
@@ -130,6 +132,17 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
         help="Reasoning/thinking effort to forward as --effort to the adapter",
     )
     p.add_argument(
+        "--turn-timeout-s",
+        type=float,
+        help=(
+            "Wall-clock cap (seconds) on a single Codex App Server turn. "
+            "Range [60, 3600], default 900. Forwarded to the adapter as "
+            "--turn-timeout-s. Useful for teammates that run long pytest "
+            "or build invocations; tighten for short-loop executor roles. "
+            "Codex-only today; v0.7.0 will unify across backends."
+        ),
+    )
+    p.add_argument(
         "--remove",
         action="store_true",
         help="Delete the per-teammate config file instead of writing one",
@@ -162,9 +175,15 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
             err.write(f"failed to remove {path}: {exc}\n")
             return 1
 
-    if args.model is None and args.effort is None:
+    if args.model is None and args.effort is None and args.turn_timeout_s is None:
         err.write(
-            "error: at least one of --model/--effort must be provided (or use --remove to delete)\n"
+            "error: at least one of --model/--effort/--turn-timeout-s must be provided (or use --remove to delete)\n"
+        )
+        return 2
+
+    if args.turn_timeout_s is not None and not (60.0 <= args.turn_timeout_s <= 3600.0):
+        err.write(
+            f"error: --turn-timeout-s must be in [60, 3600] seconds, got {args.turn_timeout_s}\n"
         )
         return 2
 
@@ -175,6 +194,8 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         config["model"] = args.model
     if args.effort is not None:
         config["effort"] = args.effort
+    if args.turn_timeout_s is not None:
+        config["turn_timeout_s"] = args.turn_timeout_s
 
     _write_atomic_json(path, config)
 
@@ -308,6 +329,25 @@ class _RosterRow:
     model: str
     backend_type: str
     color: str
+    # `is_active` is None when the field is absent in config.json (routed
+    # teammates today; the host doesn't write it for them). Distinguishing
+    # absent from explicit-false matters for the roster's stale marker —
+    # we only flag rows that the host has actively reported as inactive,
+    # not rows where we simply have no signal.
+    is_active: bool | None
+    # Effective per-teammate spawn-time overrides resolved from
+    # ~/.claude/teams/<team>/agents/<name>.json. None when no config file
+    # exists for this teammate (i.e. defaults apply). Present in JSON
+    # output and the human roster's --effective view so the lead can
+    # confirm a `team-agent` write actually took effect.
+    adapter_model: str | None = None
+    adapter_effort: str | None = None
+    adapter_turn_timeout_s: float | None = None
+    config_source: str | None = None
+    # tmux pane id from config.json. Used by the dead-pane check to flag
+    # members whose backing tmux pane is gone (host crash, tmux kill-server,
+    # process panic). Empty for non-tmux backends like the team-lead row.
+    tmux_pane_id: str = ""
 
 
 def _build_team_roster_parser() -> argparse.ArgumentParser:
@@ -315,7 +355,9 @@ def _build_team_roster_parser() -> argparse.ArgumentParser:
         prog="claude-anyteam team-roster",
         description=(
             "Print a one-line-per-member summary of the team's config.json. "
-            "Use this instead of reading and parsing the file by hand."
+            "Use this instead of reading and parsing the file by hand. "
+            "By default the resolved spawn-time adapter config is shown "
+            "alongside the host model — use --no-resolve for legacy output."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -325,10 +367,19 @@ def _build_team_roster_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit a JSON array instead of the human-readable table",
     )
+    p.add_argument(
+        "--no-resolve",
+        action="store_true",
+        help=(
+            "Skip resolving per-teammate adapter overrides "
+            "(~/.claude/teams/<team>/agents/<name>.json). Faster + matches "
+            "pre-v0.6.0 output for scripted callers."
+        ),
+    )
     return p
 
 
-def _roster_rows(cfg: dict[str, object]) -> list[_RosterRow]:
+def _roster_rows(cfg: dict[str, object], *, team: str | None = None, resolve: bool = True) -> list[_RosterRow]:
     members = cfg.get("members")
     if not isinstance(members, list):
         return []
@@ -336,16 +387,78 @@ def _roster_rows(cfg: dict[str, object]) -> list[_RosterRow]:
     for m in members:
         if not isinstance(m, dict):
             continue
+        name = str(m.get("name", "?"))
+        adapter_model: str | None = None
+        adapter_effort: str | None = None
+        adapter_turn_timeout_s: float | None = None
+        config_source: str | None = None
+        if resolve and team is not None:
+            agent_cfg, source = _read_agent_config(team, name)
+            adapter_model = agent_cfg.get("model")
+            adapter_effort = agent_cfg.get("effort")
+            tt = agent_cfg.get("turn_timeout_s")
+            if tt is not None:
+                try:
+                    adapter_turn_timeout_s = float(tt)
+                except (TypeError, ValueError):
+                    adapter_turn_timeout_s = None
+            config_source = source
         rows.append(
             _RosterRow(
-                name=str(m.get("name", "?")),
+                name=name,
                 agent_type=str(m.get("agentType", "?")),
                 model=str(m.get("model", "?")),
                 backend_type=str(m.get("backendType", "?")),
                 color=str(m.get("color", "?")),
+                is_active=(bool(m["isActive"]) if "isActive" in m else None),
+                adapter_model=adapter_model,
+                adapter_effort=adapter_effort,
+                adapter_turn_timeout_s=adapter_turn_timeout_s,
+                config_source=config_source,
+                tmux_pane_id=str(m.get("tmuxPaneId", "")),
             )
         )
     return rows
+
+
+def _is_dead_tmux_pane(row: _RosterRow, live_pane_ids: frozenset[str] | None) -> bool:
+    """True when the row's tmux pane is verifiably gone.
+
+    Returns False when:
+    - The row isn't tmux-backed (no tmuxPaneId, or it's the
+      `in-process` sentinel routed teammates use).
+    - tmux liveness is unknown (`live_pane_ids is None`) — we don't
+      claim panes are dead when we can't actually check.
+
+    Returns True only when tmux IS running, but the row's pane id
+    isn't in its live-pane set. That's the unambiguous "dead" case.
+    """
+    if live_pane_ids is None:
+        return False
+    pane = row.tmux_pane_id
+    if not pane or pane == "in-process":
+        return False
+    return pane not in live_pane_ids
+
+
+def _read_agent_config(team: str, agent: str) -> tuple[dict[str, Any], str | None]:
+    """Read the per-teammate adapter override file. Returns (config, source).
+
+    `source` is the absolute path string when the file exists, or None when
+    no per-teammate config was found (defaults apply). The return shape
+    matches what spawn_shim._load_agent_config consumes — keep the two
+    in sync if you extend the schema.
+    """
+    path = agent_config_path(team, agent)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, json.JSONDecodeError):
+        return {}, None
+    if not isinstance(raw, dict):
+        return {}, str(path)
+    return raw, str(path)
 
 
 def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
@@ -360,10 +473,17 @@ def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stder
         return 1
 
     cfg = _existing_dict(path)
-    rows = _roster_rows(cfg)
+    rows = _roster_rows(cfg, team=args.team, resolve=not args.no_resolve)
+
+    live_pane_ids = _live_tmux_pane_ids()
 
     if args.json:
-        out.write(json.dumps([row.__dict__ for row in rows], indent=2, sort_keys=True) + "\n")
+        records = []
+        for row in rows:
+            r = dict(row.__dict__)
+            r["is_dead_pane"] = _is_dead_tmux_pane(row, live_pane_ids)
+            records.append(r)
+        out.write(json.dumps(records, indent=2, sort_keys=True) + "\n")
         return 0
 
     if not rows:
@@ -373,12 +493,94 @@ def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stder
     name_w = max(len(r.name) for r in rows)
     type_w = max(len(r.agent_type) for r in rows)
     model_w = max(len(r.model) for r in rows)
+    # B5 ghost detection: when re-spawning by the same name, the host appends
+    # `-2`/`-3` to disambiguate, leaving the prior entry in the roster. Flag
+    # a row as a likely ghost when there's another row with a higher numeric
+    # suffix in the same name family (e.g. `codex-research` is a ghost when
+    # `codex-research-2` also exists). isActive is unreliable across
+    # backends — config.json is set at spawn time and not updated on the
+    # fly — so we use the structural duplicate-name signal instead.
+    families: dict[str, int] = {}
     for r in rows:
+        base, n = _split_respawn_suffix(r.name)
+        families[base] = max(families.get(base, n), n)
+
+    for r in rows:
+        base, n = _split_respawn_suffix(r.name)
+        is_ghost = families.get(base, n) > n
+        is_dead_pane = _is_dead_tmux_pane(r, live_pane_ids)
+        # Both markers compose: a row can be a re-spawn ghost AND have a
+        # dead pane. Show whichever is more actionable: dead-pane is
+        # stronger evidence (verifiable now), ghost is heuristic.
+        marker = "⚠ " if (is_ghost or is_dead_pane) else "  "
+        statuses = []
+        if is_dead_pane:
+            statuses.append("dead-pane")
+        if is_ghost:
+            statuses.append("ghost")
+        suffix = ("  status=" + ",".join(statuses)) if statuses else ""
+        # Append the resolved adapter overrides when present, so the lead
+        # can confirm a team-agent write actually took effect. Silent when
+        # no per-teammate config exists — defaults apply, no noise.
+        adapter_suffix = ""
+        if r.adapter_model or r.adapter_effort or r.adapter_turn_timeout_s is not None:
+            parts = []
+            if r.adapter_model:
+                parts.append(f"adapter_model={r.adapter_model}")
+            if r.adapter_effort:
+                parts.append(f"adapter_effort={r.adapter_effort}")
+            if r.adapter_turn_timeout_s is not None:
+                parts.append(f"adapter_turn_timeout_s={r.adapter_turn_timeout_s}")
+            adapter_suffix = "  " + " ".join(parts)
         out.write(
-            f"  {r.name:<{name_w}}  type={r.agent_type:<{type_w}}  model={r.model:<{model_w}}  "
-            f"backend={r.backend_type}  color={r.color}\n"
+            f"{marker}{r.name:<{name_w}}  type={r.agent_type:<{type_w}}  model={r.model:<{model_w}}  "
+            f"backend={r.backend_type}  color={r.color}{suffix}{adapter_suffix}\n"
         )
     return 0
+
+
+def _live_tmux_pane_ids() -> frozenset[str] | None:
+    """Return the set of currently live tmux pane ids (e.g. {"%0", "%1", …}),
+    or `None` if tmux is unavailable / no server is running.
+
+    Distinguishing "no tmux" from "empty tmux" matters: if tmux isn't
+    running at all (`error connecting to /tmp/tmux-1000/default`), we
+    can't make a liveness assertion and shouldn't falsely flag every
+    teammate as dead. The caller should treat `None` as "unknown".
+
+    Best-effort: any non-zero exit, missing binary, or parse failure
+    returns `None`.
+    """
+    if not shutil.which("tmux"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    ids = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return frozenset(ids)
+
+
+def _split_respawn_suffix(name: str) -> tuple[str, int]:
+    """Split a re-spawned-team name into (family_base, generation_index).
+
+    `codex-research` → (`codex-research`, 1)
+    `codex-research-2` → (`codex-research`, 2)
+    `codex-research-12` → (`codex-research`, 12)
+
+    Used for B5 ghost detection in `team-roster`.
+    """
+    parts = name.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit() and parts[0]:
+        return parts[0], int(parts[1])
+    return name, 1
 
 
 # --------------------------------------------------------------------------- #
@@ -386,10 +588,160 @@ def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stder
 # --------------------------------------------------------------------------- #
 
 
+def _build_team_config_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="claude-anyteam team-config",
+        description=(
+            "Print the resolved spawn-time config for one teammate: host model "
+            "from config.json plus per-teammate adapter overrides from "
+            "agents/<name>.json. Use this when investigating why a "
+            "teammate is running at the wrong model/effort/timeout — it "
+            "shows exactly what the spawn shim will pass to the routed CLI."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("agent", type=_validate_agent_name, help="Agent name")
+    p.add_argument("--team", type=_validate_team_name, required=True, help="Team name")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of human-readable summary.",
+    )
+    return p
+
+
+def _team_config_command(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    args = _build_team_config_parser().parse_args(argv)
+
+    cfg_path = team_config_path(args.team)
+    if not cfg_path.exists():
+        err.write(f"error: no team config at {cfg_path}\n")
+        return 1
+    cfg = _existing_dict(cfg_path)
+
+    members = cfg.get("members") if isinstance(cfg, dict) else None
+    member: dict[str, Any] | None = None
+    if isinstance(members, list):
+        for m in members:
+            if isinstance(m, dict) and m.get("name") == args.agent:
+                member = m
+                break
+    if member is None:
+        err.write(f"error: agent {args.agent!r} not found in team {args.team!r}\n")
+        return 1
+
+    agent_cfg, source = _read_agent_config(args.team, args.agent)
+    resolved = {
+        "team": args.team,
+        "agent": args.agent,
+        "host_agent_type": member.get("agentType"),
+        "host_model": member.get("model"),
+        "host_backend_type": member.get("backendType"),
+        "adapter_model": agent_cfg.get("model"),
+        "adapter_effort": agent_cfg.get("effort"),
+        "adapter_turn_timeout_s": agent_cfg.get("turn_timeout_s"),
+        "config_source": source,
+    }
+
+    if args.json:
+        out.write(json.dumps(resolved, indent=2, sort_keys=True) + "\n")
+        return 0
+
+    out.write(f"team   : {resolved['team']}\n")
+    out.write(f"agent  : {resolved['agent']}\n")
+    out.write(f"host   : agent_type={resolved['host_agent_type']!r} model={resolved['host_model']!r} backend_type={resolved['host_backend_type']!r}\n")
+    if source is None:
+        out.write("adapter: <no per-teammate config; defaults apply>\n")
+    else:
+        out.write(f"adapter: model={resolved['adapter_model']!r} effort={resolved['adapter_effort']!r} turn_timeout_s={resolved['adapter_turn_timeout_s']!r}\n")
+        out.write(f"source : {source}\n")
+    return 0
+
+
+def _build_team_prune_dead_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="claude-anyteam team-prune-dead",
+        description=(
+            "Remove team members whose backing tmux pane is gone (host crash, "
+            "tmux kill-server, process panic). Operates only when tmux is "
+            "running — refuses to prune blindly when liveness can't be "
+            "checked. The lead is responsible for confirming with --yes; "
+            "without it, the command prints what would be pruned and exits."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--team", type=_validate_team_name, required=True, help="Team name")
+    p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually rewrite config.json (omit for dry-run preview).",
+    )
+    return p
+
+
+def _team_prune_dead_command(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    args = _build_team_prune_dead_parser().parse_args(argv)
+
+    cfg_path = team_config_path(args.team)
+    if not cfg_path.exists():
+        err.write(f"error: no team config at {cfg_path}\n")
+        return 1
+    cfg = _existing_dict(cfg_path)
+
+    live_pane_ids = _live_tmux_pane_ids()
+    if live_pane_ids is None:
+        err.write(
+            "error: cannot reach tmux to verify pane liveness; refusing to "
+            "prune. (Is tmux installed and running? If you intentionally "
+            "killed the server and want to prune all tmux-backed members, "
+            "edit ~/.claude/teams/<team>/config.json by hand.)\n"
+        )
+        return 1
+
+    members = cfg.get("members") if isinstance(cfg, dict) else None
+    if not isinstance(members, list):
+        err.write(f"error: team config has no `members` array\n")
+        return 1
+
+    kept: list[Any] = []
+    pruned: list[str] = []
+    for m in members:
+        if not isinstance(m, dict):
+            kept.append(m)
+            continue
+        pane = str(m.get("tmuxPaneId", ""))
+        if pane and pane != "in-process" and pane not in live_pane_ids:
+            pruned.append(str(m.get("name", "?")))
+            continue
+        kept.append(m)
+
+    if not pruned:
+        out.write(f"no dead members in team {args.team!r}\n")
+        return 0
+
+    if not args.yes:
+        out.write(f"would prune {len(pruned)} dead member(s) from team {args.team!r}:\n")
+        for name in pruned:
+            out.write(f"  - {name}\n")
+        out.write("re-run with --yes to apply.\n")
+        return 0
+
+    cfg["members"] = kept
+    cfg_path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    out.write(f"pruned {len(pruned)} dead member(s) from team {args.team!r}: {', '.join(pruned)}\n")
+    return 0
+
+
 _SUBCOMMANDS = {
     "team-agent": _team_agent_command,
     "team-patch": _team_patch_command,
     "team-roster": _team_roster_command,
+    "team-config": _team_config_command,
+    "team-prune-dead": _team_prune_dead_command,
 }
 
 

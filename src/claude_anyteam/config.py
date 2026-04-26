@@ -25,11 +25,13 @@ from .env import (
     LEGACY_POLL_ENV,
     LEGACY_PLAN_MODE_ENV,
     LEGACY_TEAM_ENV,
+    LEGACY_TURN_TIMEOUT_ENV,
     MODEL_ENV,
     NAME_ENV,
     POLL_ENV,
     PLAN_MODE_ENV,
     TEAM_ENV,
+    TURN_TIMEOUT_ENV,
     env_first,
 )
 
@@ -63,6 +65,14 @@ class Settings:
     # model/effort without any global config surgery.
     model: str | None = None
     effort: str | None = None
+    # Per-teammate Codex App Server turn timeout in seconds. Bounds the
+    # wall-clock duration of a single turn (`app_server_invoke` polling
+    # loop). Default 900s preserves pre-v0.6.0 behavior. Configurable via
+    # `team-agent --turn-timeout-s`, the `CLAUDE_ANYTEAM_TURN_TIMEOUT_S` env,
+    # or the per-teammate `agents/<name>.json` shim config so coding teammates
+    # running long pytest/build invocations can have a higher cap without
+    # touching team-wide config. Range [60, 3600] enforced at parse time.
+    turn_timeout_s: float = 900.0
 
 
 def from_env(overrides: dict[str, object] | None = None) -> Settings:
@@ -123,6 +133,20 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
             f"effort must be one of low|medium|high|xhigh, got {effort!r}"
         )
 
+    turn_timeout_raw = _pick(
+        overrides,
+        "turn_timeout_s",
+        env_first(os.environ, TURN_TIMEOUT_ENV, LEGACY_TURN_TIMEOUT_ENV, default="900"),
+    )
+    try:
+        turn_timeout_s = float(turn_timeout_raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"turn_timeout_s must be numeric, got {turn_timeout_raw!r}") from e
+    if not (60.0 <= turn_timeout_s <= 3600.0):
+        raise ValueError(
+            f"turn_timeout_s must be in [60, 3600] seconds, got {turn_timeout_s}"
+        )
+
     return Settings(
         team_name=str(team_name),
         agent_name=str(agent_name),
@@ -134,6 +158,7 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
         app_server=app_server,
         model=model,
         effort=effort,
+        turn_timeout_s=turn_timeout_s,
     )
 
 

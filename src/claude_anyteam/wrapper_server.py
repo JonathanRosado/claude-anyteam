@@ -1,20 +1,20 @@
 """v7 narrowed MCP server exposing a safe tool subset to the Codex subprocess.
 
-**Why a wrapper, not cs50victor directly.** cs50victor exposes 13 tools
-including destructive lifecycle operations (`team_delete`,
-`force_kill_teammate`, `spawn_teammate`, `team_create`,
-`process_shutdown_approved`, `check_teammate`) that have no business
-being accessible from a running teammate's context. A hallucinated tool
-call to any of them would have outsized consequences.
+**Why a narrowed MCP surface.** The full team-control surface includes
+destructive lifecycle operations (`team_delete`, `force_kill_teammate`,
+`spawn_teammate`, `team_create`, `process_shutdown_approved`,
+`check_teammate`) that have no business being accessible from a running
+teammate's context. A hallucinated tool call to any of them would have
+outsized consequences.
 
 Rather than rely on prompt discipline, this wrapper exposes **only the
 small tool set a Codex teammate actually needs mid-task**, with descriptions
 tuned for the team-protocol context and team/agent identity pre-filled
 from startup env so Codex can't accidentally send as the wrong teammate.
 
-The wrapper uses cs50victor as a library internally — all file I/O,
-locking, and schema handling are unchanged. This keeps the v6
-invariants intact while narrowing the surface Codex sees.
+The wrapper delegates internally to the `claude_teams` team-protocol
+implementation for file I/O, locking, and schema handling. This keeps
+the v6 invariants intact while narrowing the surface Codex sees.
 
 Launched as a stdio subprocess by Codex via `-c mcp_servers.*.command=...`
 overrides on `codex exec`. Lifetime matches the Codex invocation.
@@ -67,10 +67,10 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "mcp_anyteam_web_fetch",
 )
 
-# Tool set cs50victor exposes that we deliberately do NOT surface. Checked
-# by a test so removals are deliberate. If cs50victor grows a new tool,
-# the test fails and forces a decision about whether it belongs in
-# EXPOSED_TOOLS or BLOCKED_TOOLS.
+# Full team-control tools that we deliberately do NOT surface. Checked by a
+# test so removals are deliberate. If the protocol gains a new tool, the test
+# fails and forces a decision about whether it belongs in EXPOSED_TOOLS or
+# BLOCKED_TOOLS.
 BLOCKED_TOOLS: tuple[str, ...] = (
     "team_create",
     "team_delete",

@@ -20,6 +20,17 @@ Shipped/partial: multi-backend routing now supports Codex (`codex-*`), Gemini CL
 
 ## Coming next
 
+### v0.7.0 — backend-neutral progress watchdog and event envelope
+
+The v0.6.0 soft non-progress watchdog ships only for the Codex App Server path (`codex.py:app_server_invoke`). The trip condition uses App Server-specific signals (agentMessage byte deltas + tool_call_event count) that Gemini ACP and Kimi don't emit the same way. v0.7.0 generalizes this into a backend-neutral primitive grounded in the event-envelope design from `bug-triage/B9-visibility-parity-investigation.md` §6. Two concrete asks:
+
+- **Backend-neutral watchdog primitive.** Lift the soft watchdog out of `codex.py` into a `progress_watchdog` helper that consumes a normalized "observable progress" stream from any backend's polling loop. Each adapter (Codex App Server / Codex exec / Gemini ACP / Gemini headless / Kimi headless) emits per-backend progress events into the helper, which decides when to log/steer. This is a step toward the `teammate_activity` mailbox class P1 in B9 §6.
+- **Watchdog fires generate diagnostic incidents.** Today the soft watchdog logs and steers but does not call `diagnostics.record_incident`. That's deliberate (frequent-but-benign), but it means a lead querying `claude-anyteam diagnose` doesn't see the watchdog's history. Add a `non_progress_steer` error class with `severity="warn"` so leads can audit "where did this teammate stall this week?" without grepping stderr. Gate behind a config knob if the volume turns out to be noisy in practice.
+
+Both items land alongside the broader visibility-parity work (B9 §6 P1–P5: shared event envelope, append-only event log, `teammate.tool_started`/`tool_completed` mailbox class, structured failure prose). Any adapter added between v0.6.x and v0.7.0 should hook into the existing Codex-only path so the v0.7.0 lift-and-generalize is a uniform refactor rather than a per-backend retrofit.
+
+### Adapters planned on the same architecture
+
 These are the adapters planned on the same architecture. Each one is a Python adapter module + a line in the spawn shim's routing table. Gemini and Kimi have moved out of planned status and are shipping with documented limitations.
 
 | Adapter | Model(s) | Backend CLI | Status |
