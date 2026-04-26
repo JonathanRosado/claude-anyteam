@@ -359,8 +359,8 @@ def _parse_stdout(stdout: str) -> tuple[list[dict[str, Any]], str, int]:
                 for call in tool_calls:
                     if isinstance(call, dict):
                         name = _tool_call_name(call)
-                        if _validate_tool_call_arguments(call):
-                            tool_call_events += 1
+                        _validate_tool_call_arguments(call)
+                        tool_call_events += 1
                         logger.info("kimi.tool_call", tool=name)
             text = _content_text(ev.get("content"))
             if text:
