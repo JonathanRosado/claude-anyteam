@@ -35,7 +35,15 @@ class GeminiSettings:
     model: str | None = None
     effort: str | None = None
     gemini_home: Path | None = None
-    backend: Literal["headless", "acp"] = "headless"
+    # v0.6.0 default flip: ACP is now the default transport. Headless mode
+    # is single-shot per invocation and was the structural amplifier for the
+    # B4 productivity gap in the field test (Gemini agents emitted only idle
+    # pings until forced into action-first prompts). ACP gives the adapter
+    # mid-turn steering and persistent sessions, closing the gap to Codex
+    # App Server. See bug-triage/B4-gemini-productivity.md (hypothesis #3).
+    # Users who need the legacy headless transport can set --backend headless
+    # or CLAUDE_ANYTEAM_GEMINI_BACKEND=headless.
+    backend: Literal["headless", "acp"] = "acp"
     trust_mode: Literal["trusted", "default", "plan"] = "trusted"
 
 
@@ -65,7 +73,7 @@ def from_env(overrides: dict[str, object] | None = None) -> GeminiSettings:
             f"Gemini effort must be one of minimal|low|medium|high|xhigh, got {effort!r}"
         )
     home_raw = _pick(overrides, "gemini_home", os.environ.get(GEMINI_HOME_ENV))
-    backend_raw = str(_pick(overrides, "backend", os.environ.get(GEMINI_BACKEND_ENV, "headless")))
+    backend_raw = str(_pick(overrides, "backend", os.environ.get(GEMINI_BACKEND_ENV, "acp")))
     if backend_raw not in {"headless", "acp"}:
         raise ValueError(f"Gemini backend must be headless or acp, got {backend_raw!r}")
     trust_raw = str(_pick(overrides, "trust_mode", os.environ.get(GEMINI_TRUST_ENV, "trusted")))

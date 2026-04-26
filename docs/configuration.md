@@ -81,7 +81,7 @@ Every flag has an equivalent env var:
 | `CODEX_BINARY` | path to the `codex` binary (default: `codex` on PATH) |
 | `CLAUDE_ANYTEAM_GEMINI_BINARY` | path to the `gemini` CLI binary used by `gemini-anyteam` (default: `gemini` on PATH) |
 | `CLAUDE_ANYTEAM_GEMINI_HOME` | adapter-owned Gemini home for isolated config/session state |
-| `CLAUDE_ANYTEAM_GEMINI_BACKEND` | Gemini transport: `headless` (default) or `acp` |
+| `CLAUDE_ANYTEAM_GEMINI_BACKEND` | Gemini transport: `acp` (default in v0.6.0+) or `headless`. ACP gives mid-turn steering and persistent sessions; headless is the legacy single-shot path for older Gemini CLIs that lack `--acp`/`--experimental-acp`. |
 | `CLAUDE_ANYTEAM_GEMINI_EFFORT` | Gemini thinking effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 | `CLAUDE_ANYTEAM_GEMINI_TRUST` | ACP trust policy: `trusted` (default/backward compatible), `default`, or `plan`; non-trusted modes forward permission requests to team-lead via inbox and block only on `deny` decisions or timeout |
 | `CLAUDE_ANYTEAM_GEMINI_APPROVAL_TIMEOUT` | Seconds ACP non-trusted modes wait for a team-lead approval response before failing closed (default: `300`) |

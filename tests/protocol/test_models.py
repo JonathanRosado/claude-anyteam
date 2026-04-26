@@ -144,107 +144,6 @@ class TestTeammateMember:
         data = mate.model_dump(by_alias=True)
         assert data["backendType"] == "claude"
 
-    def test_serialization_round_trip_with_opencode_backend(self):
-        mate = TeammateMember(
-            agent_id="worker@t",
-            name="worker",
-            agent_type="gp",
-            model="anthropic/claude-sonnet-4-5-20250929",
-            prompt="do stuff",
-            color="green",
-            joined_at=100,
-            tmux_pane_id="%5",
-            cwd="/tmp",
-            backend_type="opencode",
-            is_active=True,
-        )
-        data = mate.model_dump(by_alias=True)
-        assert data["backendType"] == "opencode"
-        restored = TeammateMember.model_validate(data)
-        assert restored.backend_type == "opencode"
-        assert restored.is_active is True
-        assert restored.model == "anthropic/claude-sonnet-4-5-20250929"
-
-    def test_deserialization_with_opencode_backend_from_json(self):
-        raw = {
-            "agentId": "worker@t",
-            "name": "worker",
-            "agentType": "gp",
-            "model": "openai/gpt-5.2-codex",
-            "prompt": "do stuff",
-            "color": "green",
-            "joinedAt": 100,
-            "tmuxPaneId": "%5",
-            "cwd": "/tmp",
-            "backendType": "opencode",
-            "isActive": False,
-        }
-        mate = TeammateMember.model_validate(raw)
-        assert mate.backend_type == "opencode"
-        assert mate.model == "openai/gpt-5.2-codex"
-
-    def test_opencode_session_id_defaults_to_none(self):
-        mate = TeammateMember(
-            agent_id="w@t",
-            name="w",
-            agent_type="gp",
-            model="sonnet",
-            prompt="p",
-            color="blue",
-            joined_at=0,
-            tmux_pane_id="",
-            cwd="/tmp",
-        )
-        assert mate.opencode_session_id is None
-
-    def test_opencode_session_id_excluded_when_none(self):
-        mate = TeammateMember(
-            agent_id="w@t",
-            name="w",
-            agent_type="gp",
-            model="sonnet",
-            prompt="p",
-            color="blue",
-            joined_at=0,
-            tmux_pane_id="",
-            cwd="/tmp",
-        )
-        data = mate.model_dump(by_alias=True, exclude_none=True)
-        assert "opencodeSessionId" not in data
-
-    def test_opencode_session_id_included_when_set(self):
-        mate = TeammateMember(
-            agent_id="w@t",
-            name="w",
-            agent_type="gp",
-            model="sonnet",
-            prompt="p",
-            color="blue",
-            joined_at=0,
-            tmux_pane_id="",
-            cwd="/tmp",
-            opencode_session_id="ses_abc123",
-        )
-        data = mate.model_dump(by_alias=True, exclude_none=True)
-        assert data["opencodeSessionId"] == "ses_abc123"
-
-    def test_opencode_session_id_round_trip(self):
-        raw = {
-            "agentId": "w@t",
-            "name": "w",
-            "agentType": "gp",
-            "model": "sonnet",
-            "prompt": "p",
-            "color": "blue",
-            "joinedAt": 0,
-            "tmuxPaneId": "",
-            "cwd": "/tmp",
-            "opencodeSessionId": "ses_xyz789",
-        }
-        mate = TeammateMember.model_validate(raw)
-        assert mate.opencode_session_id == "ses_xyz789"
-
-
 class TestTeamConfig:
     def test_round_trip_with_lead_only(self):
         lead = LeadMember(
@@ -435,18 +334,6 @@ class TestStructuredMessages:
         )
         data = a.model_dump(by_alias=True, exclude_none=True)
         assert "sessionId" not in data
-
-    def test_shutdown_approved_session_id_included_when_set(self):
-        a = ShutdownApproved(
-            request_id="r",
-            from_="w",
-            timestamp="ts",
-            pane_id="%1",
-            backend_type="opencode",
-            session_id="ses_abc",
-        )
-        data = a.model_dump(by_alias=True, exclude_none=True)
-        assert data["sessionId"] == "ses_abc"
 
 
 class TestToolReturnModels:

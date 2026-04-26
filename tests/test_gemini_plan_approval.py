@@ -27,6 +27,12 @@ def _settings(plan_mode: bool) -> GeminiSettings:
         color="cyan",
         plan_mode_required=plan_mode,
         gemini_binary="gemini",
+        # These unit tests patch `loop_mod.invoke.run` (the headless path)
+        # to mock Gemini behavior, so pin backend=headless explicitly.
+        # The repo-wide default flipped to "acp" in v0.6.0; without this
+        # pin, the tests would route through the ACP path and the
+        # invoke-mocks would never be called.
+        backend="headless",
     )
 
 

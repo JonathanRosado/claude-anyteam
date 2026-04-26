@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-anyteam"
-version = "0.6.0"
+version = "0.6.1"
 description = "Bring Codex, Gemini, and Kimi CLI powered teammates into Claude Code with multi-backend routing."
 requires-python = ">=3.12"
 license = "MIT"
@@ -12,11 +12,11 @@ readme = "README.md"
 dependencies = [
     "pydantic>=2.10",
     # Used directly for the narrowed v7 wrapper MCP server in
-    # `claude_anyteam.wrapper_server` and pinned to match what the vendored
-    # `claude_teams` module expects.
+    # `claude_anyteam.wrapper_server` and pinned to match the team-protocol
+    # implementation's runtime expectations.
     "fastmcp==3.0.0b1",
-    # Used by the vendored `claude_teams` module for the file-based mailbox
-    # / config locking that the team protocol relies on.
+    # Used by `claude_teams` for the file-based mailbox / config locking
+    # that the team protocol relies on.
     "filelock==3.16",
     # v7.2 uses jsonschema to validate `--output-last-message` contents in
     # Python because `codex exec resume` on codex-cli 0.122.0 does not

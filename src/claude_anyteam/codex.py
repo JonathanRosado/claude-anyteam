@@ -44,7 +44,7 @@ from .env import (
     env_first,
 )
 
-SCHEMAS_DIR = Path(__file__).resolve().parent.parent.parent / "schemas"
+SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 TASK_COMPLETE_SCHEMA = SCHEMAS_DIR / "task-complete.schema.json"
 PLAN_SCHEMA = SCHEMAS_DIR / "plan.schema.json"
 
@@ -71,17 +71,20 @@ class CodexResult:
 # version and transport; we normalise by stripping underscores+dots and
 # lower-casing, so both forms hit the same substring.
 #
-# M5 lesson: type-substring matching alone can miss events whose type names
-# don't include "tool_call" / "mcp" / etc. (observed during M5: Codex actually
-# called wrapper tools but the adapter counted 0 tool-call events). The
-# classifier is complemented by matching any event whose payload references
-# one of our wrapper's advertised tool names, either at top level or nested
-# inside an `item.*` / `Item*` envelope.
+# Host-tool coverage: Codex App Server also emits item types for host-side
+# work — `commandExecution` (shell), `fileChange` (file writes), `webSearch`
+# — which are NOT MCP tool calls but ARE meaningful work. Counting them
+# closes the visibility gap where a turn writes files / runs shell yet
+# `tool_call_events: 0` (B6/B9 finding; see
+# `bug-triage/B9-visibility-parity-investigation.md` §1).
 _TOOL_CALL_TYPE_SUBSTRINGS = (
     "mcptoolcall",         # matches `mcp_tool_call` *and* `McpToolCall*`
     "toolcall",            # generic tool-call events
     "tooluse",             # anthropic-style `tool.use`
     "functioncall",        # openai-style `function_call`
+    "commandexecution",    # Codex App Server host shell
+    "filechange",          # Codex App Server host file writes
+    "websearch",           # Codex App Server web search
 )
 
 # Tool names our wrapper MCP server advertises. If any event payload
@@ -605,6 +608,7 @@ def app_server_invoke(
     settings_agent: str,
     codex_binary: str = "codex",
     overall_timeout_s: float = 900.0,
+    non_progress_warn_s: float = 300.0,
     steer_queue: "_SteerQueue | None" = None,
     mid_turn_hook: "Any | None" = None,
     resume_thread_id: str | None = None,
@@ -735,6 +739,20 @@ def app_server_invoke(
         # queued steers. Polling with a short timeout lets us interleave
         # steer injection with notification consumption.
         deadline = time.monotonic() + overall_timeout_s
+        # Soft non-progress watchdog (v0.6.0): if we see no observable
+        # output for `non_progress_warn_s`, log a warning + send a single
+        # `turn/steer` checkpoint prompt to the model. We do NOT kill the
+        # turn — the wall-clock cap (`overall_timeout_s`) is the only
+        # interrupt. Only warn once per turn so we don't spam the lead or
+        # the model. "Observable output" = an agentMessage delta or a
+        # tool_call_event (post-v0.5.1 substring fix this includes host
+        # commandExecution / fileChange events from Codex App Server).
+        # See bug-triage/B9-visibility-parity-investigation.md §5.
+        turn_started_at = time.monotonic()
+        last_progress_at = turn_started_at
+        last_tool_count = 0
+        last_message_len = 0
+        non_progress_warned = False
         done = False
         while not done and time.monotonic() < deadline:
             # 1. Deliver any pending steers. Non-blocking pop.
@@ -777,6 +795,43 @@ def app_server_invoke(
             try:
                 notif = client.notifications.get(timeout=0.5)
             except Exception:
+                # No notification this iteration — check the soft watchdog.
+                # Triggers at most once per turn; doesn't kill, just warns
+                # the lead and nudges the model.
+                if (
+                    not non_progress_warned
+                    and (time.monotonic() - last_progress_at) >= non_progress_warn_s
+                ):
+                    elapsed_s = time.monotonic() - turn_started_at
+                    logger.warn(
+                        "app_server.non_progress",
+                        turn_id=current_turn_id,
+                        elapsed_s=int(elapsed_s),
+                        non_progress_s=int(time.monotonic() - last_progress_at),
+                        tool_call_events=tool_call_events,
+                        last_message_len=len(last_message),
+                    )
+                    try:
+                        client.turn_steer(
+                            thread_id=thread_id,
+                            expected_turn_id=current_turn_id,
+                            text=(
+                                "Checkpoint: you have produced no observable "
+                                "output for several minutes. Summarize current "
+                                "state in a brief assistant message and end the "
+                                "turn now if you don't have a concrete next "
+                                "tool call. Hidden reasoning that doesn't reach "
+                                "a tool call or file edit is not durable across "
+                                "turn boundaries."
+                            ),
+                        )
+                    except AppServerError as e:
+                        logger.warn(
+                            "app_server.non_progress_steer_failed",
+                            turn_id=current_turn_id,
+                            error=str(e),
+                        )
+                    non_progress_warned = True
                 continue
             _record(notif)
             method = str(notif.get("method", ""))
@@ -789,6 +844,13 @@ def app_server_invoke(
                 text = str(item.get("text", ""))
                 if text:
                     last_message = text
+
+            # Watchdog progress signal: any tool_call_event delta or any
+            # agentMessage byte-length delta counts as observable progress.
+            if tool_call_events > last_tool_count or len(last_message) > last_message_len:
+                last_progress_at = time.monotonic()
+                last_tool_count = tool_call_events
+                last_message_len = len(last_message)
 
             if method == "turn/completed" or method == "TurnCompletedNotification":
                 # Mirror exec-path bookkeeping.

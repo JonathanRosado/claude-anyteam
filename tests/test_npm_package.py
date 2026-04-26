@@ -12,7 +12,7 @@ def test_npm_package_metadata_matches_installer_contract() -> None:
     package = json.loads((NPM_DIR / 'package.json').read_text(encoding='utf-8'))
 
     assert package['name'] == 'claude-anyteam'
-    assert package['version'] == '0.6.0'
+    assert package['version'] == '0.6.1'
     assert package['bin']['claude-anyteam-setup'] == 'bin/setup.js'
     assert package['bin']['claude-anyteam'] == 'bin/setup.js'
     assert package['scripts']['postinstall'] == 'node bin/setup.js --postinstall'
@@ -140,7 +140,7 @@ def test_pyproject_version_matches_npm_version() -> None:
         line for line in pyproject.splitlines()
         if line.startswith('version = ')
     )
-    assert version_line == 'version = "0.6.0"', version_line
+    assert version_line == 'version = "0.6.1"', version_line
 
     package = json.loads((NPM_DIR / 'package.json').read_text(encoding='utf-8'))
-    assert package['version'] == '0.6.0'
+    assert package['version'] == '0.6.1'

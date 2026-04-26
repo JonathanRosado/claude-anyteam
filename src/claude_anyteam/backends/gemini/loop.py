@@ -90,6 +90,23 @@ def run(settings: GeminiSettings) -> int:
         _main_loop(state)
     except Exception as e:
         logger.error("gemini.loop.crash", error=str(e))
+        # Persist a structured incident so the lead can find this via
+        # `claude-anyteam diagnose`. Particularly important for Gemini
+        # cold-start failures where the adapter exits before its first
+        # inbox poll — without this, the lead has no signal beyond a
+        # tmux-pane stderr they may not be reading. (See bug-triage
+        # report: B8 Gemini cold-start failure.)
+        try:
+            from claude_anyteam import diagnostics as _diag
+            _diag.record_incident(
+                team=settings.team_name,
+                agent=settings.agent_name,
+                backend="gemini",
+                error_class="adapter_crash",
+                summary=str(e),
+            )
+        except Exception:
+            pass
         exit_code = 1
     finally:
         if state.approved_shutdown:
@@ -256,14 +273,50 @@ def _handle_prose(state: GeminiLoopState, msg: Any) -> None:
     sender = getattr(msg, "from_", "unknown")
     prompt = prompts.prose_reply_prompt(sender=sender, body=msg.text, agent_name=s.agent_name, team_name=s.team_name)
     reply: str | None = None
+    result = None
     try:
         result = _backend_run(state, prompt, ephemeral=True)
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
     except Exception as e:
         logger.warn("gemini.prose.crash", sender=sender, error=str(e))
+
+    # If the model already delivered the reply via the send_message MCP tool,
+    # last_message is empty by design (the model did everything in tools and
+    # produced no trailing assistant text). Don't double-send a canned
+    # fallback on top of the real reply. Mirrors the Codex adapter fix in
+    # src/claude_anyteam/loop.py:_handle_prose (PR #12) — same bug shape.
+    if reply is None and result is not None and result.exit_code == 0 and getattr(result, "tool_call_events", 0) > 0:
+        logger.info("gemini.prose.delivered_via_tool", sender=sender, tool_calls=result.tool_call_events)
+        return
+
     if reply is None:
-        reply = "I received your message, but the Gemini adapter could not generate a reply."
+        # Capture full error context to a diagnostic file and embed the
+        # incident_id in the user-facing reply. Same pattern as the Codex
+        # path in src/claude_anyteam/loop.py — broadly applicable across
+        # backends so the lead can run
+        # `claude-anyteam diagnose --incident <id>` regardless of which
+        # routed teammate hit the problem.
+        from claude_anyteam import diagnostics
+        error_class = diagnostics.classify_failure(result)
+        incident_id = diagnostics.record_incident(
+            team=s.team_name,
+            agent=s.agent_name,
+            backend="gemini",
+            error_class=error_class,
+            summary=(getattr(result, "error", None) or "no reply produced"),
+            sender=sender,
+            payload={
+                "exit_code": (result.exit_code if result is not None else None),
+                "tool_call_events": (getattr(result, "tool_call_events", 0) if result is not None else 0),
+                "error": (getattr(result, "error", None) if result is not None else None),
+            },
+        )
+        reply = diagnostics.fallback_message(
+            backend="gemini",
+            incident_id=incident_id,
+            error_class=error_class,
+        )
     try:
         pio.send_prose(s.team_name, s.agent_name, sender, reply, summary="prose_reply")
     except Exception as e:

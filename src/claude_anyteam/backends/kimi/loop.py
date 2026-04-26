@@ -70,6 +70,21 @@ def run(settings: KimiSettings) -> int:
         _main_loop(state)
     except Exception as e:
         logger.error("kimi.loop.crash", error=str(e))
+        # Persist a structured incident so the lead can find this via
+        # `claude-anyteam diagnose`. Same crash-hygiene pattern as
+        # Codex/Gemini — adapter crashes that would otherwise only
+        # appear in tmux-pane stderr now leave a durable artifact.
+        try:
+            from claude_anyteam import diagnostics as _diag
+            _diag.record_incident(
+                team=settings.team_name,
+                agent=settings.agent_name,
+                backend="kimi",
+                error_class="adapter_crash",
+                summary=str(e),
+            )
+        except Exception:
+            pass
         exit_code = 1
     finally:
         if state.approved_shutdown:
@@ -246,11 +261,35 @@ def _handle_prose(state: KimiLoopState, msg: Any) -> None:
         logger.info("kimi.prose.delivered_via_tool", sender=sender, tool_calls=result.tool_call_events)
         return
     if reply is None:
-        reply = "I received your message, but the Kimi adapter could not generate a reply."
+        # See diagnostics module + Codex/Gemini loops — same pattern across
+        # all three backends so the lead can grep / diagnose without
+        # per-backend knowledge.
+        from claude_anyteam import diagnostics
+        error_class = diagnostics.classify_failure(result)
+        incident_id = diagnostics.record_incident(
+            team=s.team_name,
+            agent=s.agent_name,
+            backend="kimi",
+            error_class=error_class,
+            summary=(getattr(result, "error", None) or "no reply produced"),
+            sender=sender,
+            payload={
+                "exit_code": (result.exit_code if result is not None else None),
+                "tool_call_events": (getattr(result, "tool_call_events", 0) if result is not None else 0),
+                "error": (getattr(result, "error", None) if result is not None else None),
+            },
+        )
+        reply = diagnostics.fallback_message(
+            backend="kimi",
+            incident_id=incident_id,
+            error_class=error_class,
+        )
     try:
         pio.send_prose(s.team_name, s.agent_name, sender, reply, summary="prose_reply")
     except Exception as e:
         logger.warn("kimi.prose.reply_send_fail", sender=sender, error=str(e))
+
+
 
 
 def _handle_shutdown(state: KimiLoopState, payload: ShutdownRequestIn) -> None:

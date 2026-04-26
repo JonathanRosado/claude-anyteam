@@ -32,7 +32,7 @@ class TeammateMember(BaseModel):
 
     agent_id: str = Field(alias="agentId")
     name: str
-    agent_type: str = Field(alias="agentType")
+    agent_type: str = Field(alias="agentType", default="claude-anyteam")
     model: str
     prompt: str
     color: str
@@ -42,7 +42,6 @@ class TeammateMember(BaseModel):
     cwd: str
     subscriptions: list = Field(default_factory=list)
     backend_type: str = Field(alias="backendType", default="claude")
-    opencode_session_id: str | None = Field(alias="opencodeSessionId", default=None)
     is_active: bool = Field(alias="isActive", default=False)
 
 

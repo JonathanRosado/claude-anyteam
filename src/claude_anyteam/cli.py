@@ -73,9 +73,13 @@ def _build_run_parser() -> argparse.ArgumentParser:
             "Management commands:\n"
             "  claude-anyteam install      Persist the claude-anyteam shim in ~/.claude/settings.json\n"
             "  claude-anyteam uninstall    Remove the installed Codex/Gemini teammate shim settings\n"
-            "  claude-anyteam team-agent   Write per-teammate model/effort to ~/.claude/teams/<team>/agents/<agent>.json\n"
+            "  claude-anyteam team-agent   Write per-teammate model/effort/turn-timeout to ~/.claude/teams/<team>/agents/<agent>.json\n"
             "  claude-anyteam team-patch   Patch agentType post-spawn so wrapper MCP validation passes\n"
-            "  claude-anyteam team-roster  Print one-line-per-member team summary"
+            "  claude-anyteam team-roster  Print one-line-per-member team summary (flags ghosts and dead-pane members)\n"
+            "  claude-anyteam team-config  Print resolved spawn-time config for a teammate (host model + adapter overrides)\n"
+            "  claude-anyteam team-prune-dead  Remove members whose backing tmux pane is gone (use --yes to apply)\n"
+            "  claude-anyteam diagnose     Inspect adapter incident artifacts under ~/.claude/teams/<team>/diagnostics/\n"
+            "  claude-anyteam status       One-screen team snapshot — roster, adapter overrides, incidents, last activity"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -124,6 +128,20 @@ def _build_run_parser() -> argparse.ArgumentParser:
         help=(
             "Reasoning effort for Codex. Overrides CLAUDE_ANYTEAM_EFFORT; "
             "when unset, Codex's per-model default applies."
+        ),
+    )
+    p.add_argument(
+        "--turn-timeout-s",
+        type=float,
+        help=(
+            "Wall-clock cap (seconds) on a single Codex App Server turn. "
+            "Range [60, 3600], default 900. Overrides "
+            "CLAUDE_ANYTEAM_TURN_TIMEOUT_S. Raise this for teammates that "
+            "run long pytest/build invocations; tighten for short-loop "
+            "executor roles. Currently affects Codex App Server only — "
+            "Gemini and Kimi have their own subprocess-level timeouts; the "
+            "v0.7.0 backend-neutral watchdog work (see docs/roadmap.md) "
+            "will unify these."
         ),
     )
     return p
@@ -348,9 +366,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.state_path is not None:
                 kwargs["state_path"] = args.state_path
             return _uninstall_command(**kwargs)
-        if command in ("team-agent", "team-patch", "team-roster"):
+        if command in ("team-agent", "team-patch", "team-roster", "team-config", "team-prune-dead"):
             from . import team_cli
             return team_cli.main_dispatch(command, argv[1:])
+        if command == "diagnose":
+            from . import diagnose_cli
+            return diagnose_cli.main(argv[1:])
+        if command == "status":
+            from . import status_cli
+            return status_cli.main(argv[1:])
 
     args = _parse_args(argv)
 
@@ -378,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["model"] = args.model
     if args.effort:
         overrides["effort"] = args.effort
+    if args.turn_timeout_s is not None:
+        overrides["turn_timeout_s"] = args.turn_timeout_s
 
     try:
         settings = from_env(overrides=overrides)

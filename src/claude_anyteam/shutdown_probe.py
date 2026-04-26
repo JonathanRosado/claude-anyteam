@@ -1,7 +1,7 @@
 """M3 shutdown probe.
 
-Sends a well-formed `shutdown_request` to a running codex-alice adapter
-using cs50victor's `send_shutdown_request` helper. This mirrors what
+Sends a well-formed `shutdown_request` to a running codex-alice adapter using
+the team protocol's `send_shutdown_request` helper. This mirrors what
 team-lead's MCP server would do in production.
 
 Run via:

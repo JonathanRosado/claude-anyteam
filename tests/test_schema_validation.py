@@ -19,8 +19,8 @@ from claude_anyteam.schema_validation import (
 
 
 def _task_complete_schema() -> dict:
-    here = Path(__file__).resolve().parent.parent
-    return load_schema(here / "schemas" / "task-complete.schema.json")
+    from claude_anyteam.codex import TASK_COMPLETE_SCHEMA
+    return load_schema(TASK_COMPLETE_SCHEMA)
 
 
 def test_valid_output_parses_and_returns_dict():
