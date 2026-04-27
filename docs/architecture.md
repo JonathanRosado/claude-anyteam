@@ -6,11 +6,30 @@ claude-anyteam is now a multi-backend spawn-shim adapter. The same Claude Code t
 
 claude-anyteam is a protocol adapter, not an LLM wrapper. It lets external coding agents participate in Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams) protocol as first-class teammates without routing their reasoning through a Claude instance.
 
+## The core principle: the harness IS the teammate
+
+This is the architectural choice the rest of the design follows from, and it is also the moat. See [CLAUDE.md §1](../CLAUDE.md) for the full north-star statement.
+
+A `codex-*` teammate does not run an LLM that "acts like Codex." It IS the Codex CLI process — full tool surface, App Server `turn/steer` mid-task injection and `thread/fork` cross-task memory, OpenAI's prompt tuning for the specific model slug, Codex's own approval/sandbox/working-directory semantics. Same for `gemini-*` (ACP transport, mid-turn permission bridge, Google's prompt tuning), `kimi-*` (native skills / swarm primitives, large-context behavior, Moonshot's prompt tuning), and any future `glm-*` / `deepseek-*` / `qwen-*` adapter.
+
+What this means in practice:
+
+1. **Capabilities flow through, they do not flatten.** When Codex has a feature Gemini does not (or vice versa), the protocol surfaces and routes that feature; it does not strip it to a lowest common denominator. The five-tier `--effort` and `--model` pass-through are protocol-side normalizations; *everything else is harness-native*.
+2. **Peers learn each other's capabilities.** Capability declarations live in the team roster (registration); system prompts teach peers how to invoke unique features (for example, "ask `codex-*` teammates to use `thread/fork` for cross-task memory continuity"). The protocol carries the declarations; the prompts deliver the how-to.
+3. **The protocol is a coordinator, not a kernel.** It carries identity, lifecycle, mailbox, task state, and capability declarations. It does *not* own the agentic loop, the tool definitions, or the model's prompt tuning. Those belong to each harness.
+
+This implies two distinct protocol layers — see [CLAUDE.md §1 "The two layers"](../CLAUDE.md) for the canonical statement:
+
+- **Transport** is the file-based Agent Teams contract everyone speaks (mailbox, tasks, lifecycle, locks). Universal; table stakes.
+- **Capability** is per-harness: identity declaration, typed capability inventory (`turn_steer`, `thread_fork`, `permission_bridge`, `live_tool_events`, `large_context`, `native_swarm`, …), invocation schemas, and semantic guidance (when to use, when not to, failure modes). Lightweight flags live in `config.json` for roster discovery; the rich manifest is exposed via the wrapper MCP and loaded into peer context on demand — same precedent that already works for MCP tool descriptions, extended one level up.
+
+The router-style alternative (proxy `ANTHROPIC_BASE_URL`, route through a single session loop, expose multiple models from one harness) loses every harness-specific feature: no Codex App Server, no Gemini ACP permission bridge, no Kimi swarm. It also has no capability layer at all — every teammate gets the host's tool surface, period. To match the claude-anyteam differentiator a router would have to throw out its session loop and rebuild around external process orchestration; at that point it is no longer a router.
+
 ## The core insight
 
 Claude Code's Agent Teams feature is file-based. Team state lives in `~/.claude/teams/{team}/config.json` and inbox messages in `~/.claude/teams/{team}/inboxes/{name}.json`. The team protocol is an on-disk contract — mailbox polling, atomic task claims, idle notifications, shutdown requests. Any process that speaks this contract can be a teammate.
 
-claude-anyteam speaks the contract directly. It reads your inbox, claims tasks, delegates them to an external model, and writes results back. No Claude LLM sits between you and the external model.
+claude-anyteam speaks the contract directly. It reads your inbox, claims tasks, delegates them to an external model, and writes results back. No Claude LLM sits between you and the external model — and crucially, no claude-anyteam-owned reasoning sits between the lead and Codex / Gemini / Kimi either. The CLI is the teammate.
 
 ## The two-piece design
 

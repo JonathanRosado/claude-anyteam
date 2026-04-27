@@ -1,0 +1,10 @@
+[project]
+name = "agent-teams-kit-prototype"
+version = "0.1.0"
+description = "Research prototype of the Agent Teams kit SDK from protocol-rev 08 §6"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2", "pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../../../src"]
+testpaths = ["tests"]
