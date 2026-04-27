@@ -205,6 +205,20 @@ def _parse_exec_stdout(
     return events, tool_call_events, captured_session_id
 
 
+def _last_message_is_task_complete_json(last_message: str) -> bool:
+    """Best-effort terminal-digest classification for resume-path output."""
+
+    try:
+        payload = json.loads(last_message)
+    except json.JSONDecodeError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and "files_changed" in payload
+        and "summary" in payload
+    )
+
+
 def wrapper_mcp_config_args(
     team: str,
     agent_name: str,
@@ -537,7 +551,7 @@ def run(
             events=events,
             tool_call_events=tool_call_events,
             last_message=last_message,
-            structured=False,
+            structured=_last_message_is_task_complete_json(last_message),
             partial_events_available=bool(events),
             session_id=captured_session_id,
             error_class="turn_timeout",
@@ -589,11 +603,15 @@ def run(
     if proc.returncode != 0 and not error:
         error = f"codex exec exited {proc.returncode}; stderr: {proc.stderr[:500]}"
 
+    terminal_structured = structured is not None or _last_message_is_task_complete_json(
+        last_message
+    )
+
     logger.info(
         "codex.done",
         exit_code=proc.returncode,
         events=len(events),
-        structured=bool(structured),
+        structured=terminal_structured,
         tool_call_events=tool_call_events,
         session_id=captured_session_id,
         resumed=resume_session_id is not None,
@@ -607,7 +625,7 @@ def run(
         events=events,
         tool_call_events=tool_call_events,
         last_message=last_message,
-        structured=structured is not None,
+        structured=terminal_structured,
         partial_events_available=bool(events),
         session_id=captured_session_id,
         extra_payload={"tool_call_event_source": "codex exec JSONL classifier"},

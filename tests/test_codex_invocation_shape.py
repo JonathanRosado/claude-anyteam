@@ -186,3 +186,31 @@ def test_codex_exec_emits_headless_turn_digest(events_root, tmp_path):
     assert events[0].task_id == "19"
     assert events[1].payload["tool_call_events"] == 1
     assert events[1].payload["events"][1]["name"] == "send_message"
+
+
+def test_codex_exec_digest_marks_task_complete_json_structured_without_schema(
+    events_root, tmp_path
+):
+    payload = {"files_changed": ["src/app.py"], "summary": "Renamed app module"}
+
+    def fake_run(args, **_):
+        last_message_path = Path(args[args.index("--output-last-message") + 1])
+        last_message_path.write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    with patch.object(codex_mod.subprocess, "run", side_effect=fake_run):
+        result = codex_mod.run(
+            prompt="noop",
+            cwd=tmp_path,
+            schema=None,
+            codex_binary="codex",
+            wrapper_identity=("team-x", "codex-a"),
+            resume_session_id="session-1",
+            task_id="19",
+        )
+
+    assert result.exit_code == 0
+    assert result.structured is None
+    events = pio.read_visibility_events("team-x", "codex-a")
+    assert events[-1].kind == "turn_completed"
+    assert events[-1].payload["structured"] is True
