@@ -62,6 +62,29 @@ def test_handle_prose_skips_fallback_when_model_used_send_message_tool(tmp_path:
     assert send_prose_calls == []
 
 
+@pytest.mark.parametrize("backend", ["acp", "headless"])
+def test_handle_prose_skips_prose_text_after_send_message_tool(tmp_path: Path, monkeypatch, backend: str):
+    """Gemini parity for the M13 guard ordering: tool delivery wins over text."""
+
+    state = loop.GeminiLoopState(settings=_settings(tmp_path, backend))
+    msg = SimpleNamespace(from_="codex-peer", text="ack", summary="prose")
+    fake_result = CodexResult(
+        exit_code=0,
+        structured=None,
+        last_message="Already sent the answer with mcp_anyteam_send_message.",
+        events=[{"type": "tool_use", "tool_name": "mcp_anyteam_send_message"}],
+        tool_call_events=1,
+    )
+    monkeypatch.setattr(loop, "_backend_run", lambda *a, **k: fake_result)
+
+    send_prose_calls: list = []
+    monkeypatch.setattr(loop.pio, "send_prose", lambda *a, **k: send_prose_calls.append((a, k)))
+
+    loop._handle_prose(state, msg)
+
+    assert send_prose_calls == []
+
+
 def test_loop_surfaces_permission_block_with_details():
     settings = GeminiSettings(
         team_name="t",

@@ -40,19 +40,76 @@ def read_config(team: str):
     return _teams.read_config(team)
 
 
+def _normalise_tool_name(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _is_send_message_tool_name(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    normalised = _normalise_tool_name(value)
+    if normalised == "sendmessage":
+        return True
+    return normalised.endswith("sendmessage") and (
+        "anyteam" in normalised or "wrapper" in normalised
+    )
+
+
+def _event_mentions_send_message_tool(value: Any) -> bool:
+    """Return True if a raw backend event references the wrapper send tool.
+
+    The three prose backends expose different event shapes:
+
+    - Codex exec: ``{"type": "mcp_tool_call", "name": "send_message"}``
+    - Codex App Server: ``{"params": {"item": {"name": "send_message"}}}``
+    - Kimi: ``{"role": "assistant", "tool_calls": [{"function": {"name": ...}}]}``
+    - Gemini: ``{"type": "tool_use", "tool_name": "mcp_anyteam_send_message"}``
+
+    Keep this duck-typed so the shared guard remains independent of backend
+    result classes.
+    """
+    if isinstance(value, dict):
+        for key in ("name", "tool_name", "function_name"):
+            if _is_send_message_tool_name(value.get(key)):
+                return True
+        function = value.get("function")
+        if isinstance(function, dict) and _is_send_message_tool_name(function.get("name")):
+            return True
+        for nested_key in ("item", "params", "tool_calls", "call", "function"):
+            nested = value.get(nested_key)
+            if nested is not None and _event_mentions_send_message_tool(nested):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_event_mentions_send_message_tool(item) for item in value)
+    return False
+
+
+def result_has_send_message_tool_call(result: Any) -> bool:
+    """Best-effort detection that a backend result called wrapper send_message."""
+    events = getattr(result, "events", None)
+    if isinstance(events, list) and events:
+        return any(_event_mentions_send_message_tool(event) for event in events)
+    # Legacy / unit-test duck type: early PR-#11/#12 tests only exposed a
+    # successful tool-call count. Preserve that contract when no raw event stream
+    # is available to inspect.
+    return getattr(result, "tool_call_events", 0) > 0
+
+
 def should_skip_prose_fallback(result: Any) -> bool:
     """Return True when a prose reply was already delivered by a tool call.
 
     09 R23 extracts the PR-#11/#12 delivered-via-tool guard from the Codex,
     Gemini, and Kimi loops into one helper. Some backends leave
     ``last_message`` empty after the model calls the wrapper ``send_message``
-    tool; in that case the adapter must not add a canned fallback on top of
+    tool; others (notably Kimi) also emit final assistant prose after the tool
+    call. In both cases the adapter must not add a prose-mode fallback on top of
     the real peer reply.
     """
     return (
         result is not None
         and getattr(result, "exit_code", None) == 0
-        and getattr(result, "tool_call_events", 0) > 0
+        and result_has_send_message_tool_call(result)
     )
 
 

@@ -43,6 +43,33 @@ def test_should_skip_prose_fallback_for_tool_delivered_backend_results(result):
 
 
 @pytest.mark.parametrize(
+    "events",
+    [
+        [{"type": "mcp_tool_call", "name": "send_message"}],
+        [{"params": {"item": {"type": "mcp_tool_call", "name": "send_message"}}}],
+        [{"role": "assistant", "tool_calls": [{"function": {"name": "send_message"}}]}],
+        [{"type": "tool_use", "tool_name": "mcp_anyteam_send_message"}],
+    ],
+    ids=["codex-exec", "codex-app-server", "kimi", "gemini"],
+)
+def test_should_skip_prose_fallback_detects_send_message_event_shapes(events):
+    assert should_skip_prose_fallback(_result(events=events)) is True
+
+
+def test_should_not_skip_prose_fallback_for_non_send_message_tools_when_events_available():
+    result = _result(
+        events=[
+            {"role": "assistant", "tool_calls": [{"function": {"name": "ReadFile"}}]},
+            {"type": "message", "role": "assistant", "content": "Here is the answer."},
+        ],
+        tool_call_events=1,
+        last_message="Here is the answer.",
+    )
+
+    assert should_skip_prose_fallback(result) is False
+
+
+@pytest.mark.parametrize(
     "result",
     [
         None,

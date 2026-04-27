@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from . import logger
@@ -68,6 +69,8 @@ class HeadlessTurnVisibility:
     turn_id: str | None = None
     started_at: float = 0.0
     seq: int = 0
+    mode: str = "task"
+    prompt_kind: str = "task_complete"
 
     @classmethod
     def start(
@@ -86,6 +89,8 @@ class HeadlessTurnVisibility:
         task_id: str | None = None,
         extra_payload: dict[str, Any] | None = None,
     ) -> "HeadlessTurnVisibility":
+        prompt_kind = prompt_kind_for_schema(schema)
+        mode = "prose" if schema is None else "task"
         turn = cls(
             team=team,
             agent=agent,
@@ -94,10 +99,12 @@ class HeadlessTurnVisibility:
             task_id=task_id,
             turn_id=f"{backend}-{uuid.uuid4().hex[:12]}",
             started_at=time.monotonic(),
+            mode=mode,
+            prompt_kind=prompt_kind,
         )
         payload: dict[str, Any] = {
-            "mode": "prose" if schema is None else "task",
-            "prompt_kind": prompt_kind_for_schema(schema),
+            "mode": mode,
+            "prompt_kind": prompt_kind,
             "timeout_s": timeout_s,
             "cwd": str(cwd),
             "model": model,
@@ -175,6 +182,19 @@ class HeadlessTurnVisibility:
         error_class: str | None = None,
         extra_payload: dict[str, Any] | None = None,
     ) -> VisibilityEvent | None:
+        last_message_preview = last_message[:500]
+        suppress_preview = (
+            self.mode == "prose"
+            and pio.should_skip_prose_fallback(
+                SimpleNamespace(
+                    exit_code=exit_code,
+                    events=events,
+                    tool_call_events=tool_call_events,
+                )
+            )
+        )
+        if suppress_preview:
+            last_message_preview = ""
         payload: dict[str, Any] = {
             "exit_code": exit_code,
             "elapsed_s": round(time.monotonic() - self.started_at, 3),
@@ -182,11 +202,13 @@ class HeadlessTurnVisibility:
             "events": events,
             "event_count": len(events),
             "tool_call_events": tool_call_events,
-            "last_message_preview": last_message[:500],
+            "last_message_preview": last_message_preview,
             "partial_events_available": bool(events)
             if partial_events_available is None
             else partial_events_available,
         }
+        if suppress_preview:
+            payload["last_message_suppressed_reason"] = "delivered_via_send_message_tool"
         if error:
             payload["error"] = error
         if session_id:

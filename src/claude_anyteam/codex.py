@@ -1417,6 +1417,20 @@ def app_server_invoke(
         if turn_started_at is not None
         else None
     )
+    last_message_preview = last_message[:500]
+    if schema is None and task_id is None:
+        from types import SimpleNamespace
+        from . import protocol_io as pio
+
+        if pio.should_skip_prose_fallback(
+            SimpleNamespace(
+                exit_code=exit_code,
+                events=events,
+                tool_call_events=tool_call_events,
+            )
+        ):
+            last_message_preview = ""
+
     terminal_payload = {
         "exit_code": exit_code,
         "error": error,
@@ -1424,8 +1438,10 @@ def app_server_invoke(
         "structured": bool(structured),
         "events": len(events),
         "tool_call_events": tool_call_events,
-        "last_message_preview": last_message[:500],
+        "last_message_preview": last_message_preview,
     }
+    if last_message and not last_message_preview:
+        terminal_payload["last_message_suppressed_reason"] = "delivered_via_send_message_tool"
     terminal_payload = {k: v for k, v in terminal_payload.items() if v is not None}
     if error or exit_code != 0:
         _emit_visibility_event(

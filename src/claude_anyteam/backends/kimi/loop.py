@@ -402,13 +402,13 @@ def _handle_prose(state: KimiLoopState, msg: Any) -> None:
     result = None
     try:
         result = _backend_run(state, prompt, ephemeral=True)
+        if pio.should_skip_prose_fallback(result):
+            logger.info("kimi.prose.delivered_via_tool", sender=sender, tool_calls=getattr(result, "tool_call_events", 0))
+            return
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
     except Exception as e:
         logger.warn("kimi.prose.crash", sender=sender, error=str(e))
-    if reply is None and pio.should_skip_prose_fallback(result):
-        logger.info("kimi.prose.delivered_via_tool", sender=sender, tool_calls=getattr(result, "tool_call_events", 0))
-        return
     if reply is None:
         # See diagnostics module + Codex/Gemini loops — same pattern across
         # all three backends so the lead can grep / diagnose without

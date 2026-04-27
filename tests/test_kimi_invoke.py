@@ -341,6 +341,46 @@ def test_headless_completed_payload_preserves_kimi_tool_calls(events_root, tmp_p
     assert payload["events"][0]["tool_calls"] == tool_calls
 
 
+def test_headless_prose_send_message_suppresses_terminal_preview(events_root, tmp_path, monkeypatch):
+    stdout = "\n".join([
+        json.dumps({
+            "role": "assistant",
+            "content": [],
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "tool_send",
+                    "function": {"name": "send_message", "arguments": "{}"},
+                }
+            ],
+        }),
+        json.dumps({
+            "role": "assistant",
+            "content": "This final prose would be an M13 collision if the adapter re-sent it.",
+        }),
+    ])
+    _patch_kimi_run(
+        monkeypatch,
+        tmp_path,
+        [{"stdout": stdout, "stderr": "", "returncode": 0}],
+    )
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        kimi_home=tmp_path / "home",
+        wrapper_identity=("team-x", "kimi-a"),
+    )
+
+    assert result.exit_code == 0
+    assert result.last_message.startswith("This final prose")
+    events = pio.read_visibility_events("team-x", "kimi-a")
+    payload = events[1].payload
+    assert payload["tool_call_events"] == 1
+    assert payload["last_message_preview"] == ""
+    assert payload["last_message_suppressed_reason"] == "delivered_via_send_message_tool"
+
+
 def test_schema_validation_failure_returns_one_invocation_for_loop_to_retry(tmp_path, monkeypatch):
     """invoke.run() must NOT retry internally on schema failure.
 

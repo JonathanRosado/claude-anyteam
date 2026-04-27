@@ -536,6 +536,13 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
     if exc is not None:
         logger.warn("prose.codex_crash", sender=sender, error=str(exc))
     elif result is not None:
+        if pio.should_skip_prose_fallback(result):
+            logger.info(
+                "prose.delivered_via_tool",
+                sender=sender,
+                tool_calls=getattr(result, "tool_call_events", 0),
+            )
+            return
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
         else:
@@ -545,14 +552,6 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
                 exit_code=result.exit_code,
                 error=result.error,
             )
-
-    if reply is None and pio.should_skip_prose_fallback(result):
-        logger.info(
-            "prose.delivered_via_tool",
-            sender=sender,
-            tool_calls=getattr(result, "tool_call_events", 0),
-        )
-        return
 
     if reply is None:
         reply = _prose_fallback_reply(state, sender=sender, result=result)

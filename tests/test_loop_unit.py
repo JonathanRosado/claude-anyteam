@@ -243,6 +243,34 @@ def test_prose_message_skips_fallback_when_codex_used_send_message_tool():
     assert sent == []
 
 
+def test_prose_message_skips_final_text_when_codex_used_send_message_tool():
+    """Forward-compat: Codex also treats post-tool prose as non-delivery text."""
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="hello", from_="peer-bob")
+    result = loop_mod.codex_mod.CodexResult(
+        exit_code=0,
+        structured=None,
+        last_message="Already replied via send_message.",
+        events=[{"type": "mcp_tool_call", "name": "send_message"}],
+        error=None,
+        tool_call_events=1,
+    )
+
+    sent: list[tuple] = []
+
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", return_value=result),
+        patch.object(
+            loop_mod.pio,
+            "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_message(state, msg)
+
+    assert sent == []
+
+
 def test_prose_message_codex_fail_sends_fallback_ack():
     """If Codex fails (nonzero exit), the adapter still replies (no silence)."""
     state = LoopState(settings=_settings())

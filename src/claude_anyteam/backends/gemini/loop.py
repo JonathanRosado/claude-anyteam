@@ -448,14 +448,13 @@ def _handle_prose(state: GeminiLoopState, msg: Any) -> None:
     result = None
     try:
         result = _backend_run(state, prompt, ephemeral=True)
+        if pio.should_skip_prose_fallback(result):
+            logger.info("gemini.prose.delivered_via_tool", sender=sender, tool_calls=getattr(result, "tool_call_events", 0))
+            return
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
     except Exception as e:
         logger.warn("gemini.prose.crash", sender=sender, error=str(e))
-
-    if reply is None and pio.should_skip_prose_fallback(result):
-        logger.info("gemini.prose.delivered_via_tool", sender=sender, tool_calls=getattr(result, "tool_call_events", 0))
-        return
 
     if reply is None:
         # Capture full error context to a diagnostic file and embed the

@@ -112,6 +112,40 @@ def test_handle_prose_skips_fallback_when_model_used_send_message_tool(tmp_path:
     assert send_prose_calls == []
 
 
+def test_handle_prose_skips_prose_text_after_send_message_tool(tmp_path: Path, monkeypatch):
+    """M13 regression: Kimi may emit both send_message and final prose text.
+
+    The final assistant prose is informational after the wrapper tool has
+    already delivered the peer reply; the adapter must not send it as a second
+    prose-mode fallback.
+    """
+    state = loop.KimiLoopState(settings=_settings(tmp_path))
+    msg = SimpleNamespace(from_="codex-bob", text="ack", summary="prose")
+
+    fake_result = SimpleNamespace(
+        exit_code=0,
+        last_message="Already sent the answer with send_message; no fallback needed.",
+        structured=None,
+        events=[
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "send_message", "arguments": "{}"}}],
+            }
+        ],
+        tool_call_events=1,
+        session_id=None,
+        error=None,
+    )
+    monkeypatch.setattr(loop, "_backend_run", lambda *a, **k: fake_result)
+
+    send_prose_calls: list = []
+    monkeypatch.setattr(loop.pio, "send_prose", lambda *a, **k: send_prose_calls.append((a, k)))
+
+    loop._handle_prose(state, msg)
+
+    assert send_prose_calls == []
+
+
 def test_handle_prose_falls_back_when_no_tool_and_no_text(tmp_path: Path, monkeypatch):
     """Negative case for #8 — when neither last_message nor tool calls,
     the canned fallback IS still sent so the sender gets *something*.
