@@ -76,9 +76,9 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "name": "homogeneous-kimi",
         "team_size": 3,
         "members": [
-            {"name": "kimi-tgt-a", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
-            {"name": "kimi-tgt-b", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
-            {"name": "kimi-tgt-c", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
+            {"name": "kimi-tgt-a", "agent_type": "kimi"},
+            {"name": "kimi-tgt-b", "agent_type": "kimi"},
+            {"name": "kimi-tgt-c", "agent_type": "kimi"},
         ],
         "n_tasks": 20,
         "env": {},
@@ -89,7 +89,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "members": [
             {"name": "codex-tgt-app", "agent_type": "codex", "model": "gpt-5.5", "effort": "xhigh", "transport": "app_server"},
             {"name": "gemini-tgt-acp", "agent_type": "gemini", "model": "gemini-2.5-pro", "effort": "high", "transport": "acp"},
-            {"name": "kimi-tgt", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
+            {"name": "kimi-tgt", "agent_type": "kimi"},
             {"name": "claude-tgt", "agent_type": "claude", "model": "sonnet"},
         ],
         "n_tasks": 30,
@@ -119,7 +119,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "name": "paired-kimi-codex",
         "team_size": 2,
         "members": [
-            {"name": "kimi-pair", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
+            {"name": "kimi-pair", "agent_type": "kimi"},
             {"name": "codex-pair", "agent_type": "codex", "model": "gpt-5.5", "effort": "xhigh", "transport": "app_server"},
         ],
         "n_tasks": 15,
@@ -143,7 +143,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "members": [
             {"name": "codex-tgt-app", "agent_type": "codex", "model": "gpt-5.5", "effort": "xhigh", "transport": "app_server"},
             {"name": "gemini-tgt-acp", "agent_type": "gemini", "model": "gemini-2.5-pro", "effort": "high", "transport": "acp"},
-            {"name": "kimi-tgt", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
+            {"name": "kimi-tgt", "agent_type": "kimi"},
             {"name": "claude-tgt", "agent_type": "claude", "model": "sonnet"},
         ],
         "n_tasks": 30,
@@ -157,7 +157,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "members": [
             {"name": "codex-tgt-app", "agent_type": "codex", "model": "gpt-5.5", "effort": "xhigh", "transport": "app_server"},
             {"name": "gemini-tgt-acp", "agent_type": "gemini", "model": "gemini-2.5-pro", "effort": "high", "transport": "acp"},
-            {"name": "kimi-tgt", "agent_type": "kimi", "model": "kimi-k2", "effort": "medium"},
+            {"name": "kimi-tgt", "agent_type": "kimi"},
             {"name": "claude-tgt", "agent_type": "claude", "model": "sonnet"},
         ],
         "n_tasks": 30,

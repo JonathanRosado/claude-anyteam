@@ -285,6 +285,34 @@ def test_command_for_member_passes_explicit_kimi_binary(monkeypatch, tmp_path: P
     assert "--backend" in cmd  # default headless transport
 
 
+def test_kimi_scenario_members_dont_specify_unknown_model(tmp_path: Path) -> None:
+    """SCENARIOS spec for kimi members must NOT pass `model` to the kimi adapter.
+
+    Background: S4 (homogeneous-kimi, 20260427T0929Z) failed when every kimi
+    turn exited with `"LLM not set"` to stdout. Root cause: the SCENARIOS dict
+    specified `model: "kimi-k2"` for every kimi member, which the adapter
+    forwarded as `--model kimi-k2` to the kimi CLI; the kimi CLI's config
+    (~/.kimi/config.toml) defines models like `kimi-code/kimi-for-coding` and
+    rejected `kimi-k2` as unknown. Each turn died in 5.979s with structured=False.
+
+    Fix: drop the `model` field from kimi scenario specs; let kimi use its
+    config.toml `default_model`. Stress runs measure the harness as it ships,
+    not a model the user doesn't have configured.
+
+    This test asserts the SCENARIOS dict invariant so future edits don't
+    re-introduce a model spec the kimi CLI doesn't recognize.
+    """
+    for scenario_id, scenario in run_scenario.SCENARIOS.items():
+        for member in scenario.get("members", []):
+            if member.get("agent_type") == "kimi":
+                assert "model" not in member, (
+                    f"SCENARIOS[{scenario_id!r}] kimi member {member['name']!r} "
+                    f"specifies model={member.get('model')!r}; remove `model` "
+                    f"so kimi CLI uses its config.toml default. See task #46 "
+                    f"(S4 'LLM not set' root cause, 2026-04-27)."
+                )
+
+
 def test_command_for_member_raises_when_backend_binary_missing(monkeypatch, tmp_path: Path) -> None:
     """Fail loud if the gemini/kimi binary isn't on PATH — better than silently
     spawning a broken adapter that wastes 1800s on a feature_test timeout."""
