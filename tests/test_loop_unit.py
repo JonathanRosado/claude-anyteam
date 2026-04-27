@@ -19,7 +19,9 @@ from claude_anyteam.loop import (
     LoopState,
     _find_and_claim,
     _handle_message,
+    _handle_prose_batch,
     _mid_turn_prose_should_be_steer,
+    _partition_inbox,
 )
 
 
@@ -618,3 +620,182 @@ def test_mid_turn_prose_should_be_steer_no_sender_defers():
         recipient_capabilities=["accepts_peer_steer"],
         message_kind="steer",
     ) is False
+
+
+# ---- _handle_prose_batch (#18 prose-handler cascade fix) -------------------
+#
+# Phase4 #18 collapses consecutive prose messages in one inbox drain into a
+# single Codex invocation. Pre-#18, N peer DMs produced N separate
+# `app_server_invoke` calls; each pays full thread/start + system-prompt cost.
+# These tests pin the empirical invariant so future refactors can't silently
+# regress the throughput fix. Per `feedback_tests_lock_empirical_invariants.md`,
+# tests are what prevent the regression — without them the fix would not stick.
+
+
+def test_prose_batch_5_messages_one_invocation():
+    """5 consecutive peer prose messages -> 1 app_server_invoke call.
+
+    Pre-fix: this asserts call_count==1 after dispatching 5 prose messages.
+    With the pre-#18 single-message handler the count would be 5, so this is
+    the load-bearing regression assertion for the cascade collapse.
+    """
+    state = LoopState(settings=_settings())
+    msgs = [
+        FakeInboxMessage(text=f"hello {i}", from_=f"peer-{i}") for i in range(5)
+    ]
+    invocations: list[dict] = []
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        # Simulate Codex delivering replies via the send_message MCP tool —
+        # the success path with no fallback noise.
+        return _fake_codex_result("", exit_code=0, tool_call_events=5)
+
+    sent: list[tuple] = []
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(
+            loop_mod.pio, "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_prose_batch(state, msgs)
+
+    assert len(invocations) == 1, (
+        f"prose batch must collapse to 1 invocation; got {len(invocations)}"
+    )
+    # delivered_via_tool path: no fan-out send_prose calls (Codex addressed
+    # each sender via the MCP tool itself).
+    assert sent == []
+
+
+def test_prose_batch_preserves_per_sender_fallback():
+    """Codex crash mid-batch -> diagnostic fallback ack to EACH sender.
+
+    Preserves the "no silence" invariant. Collapsing N senders into a single
+    fallback would leave N-1 senders waiting for a reply that never arrives.
+    """
+    state = LoopState(settings=_settings())
+    msgs = [
+        FakeInboxMessage(text="hi", from_="peer-a"),
+        FakeInboxMessage(text="yo", from_="peer-b"),
+        FakeInboxMessage(text="?", from_="peer-c"),
+    ]
+    sent: list[tuple] = []
+    with (
+        patch.object(
+            loop_mod.codex_mod, "app_server_invoke",
+            side_effect=RuntimeError("codex segfault"),
+        ),
+        patch.object(
+            loop_mod.pio, "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_prose_batch(state, msgs)
+
+    # One fallback per original sender — order-independent, no duplicates.
+    sent_to = sorted(to for to, _ in sent)
+    assert sent_to == ["peer-a", "peer-b", "peer-c"]
+    # Each fallback should be the diagnostic-shaped message with an
+    # incident id embedded — verify the shape, not the exact incident id.
+    for _, text in sent:
+        assert "incident=" in text
+        assert "claude-anyteam diagnose" in text
+
+
+def test_prose_batch_does_not_batch_protocol_messages():
+    """_partition_inbox keeps protocol messages individual; prose runs collapse.
+
+    Mixing 2 prose + 1 shutdown_request in one drain produces:
+    - 1 prose batch (2 messages) -> 1 app_server_invoke
+    - 1 protocol group (1 shutdown_request) -> handled by _handle_shutdown
+    """
+    msgs = [
+        FakeInboxMessage(text="hello", from_="peer-a"),
+        FakeInboxMessage(text="hi", from_="peer-b"),
+        FakeInboxMessage(
+            text=json.dumps({"type": "shutdown_request", "request_id": "r-batch-1"}),
+        ),
+    ]
+
+    groups = _partition_inbox(msgs)
+    assert len(groups) == 2
+    assert groups[0][0] == "prose"
+    assert len(groups[0][1]) == 2
+    assert groups[1][0] == "protocol"
+    assert len(groups[1][1]) == 1
+
+
+def test_prose_single_message_still_works():
+    """1 prose message -> 1 invocation, identical to pre-#18 single path."""
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="just one", from_="peer-solo")
+    invocations: list[dict] = []
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        return _fake_codex_result("Solo reply.", exit_code=0)
+
+    sent: list[tuple] = []
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(
+            loop_mod.pio, "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_prose_batch(state, [msg])
+
+    assert len(invocations) == 1
+    # Single-message path uses send_prose for the reply (last_message text,
+    # no tool calls), so the sender receives the codex reply directly.
+    assert len(sent) == 1
+    to, text = sent[0]
+    assert to == "peer-solo"
+    assert "Solo reply." in text
+
+
+def test_prose_invocation_passes_event_sink():
+    """Both the single and batch invocations pass event_sink (§2 fix).
+
+    Pre-#18, `app_server_invoke` was called WITHOUT event_sink for prose
+    turns. Tool calls during prose (Read / Edit / Bash) vanished into the
+    wrapper instead of surfacing to the lead. This pins the §2 fix so a
+    future refactor can't silently drop the kwarg.
+    """
+    state = LoopState(settings=_settings())
+    invocations: list[dict] = []
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        return _fake_codex_result("hi back")
+
+    # Single-message path
+    msg_solo = FakeInboxMessage(text="ping", from_="peer-x")
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(loop_mod.pio, "send_prose"),
+    ):
+        _handle_prose_batch(state, [msg_solo])
+
+    # Batch path
+    msgs_many = [
+        FakeInboxMessage(text="a", from_="peer-y"),
+        FakeInboxMessage(text="b", from_="peer-z"),
+    ]
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(loop_mod.pio, "send_prose"),
+    ):
+        _handle_prose_batch(state, msgs_many)
+
+    assert len(invocations) == 2
+    for inv in invocations:
+        assert "event_sink" in inv, "event_sink kwarg must be present"
+        assert inv["event_sink"] is not None, (
+            "prose invocations must pass a non-None event_sink so prose-time "
+            "tool calls surface to the lead (§2 visibility parity)"
+        )
+        # Sanity: it must be callable so app_server_invoke can fire it.
+        assert callable(inv["event_sink"])

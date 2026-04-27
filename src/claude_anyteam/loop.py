@@ -220,9 +220,19 @@ def _main_loop(state: LoopState) -> None:
         # 1. Drain inbox. Use read_own_inbox so the "self-only" invariant is
         # asserted at call time — the protocol mark-as-read path rewrites the
         # file, and touching another teammate's inbox would corrupt its schema.
+        #
+        # Prose-batch dispatch (#18): consecutive prose messages collapse into
+        # a single Codex invocation via _handle_prose_batch. Protocol messages
+        # (shutdown_request, plan_approval_request, capability_manifest_*)
+        # always flow through their own one-per-dispatch path so each gets
+        # individual handling and idempotency checks.
         messages = pio.read_own_inbox(s.team_name, s.agent_name, s.agent_name)
-        for m in messages:
-            _handle_message(state, m)
+        for kind, group in _partition_inbox(messages):
+            if kind == "prose":
+                _handle_prose_batch(state, group)
+            else:
+                for m in group:
+                    _handle_message(state, m)
             if state.approved_shutdown:
                 return
 
@@ -286,6 +296,36 @@ def _handle_message(state: LoopState, msg: Any) -> None:
     logger.debug("inbox.protocol_noop", type=payload.__class__.__name__)
 
 
+def _partition_inbox(messages: list[Any]) -> list[tuple[str, list[Any]]]:
+    """Group an inbox drain into prose runs and individual protocol messages.
+
+    Phase4 #18: consecutive prose messages collapse into a single
+    `_handle_prose_batch` call so a burst of N peer DMs becomes ONE Codex
+    invocation instead of N. Protocol messages stay one-per-dispatch — each
+    needs its own idempotency check and handler-specific control flow.
+
+    Returns a list of ``(kind, [messages])`` tuples preserving original order:
+
+    - ``("prose", [m1, m2, m3])`` — a run of consecutive prose messages
+    - ``("protocol", [m4])`` — exactly one protocol message per group
+
+    Lead-prose vs peer-prose can mix in the same batch — the batched prompt
+    carries explicit ``[from <sender>]`` attribution and Codex addresses each
+    sender via the ``send_message`` MCP tool.
+    """
+    groups: list[tuple[str, list[Any]]] = []
+    for m in messages:
+        is_prose = parse_protocol_text(m.text) is None
+        if is_prose:
+            if groups and groups[-1][0] == "prose":
+                groups[-1][1].append(m)
+            else:
+                groups.append(("prose", [m]))
+        else:
+            groups.append(("protocol", [m]))
+    return groups
+
+
 def _peer_prompt_fragments(state: LoopState) -> str:
     """Return cached R14 peer capability prompt fragments for this turn.
 
@@ -308,6 +348,153 @@ def _peer_prompt_fragments(state: LoopState) -> str:
         return ""
 
 
+def _prose_visibility_event_sink(state: LoopState):
+    """Build a §2-fix event sink for ephemeral prose-time Codex invocations.
+
+    Phase4 #18 §2: the lead must see prose-time tool activity (Read / Edit /
+    Bash) with the same operational visibility as task-time activity. Without
+    a sink, App Server events vanish into the wrapper and only stderr carries
+    a trace.
+
+    Differs from the task-bound `_visibility_event_sink` closure built inside
+    `_execute_task_app_server`:
+
+    - No `task` reference → no `pio.update_task` projection (prose has no
+      task to project onto). The event log and mailbox surfacing remain.
+    - No sampling counter (prose turns are short; surface every event).
+
+    Mirrors the same envelope flags (`mailbox`, `event_log`, `task_state`)
+    already used by the task path so the lead's TUI rendering is uniform.
+    """
+    s = state.settings
+
+    def _sink(event) -> None:
+        try:
+            pio.append_event(s.team_name, s.agent_name, event)
+        except Exception as e:
+            logger.warn(
+                "visibility.append_fail",
+                kind=getattr(event, "kind", None),
+                error=str(e),
+                surface="prose",
+            )
+        visibility = getattr(event, "visibility", None)
+        if getattr(visibility, "mailbox", False):
+            try:
+                pio.send_visibility_event_to_lead(
+                    s.team_name,
+                    s.agent_name,
+                    event,
+                    summary=event.summary[:120],
+                )
+            except Exception as e:
+                logger.warn(
+                    "visibility.mailbox_fail",
+                    kind=getattr(event, "kind", None),
+                    error=str(e),
+                    surface="prose",
+                )
+
+    return _sink
+
+
+def _invoke_codex_prose(
+    state: LoopState,
+    *,
+    prompt: str,
+    event_sink,
+):
+    """Run one ephemeral Codex turn for a prose reply.
+
+    Phase4 #18: extracted from `_handle_prose` so the single-message and
+    batched paths share identical invocation semantics. The single-message
+    path keeps the same prompt shape (built by `v7_prose_reply_prompt`); the
+    batch path composes its own prompt with sender attribution and reuses
+    this helper.
+
+    Always passes `event_sink` (the §2 fix) — prose-time tool calls now
+    surface to the event log and lead mailbox the same way task-time tool
+    calls do.
+
+    Returns ``(result, error_exception)``:
+    - On normal completion: ``(CodexResult, None)``
+    - On exception: ``(None, exception)``
+    """
+    s = state.settings
+    try:
+        if s.app_server:
+            result = codex_mod.app_server_invoke(
+                task_prompt=prompt,
+                cwd=s.cwd,
+                schema=None,
+                settings_team=s.team_name,
+                settings_agent=s.agent_name,
+                codex_binary=s.codex_binary,
+                model=s.model,
+                effort=s.effort,
+                overall_timeout_s=s.turn_timeout_s,
+                non_progress_warn_s=s.non_progress_warn_s,
+                non_progress_interrupt_s=s.non_progress_interrupt_s,
+                event_sink=event_sink,
+                # No resume_thread_id — ephemeral, not chained to task lineage.
+            )
+        else:
+            # Fresh-exec path has no event_sink hook today (`codex.run` reads
+            # JSONL events into its own internal counters); the App Server
+            # path is where §2 visibility actually lands.
+            result = codex_mod.run(
+                prompt=prompt,
+                cwd=s.cwd,
+                schema=None,
+                codex_binary=s.codex_binary,
+                extra_args=codex_mod.wrapper_mcp_config_args(s.team_name, s.agent_name),
+                wrapper_identity=(s.team_name, s.agent_name),
+                model=s.model,
+                effort=s.effort,
+            )
+        return result, None
+    except Exception as e:
+        return None, e
+
+
+def _prose_fallback_reply(
+    state: LoopState,
+    *,
+    sender: str,
+    result: Any,
+) -> str:
+    """Build the diagnostics-backed fallback reply for one sender.
+
+    Records a per-incident artifact and renders the user-facing message with
+    the incident_id embedded so the lead can run
+    ``claude-anyteam diagnose --incident <id>`` to recover details without
+    raw error strings leaking into chat.
+    """
+    from . import diagnostics  # local import keeps loop.py import graph thin
+    s = state.settings
+    error_class = diagnostics.classify_failure(result)
+    incident_id = diagnostics.record_incident(
+        team=s.team_name,
+        agent=s.agent_name,
+        backend="codex",
+        error_class=error_class,
+        summary=(result.error if result is not None and result.error else "no reply produced"),
+        sender=sender,
+        payload={
+            "exit_code": (result.exit_code if result is not None else None),
+            "tool_call_events": (
+                getattr(result, "tool_call_events", 0) if result is not None else 0
+            ),
+            "error": (result.error if result is not None else None),
+        },
+    )
+    return diagnostics.fallback_message(
+        backend="codex",
+        incident_id=incident_id,
+        error_class=error_class,
+    )
+
+
 def _handle_prose(state: LoopState, msg: Any) -> None:
     """Handle an inbound prose (non-protocol) message while idle.
 
@@ -323,6 +510,10 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
     The prose invocation is intentionally ephemeral — it does not update
     `state.codex_session_id` or `state.app_server_last_thread_id`, keeping
     the task-lineage slots clean for the next real task.
+
+    Phase4 #18 §2: the App Server invocation now passes `event_sink` so
+    prose-time tool activity (Read / Edit / Bash) surfaces to the event log
+    and lead mailbox with the same visibility as task-time activity.
     """
     s = state.settings
     sender = getattr(msg, "from_", "unknown")
@@ -337,34 +528,14 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
     )
 
     reply: str | None = None
-    result = None
-    try:
-        if s.app_server:
-            result = codex_mod.app_server_invoke(
-                task_prompt=prompt,
-                cwd=s.cwd,
-                schema=None,
-                settings_team=s.team_name,
-                settings_agent=s.agent_name,
-                codex_binary=s.codex_binary,
-                model=s.model,
-                effort=s.effort,
-                overall_timeout_s=s.turn_timeout_s,
-                non_progress_warn_s=s.non_progress_warn_s,
-                non_progress_interrupt_s=s.non_progress_interrupt_s,
-                # No resume_thread_id — ephemeral, not chained to task lineage.
-            )
-        else:
-            result = codex_mod.run(
-                prompt=prompt,
-                cwd=s.cwd,
-                schema=None,
-                codex_binary=s.codex_binary,
-                extra_args=codex_mod.wrapper_mcp_config_args(s.team_name, s.agent_name),
-                wrapper_identity=(s.team_name, s.agent_name),
-                model=s.model,
-                effort=s.effort,
-            )
+    result, exc = _invoke_codex_prose(
+        state,
+        prompt=prompt,
+        event_sink=_prose_visibility_event_sink(state),
+    )
+    if exc is not None:
+        logger.warn("prose.codex_crash", sender=sender, error=str(exc))
+    elif result is not None:
         if result.exit_code == 0 and result.last_message:
             reply = result.last_message
         else:
@@ -374,45 +545,156 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
                 exit_code=result.exit_code,
                 error=result.error,
             )
-    except Exception as e:
-        logger.warn("prose.codex_crash", sender=sender, error=str(e))
 
     if reply is None and pio.should_skip_prose_fallback(result):
-        logger.info("prose.delivered_via_tool", sender=sender, tool_calls=getattr(result, "tool_call_events", 0))
+        logger.info(
+            "prose.delivered_via_tool",
+            sender=sender,
+            tool_calls=getattr(result, "tool_call_events", 0),
+        )
         return
 
     if reply is None:
-        # Codex couldn't produce a reply — record full error context to a
-        # per-incident diagnostic file and embed the incident_id in the
-        # user-facing reply so the lead can run
-        # `claude-anyteam diagnose --incident <id>` to recover details
-        # without us leaking raw error strings into chat.
-        from . import diagnostics  # local import keeps loop.py import graph thin
-        error_class = diagnostics.classify_failure(result)
-        incident_id = diagnostics.record_incident(
-            team=s.team_name,
-            agent=s.agent_name,
-            backend="codex",
-            error_class=error_class,
-            summary=(result.error if result is not None and result.error else "no reply produced"),
-            sender=sender,
-            payload={
-                "exit_code": (result.exit_code if result is not None else None),
-                "tool_call_events": (getattr(result, "tool_call_events", 0) if result is not None else 0),
-                "error": (result.error if result is not None else None),
-            },
-        )
-        reply = diagnostics.fallback_message(
-            backend="codex",
-            incident_id=incident_id,
-            error_class=error_class,
-        )
+        reply = _prose_fallback_reply(state, sender=sender, result=result)
 
     try:
         pio.send_prose(s.team_name, s.agent_name, sender, reply, summary="prose_reply")
         logger.info("prose.reply_sent", sender=sender)
     except Exception as e:
         logger.warn("prose.reply_send_fail", sender=sender, error=str(e))
+
+
+def _handle_prose_batch(state: LoopState, messages: list[Any]) -> None:
+    """Handle a run of consecutive prose messages with ONE Codex invocation.
+
+    Phase4 #18 — prose-handler cascade fix. Pre-#18, a burst of N peer DMs in
+    one inbox drain produced N separate `app_server_invoke` calls; each
+    invocation pays the full thread/start + system-prompt cost. Collapsing
+    them into a single batched turn restores parity with native Claude
+    teammates, which see all N messages at once and reply to each within a
+    single model turn.
+
+    Behaviour:
+
+    - **N == 1**: delegate to `_handle_prose` (one-message fast path; no
+      batching overhead, identical observable shape to pre-#18).
+    - **N > 1**: compose one prompt with explicit ``[from <sender>]``
+      attribution per message, run a single Codex turn with the §2 event
+      sink, let Codex address each sender via the ``send_message`` MCP
+      wrapper tool. On Codex failure / crash, send the diagnostic-backed
+      fallback ack to **each** original sender (preserves the "no silence"
+      invariant — never collapse a batch failure into a single ack).
+
+    Lead-prose and peer-prose can coexist in one batch; the model sees the
+    attribution and decides per-sender what to send. Phase4 #17 keeps
+    `messageKind="steer"` prose handled by the mid-turn drain, not here, so
+    only idle prose lands in this path.
+    """
+    if not messages:
+        return
+    if len(messages) == 1:
+        _handle_prose(state, messages[0])
+        return
+
+    s = state.settings
+    senders = [getattr(m, "from_", "unknown") for m in messages]
+    logger.info(
+        "inbox.prose_batch",
+        count=len(messages),
+        senders=senders,
+    )
+
+    # Compose batched prompt with explicit per-sender attribution. The
+    # `send_message` wrapper tool already takes a `to=` argument, so Codex
+    # can address each sender independently in a single turn.
+    body_blocks = "\n\n".join(
+        f"[from {getattr(m, 'from_', 'unknown')}]: {m.text}" for m in messages
+    )
+    peer_section = _peer_prompt_fragments(state)
+    peer_tail = f"{peer_section}\n\n" if peer_section else ""
+    prompt = (
+        f"You are {s.agent_name}, a Codex teammate on the {s.team_name} team. "
+        f"You received {len(messages)} direct messages in this drain "
+        f"(senders: {', '.join(sorted(set(senders)))}). Read each below "
+        f"and reply to each sender independently using the `send_message` "
+        f"MCP tool — call `send_message(to=<sender>, body=<your reply>)` "
+        f"once per sender. Do not execute code unless explicitly asked.\n\n"
+        f"# Messages\n{body_blocks}\n\n"
+        f"{peer_tail}"
+        f"Do not produce a structured JSON object; address each sender via "
+        f"the `send_message` tool. Final assistant prose, if any, is "
+        f"informational only — the per-sender deliveries happen via the tool."
+    )
+
+    result, exc = _invoke_codex_prose(
+        state,
+        prompt=prompt,
+        event_sink=_prose_visibility_event_sink(state),
+    )
+    if exc is not None:
+        logger.warn("prose_batch.codex_crash", error=str(exc), count=len(messages))
+    elif result is not None and result.exit_code != 0:
+        logger.warn(
+            "prose_batch.codex_fail",
+            exit_code=result.exit_code,
+            error=result.error,
+            count=len(messages),
+        )
+
+    # Success path: Codex delivered per-sender via send_message tool calls.
+    # When result is healthy and at least one tool call was emitted, we have
+    # the same "delivered_via_tool" guard the single path uses — assume the
+    # model addressed every sender it intended to. Don't double-send.
+    success = (
+        exc is None
+        and result is not None
+        and result.exit_code == 0
+        and pio.should_skip_prose_fallback(result)
+    )
+    if success:
+        logger.info(
+            "prose_batch.delivered_via_tool",
+            count=len(messages),
+            tool_calls=getattr(result, "tool_call_events", 0),
+        )
+        return
+
+    # If Codex returned a clean exit with last_message text but no tool
+    # calls, broadcast that single reply to every sender. Pre-#18 each sender
+    # received their own bespoke reply; we preserve "every sender gets a
+    # reply" by fanning the same text out. The expected path is the
+    # send_message-per-sender flow above.
+    if exc is None and result is not None and result.exit_code == 0 and result.last_message:
+        text = result.last_message
+        for m in messages:
+            sender = getattr(m, "from_", "unknown")
+            try:
+                pio.send_prose(
+                    s.team_name, s.agent_name, sender, text, summary="prose_reply"
+                )
+                logger.info("prose_batch.reply_sent", sender=sender)
+            except Exception as e:
+                logger.warn(
+                    "prose_batch.reply_send_fail", sender=sender, error=str(e)
+                )
+        return
+
+    # Failure path: send a diagnostics-backed fallback ack to EACH original
+    # sender. Preserves the "no silence" invariant from the single-message
+    # path — collapsing N senders into one fallback would leave N-1 senders
+    # waiting on a reply that never lands.
+    for m in messages:
+        sender = getattr(m, "from_", "unknown")
+        reply = _prose_fallback_reply(state, sender=sender, result=result)
+        try:
+            pio.send_prose(
+                s.team_name, s.agent_name, sender, reply, summary="prose_reply"
+            )
+            logger.info("prose_batch.fallback_sent", sender=sender)
+        except Exception as e:
+            logger.warn(
+                "prose_batch.fallback_send_fail", sender=sender, error=str(e)
+            )
 
 
 def _handle_shutdown(state: LoopState, payload: ShutdownRequestIn) -> None:
