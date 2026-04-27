@@ -6,7 +6,9 @@ from typing import Any, Literal
 
 from typing import Annotated, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
+
+from .coupling import coupling_contract
 
 COLOR_PALETTE: list[str] = [
     "blue", "green", "yellow", "purple",
@@ -100,7 +102,21 @@ class TaskFile(BaseModel):
     blocks: list[str] = Field(default_factory=list)
     blocked_by: list[str] = Field(alias="blockedBy", default_factory=list)
     owner: str | None = Field(default=None)
+    coupling: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional per-task coupling override. Canonical shape is "
+            "{intent: tight_peer_loop|loose_parallel|batched_async}; legacy "
+            "'tight'/'loose' aliases are accepted and canonicalized for old "
+            "task files."
+        ),
+    )
     metadata: dict[str, Any] | None = Field(default=None)
+
+    @field_validator("coupling", mode="before")
+    @classmethod
+    def _canonicalize_coupling(cls, value: Any) -> dict[str, Any] | None:
+        return coupling_contract(value)
 
 
 class InboxMessage(BaseModel):
@@ -139,6 +155,7 @@ class TaskAssignment(BaseModel):
     description: str
     assigned_by: str = Field(alias="assignedBy")
     timestamp: str
+    coupling: dict[str, Any] | None = None
 
 
 class ShutdownRequest(BaseModel):

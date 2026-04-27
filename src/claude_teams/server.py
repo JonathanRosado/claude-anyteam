@@ -549,14 +549,23 @@ def task_create(
     description: str,
     active_form: str = "",
     metadata: dict | None = None,
+    coupling: dict | str | None = None,
 ) -> dict:
     """Create a new task for the team. Tasks are auto-assigned incrementing IDs.
-    Optional metadata dict is stored alongside the task."""
+    Optional metadata dict is stored alongside the task. Optional coupling is
+    the per-task coordination override."""
     try:
-        task = tasks.create_task(team_name, subject, description, active_form, metadata)
+        task = tasks.create_task(
+            team_name,
+            subject,
+            description,
+            active_form,
+            metadata,
+            coupling,
+        )
     except ValueError as e:
         raise ToolError(str(e))
-    return {"id": task.id, "status": task.status}
+    return {"id": task.id, "status": task.status, "coupling": task.coupling}
 
 
 @mcp.tool

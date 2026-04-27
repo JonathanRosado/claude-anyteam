@@ -211,6 +211,7 @@ def send_task_assignment(
         description=task.description,
         assigned_by=assigned_by,
         timestamp=now_iso(),
+        coupling=task.coupling,
     )
     send_structured_message(team_name, assigned_by, task.owner, payload, base_dir=base_dir)
 

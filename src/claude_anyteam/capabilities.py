@@ -11,6 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from claude_teams.coupling import declaration_for_regime
+
 CAPABILITY_NAMES = frozenset(
     {
         "turn_steer",
@@ -53,7 +55,7 @@ GEMINI_HEADLESS_CAPABILITIES: list[str] = []
 KIMI_HEADLESS_CAPABILITIES = ["large_context", "native_swarm"]
 
 CAPABILITY_MANIFEST_SCHEMA_VERSION = 1
-CAPABILITY_MANIFEST_VERSION = "1"
+CAPABILITY_MANIFEST_VERSION = "2"
 
 _CAPABILITY_DISPLAY_NAMES = {
     "turn_steer": "turn/steer (`turn_steer`)",
@@ -287,10 +289,11 @@ def build_agent_card(
     capability_version: str = CAPABILITY_MANIFEST_VERSION,
     transport: str | None = None,
     host_tool_surface: str | None = None,
+    coupling_regime: str | None = None,
 ) -> dict[str, Any]:
     """Build the rich R12 Agent Card persisted under ``manifests/<agent>.json``."""
     entries = capability_manifest if capability_manifest is not None else rich_capability_manifest(capabilities)
-    return {
+    card = {
         "schema_version": CAPABILITY_MANIFEST_SCHEMA_VERSION,
         "capability_version": str(capability_version),
         "team_name": team_name,
@@ -303,6 +306,14 @@ def build_agent_card(
         "host_tool_surface": host_tool_surface,
         "capabilities": entries,
     }
+    if coupling_regime is not None:
+        regime, coupling = declaration_for_regime(coupling_regime)
+        # Root-level field is the compact protocol declaration used by the
+        # dispatcher conflict check. The canonical object preserves the
+        # longer intent/sub-field shape used by scorers and workload manifests.
+        card["coupling_regime"] = regime
+        card["coupling"] = coupling
+    return card
 
 
 def _entry_text(entry: dict[str, Any], key: str) -> str:
@@ -358,6 +369,21 @@ def peer_prompt_fragment(agent_name: str, card: dict[str, Any]) -> str:
     if not isinstance(caps, dict):
         return ""
     blocks: list[str] = []
+    coupling = card.get("coupling")
+    coupling_regime = card.get("coupling_regime")
+    if isinstance(coupling, dict) or coupling_regime:
+        intent = coupling.get("intent") if isinstance(coupling, dict) else None
+        parts = []
+        if coupling_regime:
+            parts.append(f"regime={coupling_regime}")
+        if intent:
+            parts.append(f"intent={intent}")
+        blocks.append(
+            f"## {agent_name}: coupling intent declaration\n"
+            f"- Declaration: {', '.join(parts)}\n"
+            f"- Use this as routing guidance only; each backend interprets "
+            f"coupling natively."
+        )
     for capability, entry in sorted(caps.items()):
         if not isinstance(entry, dict):
             continue

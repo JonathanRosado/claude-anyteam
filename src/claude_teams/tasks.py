@@ -66,6 +66,7 @@ def create_task(
     description: str,
     active_form: str = "",
     metadata: dict | None = None,
+    coupling: dict | str | None = None,
     base_dir: Path | None = None,
 ) -> TaskFile:
     if not subject or not subject.strip():
@@ -85,6 +86,7 @@ def create_task(
             active_form=active_form,
             status="pending",
             metadata=metadata,
+            coupling=coupling,
         )
         fpath = team_dir / f"{task_id}.json"
         fpath.write_text(json.dumps(task.model_dump(by_alias=True, exclude_none=True)))

@@ -34,6 +34,7 @@ class TaskAssignmentIn(_Base):
     description: str
     assigned_by: str = Field(alias="assignedBy")
     timestamp: str
+    coupling: dict[str, Any] | None = None
 
 
 class ShutdownRequestIn(_Base):

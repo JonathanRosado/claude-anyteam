@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnyTeam capability manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "capability_version",
+    "team_name",
+    "agent_name",
+    "agent_id",
+    "capabilities"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "capability_version": {"type": "string", "minLength": 1},
+    "team_name": {"type": "string", "minLength": 1},
+    "agent_name": {"type": "string", "minLength": 1},
+    "agent_id": {"type": "string", "minLength": 1},
+    "agent_type": {"type": "string"},
+    "model": {"type": "string"},
+    "backend_type": {"type": "string"},
+    "transport": {"type": "string"},
+    "host_tool_surface": {"type": ["string", "null"]},
+    "coupling_regime": {"enum": ["tight", "loose"]},
+    "coupling": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["intent"],
+      "properties": {
+        "intent": {
+          "enum": ["tight_peer_loop", "loose_parallel", "batched_async"]
+        },
+        "blocking_peer_reply": {"type": "string"},
+        "peer_dm_policy": {"type": "string"},
+        "sync_points": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "completion_boundary": {"type": "string"},
+        "expected_metric_shape": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  }
+}

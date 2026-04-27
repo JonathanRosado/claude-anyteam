@@ -19,6 +19,12 @@ from claude_teams import tasks as _t  # type: ignore[import-untyped]
 from claude_teams import teams as _teams  # type: ignore[import-untyped]
 from claude_teams.models import InboxMessage as _InboxMessage  # type: ignore[import-untyped]
 from claude_teams.models import TaskFile as _TaskFile  # type: ignore[import-untyped]
+from claude_teams.coupling import (
+    CouplingDeclarationError,
+    canonical_regime,
+    declared_intent_from_manifest,
+    declared_regime_from_manifest,
+)
 
 from . import logger
 from .messages import (
@@ -37,6 +43,24 @@ from .messages import (
 
 def read_config(team: str):
     return _teams.read_config(team)
+
+
+def read_agent_manifest(team: str, agent: str) -> dict[str, Any] | None:
+    """Read one cached Agent Card manifest if present.
+
+    Native host Claude teammates may have no routed-backend manifest; callers
+    treat ``None`` as "no declaration to compare" rather than inventing a
+    default regime.
+    """
+
+    path = _teams.TEAMS_DIR / team / "manifests" / f"{agent}.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"capability manifest at {path} is not a JSON object")
+    return raw
 
 
 def should_skip_prose_fallback(result: Any) -> bool:
@@ -590,6 +614,88 @@ def emit_peer_steer_rejection(
     )
     # Fan-out per 07 §7.4: event log always, mailbox always for warn-level
     # rejection so the lead can audit without stderr scrape.
+    append_event(team, agent, envelope)
+    send_visibility_event_to_lead(team, agent, envelope)
+    return envelope
+
+
+def emit_coupling_conflict_if_needed(
+    *,
+    team: str,
+    agent: str,
+    backend: str,
+    task: Any,
+    manifest: dict[str, Any] | None,
+) -> VisibilityEvent | None:
+    """Emit a visibility envelope when task coupling conflicts with manifest.
+
+    The comparison reads the backend's protocol declaration from the supplied
+    Agent Card manifest. It intentionally does not infer a regime from
+    ``backend``/``backend_type``: those strings are only copied into the event
+    envelope for audit context. If no manifest/declaration exists (e.g. native
+    host Claude), the check is skipped because there is no routed-backend
+    declaration to compare against.
+    """
+
+    requested = canonical_regime(getattr(task, "coupling", None))
+    if requested is None:
+        return None
+    if manifest is None:
+        return None
+
+    try:
+        declared = declared_regime_from_manifest(manifest)
+        declared_intent = declared_intent_from_manifest(manifest)
+    except CouplingDeclarationError:
+        # A manifest was present but not usable. Let callers/tests catch this
+        # as a declaration error rather than silently applying a fake default.
+        raise
+
+    if requested == declared:
+        return None
+
+    task_id = str(getattr(task, "id", ""))
+    task_coupling = getattr(task, "coupling", None)
+    manifest_version = manifest.get("capability_version") or manifest.get("capabilityVersion")
+    suggested_fix = (
+        "consider routing this task to a tight-declared backend, or pin "
+        "task.coupling.intent=loose_parallel"
+        if requested == "tight"
+        else
+        "consider routing this task to a loose-declared backend, or pin "
+        "task.coupling.intent=tight_peer_loop"
+    )
+    now = now_iso()
+    envelope = VisibilityEvent(
+        kind="visibility_degraded",
+        event_id=f"{agent}:coupling-conflict:{task_id}:{int(time.time() * 1000)}",
+        timestamp=now,
+        team=team,
+        agent=agent,
+        backend=backend,
+        task_id=task_id or None,
+        seq=0,
+        severity="warn",
+        summary=(
+            f"task #{task_id or '?'} requests {requested} coupling but "
+            f"{agent} declares {declared}"
+        ),
+        payload={
+            "surface": "coupling_intent_conflict",
+            "reason": "task_coupling_conflicts_with_backend_declaration",
+            "task_id": task_id,
+            "requested_coupling": requested,
+            "task_coupling": task_coupling,
+            "backend_coupling_regime": declared,
+            "backend_coupling_intent": declared_intent,
+            "backend_manifest_version": str(manifest_version) if manifest_version is not None else None,
+            "backend_manifest_agent": manifest.get("agent_name") or manifest.get("agentName"),
+            "backend_manifest_transport": manifest.get("transport"),
+            "backend_label": backend,
+            "suggested_fix": suggested_fix,
+            "observation_timestamp": now,
+        },
+    )
     append_event(team, agent, envelope)
     send_visibility_event_to_lead(team, agent, envelope)
     return envelope

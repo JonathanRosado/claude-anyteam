@@ -947,7 +947,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
 
     @mcp.tool
     @instrumented_tool(category="team_tool")
-    def task_create(subject: str, description: str) -> dict:
+    def task_create(subject: str, description: str, coupling: dict | str | None = None) -> dict:
         """Create a new task in your team. Use when work you discovered
         during a task should be split off rather than bundled into the
         current one. The new task starts unowned and pending; the lead
@@ -956,16 +956,18 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
         Args:
             subject: one-line task title (imperative form).
             description: full task context and scope.
+            coupling: optional per-task coordination override in canonical
+                shape {intent: tight_peer_loop|loose_parallel|batched_async}.
         """
         if not subject.strip():
             raise ToolError("subject must not be empty")
         if not description.strip():
             raise ToolError("description must not be empty")
         try:
-            t = _cs_tasks.create_task(team, subject, description)
+            t = _cs_tasks.create_task(team, subject, description, coupling=coupling)
         except ValueError as e:
             raise ToolError(str(e))
-        return {"id": t.id, "status": t.status, "subject": t.subject}
+        return {"id": t.id, "status": t.status, "subject": t.subject, "coupling": t.coupling}
 
     @mcp.tool
     @instrumented_tool(category="team_tool")

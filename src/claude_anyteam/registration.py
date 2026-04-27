@@ -23,7 +23,7 @@ from tempfile import NamedTemporaryFile
 from claude_teams._filelock import config_lock
 
 from . import logger
-from .capabilities import build_agent_card
+from .capabilities import CAPABILITY_MANIFEST_VERSION, build_agent_card
 from .capability_manifest import (
     broadcast_manifest_event,
     delete_manifest,
@@ -46,9 +46,10 @@ class BackendMetadata:
     backend_type: str = "in-process"
     capabilities: list[str] = field(default_factory=list)
     capability_manifest: dict[str, dict] | None = None
-    capability_version: str = "1"
+    capability_version: str = CAPABILITY_MANIFEST_VERSION
     transport: str | None = None
     host_tool_surface: str | None = None
+    coupling_regime: str | None = None
 
 TEAMS_ROOT = Path.home() / ".claude" / "teams"
 
@@ -123,6 +124,7 @@ def _build_manifest(settings: Settings, metadata: BackendMetadata, entry: dict) 
         capability_version=metadata.capability_version,
         transport=metadata.transport,
         host_tool_surface=metadata.host_tool_surface,
+        coupling_regime=metadata.coupling_regime,
     )
 
 

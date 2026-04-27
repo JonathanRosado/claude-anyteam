@@ -106,6 +106,7 @@ class LoopState:
     # as codex_session_id.
     app_server_last_thread_id: str | None = None
     peer_manifest_cache: CapabilityManifestCache | None = None
+    self_capability_manifest: dict[str, Any] | None = None
 
 
 def _backend_metadata(settings: Settings) -> BackendMetadata:
@@ -130,6 +131,7 @@ def _backend_metadata(settings: Settings) -> BackendMetadata:
             ),
             transport="codex-app-server",
             host_tool_surface="codex-native",
+            coupling_regime="tight",
         )
     return BackendMetadata(
         capabilities=capabilities,
@@ -139,6 +141,7 @@ def _backend_metadata(settings: Settings) -> BackendMetadata:
         ),
         transport="codex-exec",
         host_tool_surface="codex-native",
+        coupling_regime="loose",
     )
 
 
@@ -153,6 +156,10 @@ def run(settings: Settings) -> int:
     register(settings, _backend_metadata(settings))
 
     state = LoopState(settings=settings)
+    state.self_capability_manifest = pio.read_agent_manifest(
+        settings.team_name,
+        settings.agent_name,
+    )
     state.peer_manifest_cache = CapabilityManifestCache(
         settings.team_name,
         self_name=settings.agent_name,
@@ -932,6 +939,20 @@ def _find_and_claim(state: LoopState):
                 active_form=f"Running codex on task #{t.id}",
             )
             state.in_flight_task = claimed.id
+            try:
+                pio.emit_coupling_conflict_if_needed(
+                    team=s.team_name,
+                    agent=s.agent_name,
+                    backend="codex_app_server" if s.app_server else "codex_exec",
+                    task=claimed,
+                    manifest=state.self_capability_manifest,
+                )
+            except Exception as e:
+                logger.warn(
+                    "task.coupling_conflict_visibility_failed",
+                    task_id=claimed.id,
+                    error=str(e),
+                )
             logger.info("task.claimed", task_id=claimed.id, subject=claimed.subject)
             return claimed
         except ValueError as e:
