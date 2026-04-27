@@ -308,10 +308,11 @@ def append_event(
     agent: str,
     event: VisibilityEvent | dict[str, Any],
 ) -> VisibilityEvent:
-    """Compatibility alias for the R16/R18 roadmap name.
+    """Compatibility alias for the R16/R17/R18/R19 roadmap name.
 
     The implementation originally landed as ``append_visibility_event``; the
-    protocol-rev docs and later work items refer to the same helper as
+    protocol-rev docs and later work items (R17 codex sink, R18 wrapper
+    instrumentation, R19 headless digests) refer to the same helper as
     ``append_event``. Keep both spellings wired to one append-only substrate.
     """
 

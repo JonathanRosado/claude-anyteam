@@ -194,6 +194,7 @@ def _backend_run(
         kwargs["task_id"] = task_id
     else:
         kwargs["resume_session_id"] = resume_session_id
+        kwargs["task_id"] = task_id
     return runner.run(prompt, **kwargs)
 
 

@@ -6,17 +6,27 @@ surfaces the same ``CodexResult`` shape the Kimi loop consumes.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
+from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
 
+from claude_anyteam import protocol_io as pio
 from claude_anyteam.codex import TASK_COMPLETE_SCHEMA
 from claude_anyteam.backends.kimi import invoke
 
 FIXTURES = Path(__file__).parent / "fixtures" / "kimi"
 PROBES = FIXTURES / "_research_probes"
+
+
+@pytest.fixture
+def events_root(tmp_path: Path, monkeypatch):
+    base = tmp_path / "home" / ".claude" / "teams"
+    monkeypatch.setattr(cs_messaging, "TEAMS_DIR", base)
+    return base
 
 
 def _read(name: str, root: Path = FIXTURES) -> str:
@@ -297,6 +307,38 @@ def test_run_exit_one_failure_keeps_parsed_events_and_error(tmp_path, monkeypatc
     assert result.error.startswith("kimi exited 1; output:")
     assert result.tool_call_events == 2
     assert any(ev.get("type") == "non_json_stdout" for ev in result.events)
+
+
+def test_headless_completed_payload_preserves_kimi_tool_calls(events_root, tmp_path, monkeypatch):
+    tool_calls = [
+        {"type": "function", "id": f"tool_{idx}", "function": {"name": "Shell", "arguments": "{}"}}
+        for idx in range(5)
+    ]
+    stdout = "\n".join([
+        json.dumps({"role": "assistant", "content": [], "tool_calls": tool_calls}),
+        json.dumps({"role": "assistant", "content": "KIMI_DONE"}),
+    ])
+    _patch_kimi_run(
+        monkeypatch,
+        tmp_path,
+        [{"stdout": stdout, "stderr": "", "returncode": 0}],
+    )
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        kimi_home=tmp_path / "home",
+        wrapper_identity=("team-x", "kimi-a"),
+    )
+
+    assert result.exit_code == 0
+    assert result.tool_call_events == 5
+    events = pio.read_visibility_events("team-x", "kimi-a")
+    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
+    payload = events[1].payload
+    assert payload["tool_call_events"] == 5
+    assert payload["tool_call_event_source"] == "kimi assistant.tool_calls[]"
+    assert payload["events"][0]["tool_calls"] == tool_calls
 
 
 def test_schema_validation_failure_returns_one_invocation_for_loop_to_retry(tmp_path, monkeypatch):

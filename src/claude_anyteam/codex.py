@@ -45,6 +45,7 @@ from .env import (
     identity_env,
     env_first,
 )
+from .headless_visibility import HeadlessTurnVisibility, coerce_stream_text
 from .messages import VisibilityEvent
 
 # R1 (09 §3.1): schema files are versioned wire
@@ -163,6 +164,45 @@ def _tool_name_from_event(ev: dict[str, Any]) -> str | None:
             if isinstance(val, str) and val:
                 return val
     return None
+
+
+def _parse_exec_stdout(
+    stdout: str,
+    *,
+    dump_events: bool = False,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    """Parse Codex exec JSONL without flattening the raw event stream."""
+
+    events: list[dict[str, Any]] = []
+    tool_call_events = 0
+    captured_session_id: str | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("codex.nonjson_line", line=line[:200])
+            continue
+        events.append(ev)
+        ev_type = str(ev.get("type", ""))
+        if dump_events:
+            logger.debug("codex.event", event_type=ev_type, event=ev)
+        if ev_type == "thread.started" and captured_session_id is None:
+            tid = ev.get("thread_id")
+            if isinstance(tid, str) and tid:
+                captured_session_id = tid
+                logger.info("codex.session_captured", session_id=tid)
+        if _is_tool_call_event(ev_type, ev):
+            tool_call_events += 1
+            logger.info(
+                "codex.tool_call",
+                event_type=ev_type,
+                tool=_tool_name_from_event(ev),
+                event=ev,
+            )
+    return events, tool_call_events, captured_session_id
 
 
 def wrapper_mcp_config_args(
@@ -333,6 +373,7 @@ def run(
     resume_session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    task_id: str | None = None,
 ) -> CodexResult:
     """Run `codex exec` with structured JSON output.
 
@@ -424,6 +465,7 @@ def run(
             args.extend(extra_args)
         args.append(prompt)
 
+    visibility_team, visibility_agent = wrapper_identity or ("default", "codex")
     sub_env = None
     if wrapper_identity is not None:
         team_name, agent_name = wrapper_identity
@@ -439,6 +481,23 @@ def run(
     events: list[dict[str, Any]] = []
     structured: dict[str, Any] | None = None
     error: str | None = None
+    # `CLAUDE_ANYTEAM_DUMP_EVENTS=1` logs every JSONL event at debug level.
+    # Useful while tuning the tool-call classifier against a new Codex
+    # release whose event-type names we haven't seen before.
+    dump_events = env_first(os.environ, DUMP_EVENTS_ENV, LEGACY_DUMP_EVENTS_ENV) == "1"
+    visibility = HeadlessTurnVisibility.start(
+        team=visibility_team,
+        agent=visibility_agent,
+        backend="codex_exec",
+        enabled=wrapper_identity is not None,
+        cwd=cwd,
+        schema=schema,
+        timeout_s=timeout_s,
+        model=model,
+        effort=effort,
+        resume_session_id=resume_session_id,
+        task_id=task_id,
+    )
 
     try:
         proc = subprocess.run(
@@ -459,13 +518,39 @@ def run(
     except subprocess.TimeoutExpired as e:
         error = f"codex exec timed out after {timeout_s}s"
         logger.error("codex.timeout", timeout_s=timeout_s)
-        last_msg_path.unlink(missing_ok=True)
+        events, tool_call_events, captured_session_id = _parse_exec_stdout(
+            coerce_stream_text(getattr(e, "stdout", None) or getattr(e, "output", None)),
+            dump_events=dump_events,
+        )
+        last_message = ""
+        if last_msg_path.exists():
+            try:
+                last_message = last_msg_path.read_text(encoding="utf-8").strip()
+            finally:
+                last_msg_path.unlink(missing_ok=True)
+        else:
+            last_msg_path.unlink(missing_ok=True)
+        visibility.terminal(
+            success=False,
+            exit_code=124,
+            error=error,
+            events=events,
+            tool_call_events=tool_call_events,
+            last_message=last_message,
+            structured=False,
+            partial_events_available=bool(events),
+            session_id=captured_session_id,
+            error_class="turn_timeout",
+            extra_payload={"tool_call_event_source": "codex exec JSONL classifier"},
+        )
         return CodexResult(
             exit_code=124,
             structured=None,
-            last_message="",
-            events=[],
+            last_message=last_message,
+            events=events,
             error=error,
+            tool_call_events=tool_call_events,
+            session_id=captured_session_id,
         )
 
     # Parse JSONL events; the last object that contains our schema fields is
@@ -478,42 +563,14 @@ def run(
     # version (`item.tool_call_begin`, `mcp_tool_call`, `function_call`,
     # `tool.use`, etc.), so we match a broad set and include the full event
     # in the log for forensics.
-    tool_call_events = 0
-    # `CLAUDE_ANYTEAM_DUMP_EVENTS=1` logs every JSONL event at debug level.
-    # Useful while tuning the tool-call classifier against a new Codex
-    # release whose event-type names we haven't seen before.
-    dump_events = env_first(os.environ, DUMP_EVENTS_ENV, LEGACY_DUMP_EVENTS_ENV) == "1"
     # v7.2: capture `thread_id` from the `thread.started` event so callers
     # can pass it as `resume_session_id` on subsequent tasks for the same
     # teammate identity. Observed shape on codex-cli 0.122.0:
     #   {"type":"thread.started","thread_id":"<uuid>"}
-    captured_session_id: str | None = None
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            logger.debug("codex.nonjson_line", line=line[:200])
-            continue
-        events.append(ev)
-        ev_type = str(ev.get("type", ""))
-        if dump_events:
-            logger.debug("codex.event", event_type=ev_type, event=ev)
-        if ev_type == "thread.started" and captured_session_id is None:
-            tid = ev.get("thread_id")
-            if isinstance(tid, str) and tid:
-                captured_session_id = tid
-                logger.info("codex.session_captured", session_id=tid)
-        if _is_tool_call_event(ev_type, ev):
-            tool_call_events += 1
-            logger.info(
-                "codex.tool_call",
-                event_type=ev_type,
-                tool=_tool_name_from_event(ev),
-                event=ev,
-            )
+    events, tool_call_events, captured_session_id = _parse_exec_stdout(
+        proc.stdout,
+        dump_events=dump_events,
+    )
 
     last_message = ""
     if last_msg_path.exists():
@@ -540,6 +597,20 @@ def run(
         tool_call_events=tool_call_events,
         session_id=captured_session_id,
         resumed=resume_session_id is not None,
+    )
+
+    success = proc.returncode == 0 and error is None
+    visibility.terminal(
+        success=success,
+        exit_code=proc.returncode,
+        error=error,
+        events=events,
+        tool_call_events=tool_call_events,
+        last_message=last_message,
+        structured=structured is not None,
+        partial_events_available=bool(events),
+        session_id=captured_session_id,
+        extra_payload={"tool_call_event_source": "codex exec JSONL classifier"},
     )
 
     return CodexResult(

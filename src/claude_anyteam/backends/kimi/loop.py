@@ -147,6 +147,7 @@ def _backend_run(
         "kimi_home": s.kimi_home,
         "thinking": s.thinking,
         "resume_session_id": resume_session_id,
+        "task_id": task_id,
     }
     return headless_invoke.run(prompt, **kwargs)
 

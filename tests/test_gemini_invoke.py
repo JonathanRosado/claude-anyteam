@@ -5,8 +5,17 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
 
+from claude_anyteam import protocol_io as pio
 from claude_anyteam.backends.gemini import invoke
+
+
+@pytest.fixture
+def events_root(tmp_path: Path, monkeypatch):
+    base = tmp_path / "home" / ".claude" / "teams"
+    monkeypatch.setattr(cs_messaging, "TEAMS_DIR", base)
+    return base
 
 
 def test_write_mcp_settings_uses_isolated_home_and_anyteam_alias(tmp_path, monkeypatch):
@@ -38,7 +47,7 @@ def test_write_mcp_settings_uses_isolated_home_and_anyteam_alias(tmp_path, monke
     assert (settings_path.parent / "oauth_creds.json").exists()
 
 
-def test_run_parses_stream_json_and_validates_schema(tmp_path, monkeypatch):
+def test_run_parses_stream_json_and_validates_schema(events_root, tmp_path, monkeypatch):
     stdout = "\n".join([
         json.dumps({"type": "init", "session_id": "s1"}),
         "startup banner that should be ignored",
@@ -82,6 +91,68 @@ def test_run_parses_stream_json_and_validates_schema(tmp_path, monkeypatch):
     assert alias_config["extends"] == "gemini-2.5-pro"
     assert alias_config["modelConfig"]["generateContentConfig"]["thinkingConfig"]["thinkingBudget"] == 8192
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
+
+
+def test_headless_success_emits_turn_started_and_completed(events_root, tmp_path, monkeypatch):
+    stdout = "\n".join([
+        json.dumps({"type": "init", "session_id": "s1"}),
+        json.dumps({"type": "message", "role": "assistant", "content": "done"}),
+        json.dumps({"type": "result", "status": "success"}),
+    ])
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/" + name)
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        gemini_binary="gemini",
+        wrapper_identity=("team-x", "gemini-a"),
+        gemini_home=tmp_path / "home",
+        task_id="19",
+    )
+
+    assert result.exit_code == 0
+    events = pio.read_visibility_events("team-x", "gemini-a")
+    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
+    assert [event.backend for event in events] == ["gemini_headless", "gemini_headless"]
+    assert events[0].task_id == "19"
+    payload = events[1].payload
+    assert payload["exit_code"] == 0
+    assert payload["tool_call_events"] == 0
+    assert payload["last_message_preview"] == "done"
+    assert payload["partial_events_available"] is True
+    assert [event["type"] for event in payload["events"]] == ["init", "message", "result"]
+
+
+def test_headless_exit_124_emits_turn_failed_timeout_digest(events_root, tmp_path, monkeypatch):
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 124, stdout="", stderr="timed out")
+
+    monkeypatch.setattr(invoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: "/bin/" + name)
+
+    result = invoke.run(
+        "prompt",
+        cwd=tmp_path,
+        gemini_binary="gemini",
+        wrapper_identity=("team-x", "gemini-timeout"),
+        gemini_home=tmp_path / "home",
+    )
+
+    assert result.exit_code == 124
+    events = pio.read_visibility_events("team-x", "gemini-timeout")
+    assert [event.kind for event in events] == ["turn_started", "turn_failed"]
+    payload = events[1].payload
+    assert payload["exit_code"] == 124
+    assert payload["error_class"] == "turn_timeout"
+    assert payload["tool_call_events"] == 0
+    assert payload["last_message_preview"] == ""
+    assert payload["partial_events_available"] is False
+    assert payload["events"] == []
 
 
 def test_run_fails_when_stream_ends_without_result(tmp_path, monkeypatch):

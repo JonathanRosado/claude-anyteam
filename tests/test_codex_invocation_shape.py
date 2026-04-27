@@ -13,10 +13,23 @@ rejected in favour of path 2 per the user's direction.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
+
+from claude_anyteam import protocol_io as pio
 from claude_anyteam import codex as codex_mod
+
+
+@pytest.fixture
+def events_root(tmp_path: Path, monkeypatch):
+    base = tmp_path / "home" / ".claude" / "teams"
+    monkeypatch.setattr(cs_messaging, "TEAMS_DIR", base)
+    return base
 
 
 class _FakeCompletedProcess:
@@ -144,3 +157,32 @@ def test_fresh_exec_still_includes_schema_and_cwd():
     assert "-C" in argv
     # No `resume` positional.
     assert "resume" not in argv
+
+
+def test_codex_exec_emits_headless_turn_digest(events_root, tmp_path):
+    stdout = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+        json.dumps({"type": "mcp_tool_call", "name": "send_message"}),
+    ])
+
+    def fake_run(args, **_):
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    with patch.object(codex_mod.subprocess, "run", side_effect=fake_run):
+        result = codex_mod.run(
+            prompt="noop",
+            cwd=tmp_path,
+            schema=None,
+            codex_binary="codex",
+            wrapper_identity=("team-x", "codex-a"),
+            task_id="19",
+        )
+
+    assert result.exit_code == 0
+    assert result.tool_call_events == 1
+    events = pio.read_visibility_events("team-x", "codex-a")
+    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
+    assert events[0].backend == "codex_exec"
+    assert events[0].task_id == "19"
+    assert events[1].payload["tool_call_events"] == 1
+    assert events[1].payload["events"][1]["name"] == "send_message"

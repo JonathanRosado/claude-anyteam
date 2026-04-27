@@ -23,6 +23,7 @@ from typing import Any
 from claude_anyteam import logger
 from claude_anyteam.codex import CodexResult, PLAN_SCHEMA, TASK_COMPLETE_SCHEMA
 from claude_anyteam.env import identity_env
+from claude_anyteam.headless_visibility import HeadlessTurnVisibility, coerce_stream_text
 from claude_anyteam.schema_validation import inline_schema_prompt_fragment, load_schema, parse_and_validate
 
 WRAPPER_SERVER_ALIAS = "anyteam"
@@ -352,6 +353,10 @@ def _parse_stdout(stdout: str) -> tuple[list[dict[str, Any]], str, int]:
     return events, last_message.strip(), tool_call_events
 
 
+def _has_json_events(events: list[dict[str, Any]]) -> bool:
+    return any(ev.get("type") != "non_json_stdout" for ev in events)
+
+
 def _extract_json_candidate(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -412,6 +417,7 @@ def _run_once(
     effort: str | None,
     kimi_home: Path | None,
     thinking: str,
+    task_id: str | None,
     retry_error: str | None = None,
 ) -> CodexResult:
     team, agent = wrapper_identity or ("default", "kimi")
@@ -457,6 +463,20 @@ def _run_once(
         effort=effort,
         thinking=thinking,
     )
+    visibility = HeadlessTurnVisibility.start(
+        team=team,
+        agent=agent,
+        backend="kimi_headless",
+        enabled=wrapper_identity is not None,
+        cwd=cwd,
+        schema=schema_path,
+        timeout_s=timeout_s,
+        model=model,
+        effort=effort,
+        resume_session_id=resume_session_id,
+        task_id=task_id,
+        extra_payload={"thinking": thinking},
+    )
     try:
         proc = subprocess.run(
             args,
@@ -468,8 +488,36 @@ def _run_once(
             env=sub_env,
             stdin=subprocess.DEVNULL,
         )
-    except subprocess.TimeoutExpired:
-        return CodexResult(exit_code=124, structured=None, last_message="", events=[], error=f"kimi timed out after {timeout_s}s")
+    except subprocess.TimeoutExpired as exc:
+        timeout_stdout = coerce_stream_text(getattr(exc, "stdout", None) or getattr(exc, "output", None))
+        timeout_stderr = coerce_stream_text(getattr(exc, "stderr", None))
+        events, last_message, tool_call_events = _parse_stdout(timeout_stdout)
+        captured_session_id = _extract_session_id(timeout_stderr)
+        error = f"kimi timed out after {timeout_s}s"
+        if captured_session_id:
+            write_adapter_state(home, backend="headless", headless_session_id=captured_session_id)
+        visibility.terminal(
+            success=False,
+            exit_code=124,
+            error=error,
+            events=events,
+            tool_call_events=tool_call_events,
+            last_message=last_message,
+            structured=False,
+            partial_events_available=_has_json_events(events),
+            session_id=captured_session_id,
+            error_class="turn_timeout",
+            extra_payload={"tool_call_event_source": "kimi assistant.tool_calls[]"},
+        )
+        return CodexResult(
+            exit_code=124,
+            structured=None,
+            last_message=last_message,
+            events=events,
+            error=error,
+            tool_call_events=tool_call_events,
+            session_id=captured_session_id,
+        )
 
     events, last_message, tool_call_events = _parse_stdout(proc.stdout)
     captured_session_id = _extract_session_id(proc.stderr)
@@ -488,6 +536,20 @@ def _run_once(
 
     if captured_session_id:
         write_adapter_state(home, backend="headless", headless_session_id=captured_session_id)
+
+    success = proc.returncode == 0 and error is None
+    visibility.terminal(
+        success=success,
+        exit_code=proc.returncode,
+        error=error,
+        events=events,
+        tool_call_events=tool_call_events,
+        last_message=last_message,
+        structured=structured is not None,
+        partial_events_available=_has_json_events(events),
+        session_id=captured_session_id,
+        extra_payload={"tool_call_event_source": "kimi assistant.tool_calls[]"},
+    )
 
     return CodexResult(
         exit_code=proc.returncode,
@@ -513,6 +575,7 @@ def run(
     effort: str | None = None,
     kimi_home: Path | None = None,
     thinking: str = "auto",
+    task_id: str | None = None,
 ) -> CodexResult:
     """Single Kimi invocation.
 
@@ -537,4 +600,5 @@ def run(
         effort=effort,
         kimi_home=kimi_home,
         thinking=thinking,
+        task_id=task_id,
     )

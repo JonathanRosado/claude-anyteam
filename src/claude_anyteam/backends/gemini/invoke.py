@@ -14,6 +14,7 @@ from typing import Any
 from claude_anyteam import logger
 from claude_anyteam.codex import CodexResult, PLAN_SCHEMA, TASK_COMPLETE_SCHEMA
 from claude_anyteam.env import identity_env
+from claude_anyteam.headless_visibility import HeadlessTurnVisibility, coerce_stream_text
 from claude_anyteam.schema_validation import load_schema, parse_and_validate
 
 WRAPPER_SERVER_ALIAS = "anyteam"
@@ -374,6 +375,39 @@ def _extract_json_candidate(text: str) -> str:
     return stripped
 
 
+def _parse_stream_json(stdout: str) -> tuple[list[dict[str, Any]], str, int, str | None]:
+    events: list[dict[str, Any]] = []
+    last_message_parts: list[str] = []
+    tool_call_events = 0
+    captured_session_id: str | None = None
+    seen_non_init_event = False
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("gemini.nonjson_line", line=line[:200])
+            continue
+        events.append(ev)
+        ev_type = str(ev.get("type", ""))
+        if ev_type == "init" and isinstance(ev.get("session_id"), str):
+            if seen_non_init_event:
+                logger.warn("gemini.late_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
+            elif captured_session_id is None:
+                captured_session_id = ev["session_id"]
+            elif ev["session_id"] != captured_session_id:
+                logger.warn("gemini.duplicate_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
+        else:
+            seen_non_init_event = True
+        if ev_type == "message" and ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
+            last_message_parts.append(ev["content"])
+        if ev_type == "tool_use":
+            tool_call_events += 1
+            logger.info("gemini.tool_call", tool=ev.get("tool_name"), event=ev)
+    return events, "".join(last_message_parts).strip(), tool_call_events, captured_session_id
+
+
 def run(
     prompt: str,
     *,
@@ -386,6 +420,7 @@ def run(
     model: str | None = None,
     effort: str | None = None,
     gemini_home: Path | None = None,
+    task_id: str | None = None,
 ) -> CodexResult:
     team, agent = wrapper_identity or ("default", "gemini")
     real_home = os.environ.get("HOME")
@@ -415,11 +450,6 @@ def run(
     if wrapper_identity:
         sub_env = identity_env(sub_env, team=team, name=agent)
 
-    events: list[dict[str, Any]] = []
-    last_message_parts: list[str] = []
-    tool_call_events = 0
-    captured_session_id: str | None = None
-    seen_non_init_event = False
     error: str | None = None
 
     logger.info(
@@ -432,37 +462,52 @@ def run(
         effort=effort,
         effective_model=launch_model,
     )
+    visibility = HeadlessTurnVisibility.start(
+        team=team,
+        agent=agent,
+        backend="gemini_headless",
+        enabled=wrapper_identity is not None,
+        cwd=cwd,
+        schema=schema,
+        timeout_s=timeout_s,
+        model=model,
+        effort=effort,
+        resume_session_id=resume_session_id,
+        task_id=task_id,
+        extra_payload={"effective_model": launch_model},
+    )
     try:
         proc = subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_s, check=False, env=sub_env, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return CodexResult(exit_code=124, structured=None, last_message="", events=[], error=f"gemini timed out after {timeout_s}s")
+    except subprocess.TimeoutExpired as exc:
+        timeout_stdout = coerce_stream_text(getattr(exc, "stdout", None) or getattr(exc, "output", None))
+        events, last_message, tool_call_events, captured_session_id = _parse_stream_json(timeout_stdout)
+        error = f"gemini timed out after {timeout_s}s"
+        if captured_session_id:
+            write_adapter_state(home, backend="headless", headless_session_id=captured_session_id)
+        visibility.terminal(
+            success=False,
+            exit_code=124,
+            error=error,
+            events=events,
+            tool_call_events=tool_call_events,
+            last_message=last_message,
+            structured=False,
+            partial_events_available=bool(events),
+            session_id=captured_session_id,
+            error_class="turn_timeout",
+            extra_payload={"tool_call_event_source": "gemini stream-json type=tool_use"},
+        )
+        return CodexResult(
+            exit_code=124,
+            structured=None,
+            last_message=last_message,
+            events=events,
+            error=error,
+            tool_call_events=tool_call_events,
+            session_id=captured_session_id,
+        )
 
-    for line in proc.stdout.splitlines():
-        if not line.strip():
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            logger.debug("gemini.nonjson_line", line=line[:200])
-            continue
-        events.append(ev)
-        ev_type = str(ev.get("type", ""))
-        if ev_type == "init" and isinstance(ev.get("session_id"), str):
-            if seen_non_init_event:
-                logger.warn("gemini.late_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
-            elif captured_session_id is None:
-                captured_session_id = ev["session_id"]
-            elif ev["session_id"] != captured_session_id:
-                logger.warn("gemini.duplicate_init", session_id=ev["session_id"], captured_session_id=captured_session_id)
-        else:
-            seen_non_init_event = True
-        if ev_type == "message" and ev.get("role") == "assistant" and isinstance(ev.get("content"), str):
-            last_message_parts.append(ev["content"])
-        if ev_type == "tool_use":
-            tool_call_events += 1
-            logger.info("gemini.tool_call", tool=ev.get("tool_name"), event=ev)
-
-    last_message = "".join(last_message_parts).strip()
+    events, last_message, tool_call_events, captured_session_id = _parse_stream_json(proc.stdout)
     structured: dict[str, Any] | None = None
     if schema is not None:
         parsed, err = parse_and_validate(_extract_json_candidate(last_message), load_schema(schema))
@@ -471,6 +516,7 @@ def run(
             error = f"gemini final message failed schema validation: {err}"
     terminal = next((ev for ev in reversed(events) if ev.get("type") == "result"), None)
     exit_code = proc.returncode
+    error_class: str | None = None
     if proc.returncode != 0 and not error:
         error = f"gemini exited {proc.returncode}; stderr: {proc.stderr[:500]}"
     elif terminal is None:
@@ -478,11 +524,31 @@ def run(
             error = "gemini stream ended without result event"
         if exit_code == 0:
             exit_code = 1
+        error_class = "missing_terminal_result"
     elif terminal.get("status") not in (None, "success") and not error:
         error = f"gemini result status {terminal.get('status')!r}"
+        error_class = "result_status"
 
     if captured_session_id:
         write_adapter_state(home, backend="headless", headless_session_id=captured_session_id)
+
+    success = exit_code == 0 and error is None
+    visibility.terminal(
+        success=success,
+        exit_code=exit_code,
+        error=error,
+        events=events,
+        tool_call_events=tool_call_events,
+        last_message=last_message,
+        structured=structured is not None,
+        partial_events_available=bool(events),
+        session_id=captured_session_id,
+        error_class=error_class,
+        extra_payload={
+            "tool_call_event_source": "gemini stream-json type=tool_use",
+            "terminal_result_event": terminal,
+        },
+    )
 
     return CodexResult(
         exit_code=exit_code,

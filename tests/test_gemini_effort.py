@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
+from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
 
 from claude_anyteam.backends.gemini import invoke
 from claude_anyteam.backends.gemini.config import GEMINI_EFFORT_ENV, from_env
+
+
+@pytest.fixture
+def events_root(tmp_path: Path, monkeypatch):
+    base = tmp_path / "home" / ".claude" / "teams"
+    monkeypatch.setattr(cs_messaging, "TEAMS_DIR", base)
+    return base
 
 
 def _thinking_config(entry: dict) -> dict:
@@ -82,7 +91,7 @@ def test_settings_injection_preserves_existing_config_and_adds_custom_alias(tmp_
     assert _thinking_config(entry) == {"thinkingBudget": 2048, "includeThoughts": False}
 
 
-def test_run_uses_effort_alias_model_and_writes_isolated_settings(tmp_path, monkeypatch) -> None:
+def test_run_uses_effort_alias_model_and_writes_isolated_settings(events_root, tmp_path, monkeypatch) -> None:
     stdout = "\n".join([
         json.dumps({"type": "init", "session_id": "s1"}),
         json.dumps({"type": "message", "role": "assistant", "content": "ok"}),

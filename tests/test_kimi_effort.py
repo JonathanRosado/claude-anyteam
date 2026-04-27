@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from claude_teams import messaging as cs_messaging  # type: ignore[import-untyped]
 
 from claude_anyteam.backends.kimi import invoke
 
@@ -15,6 +16,7 @@ def _capture_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any
     home = tmp_path / "home"
     work.mkdir()
     captured: dict[str, Any] = {}
+    monkeypatch.setattr(cs_messaging, "TEAMS_DIR", tmp_path / "teams")
 
     def fake_write_mcp_config(kimi_home: Path, **_kwargs: Any) -> Path:
         assert kimi_home == home

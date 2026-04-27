@@ -537,6 +537,7 @@ def _generate_plan(state: LoopState, task, *, tighten: bool) -> dict[str, Any] |
             wrapper_identity=(s.team_name, s.agent_name),
             model=s.model,
             effort=s.effort,
+            task_id=task.id,
         )
     except Exception as e:
         logger.error("plan.codex_crash", task_id=task.id, error=str(e))
@@ -768,6 +769,7 @@ def _invoke_codex_for_task(state: LoopState, task):
                     resume_session_id=state.codex_session_id,
                     model=s.model,
                     effort=s.effort,
+                    task_id=task.id,
                 )
             except Exception as e:
                 logger.error(
@@ -835,6 +837,7 @@ def _invoke_codex_for_task(state: LoopState, task):
             wrapper_identity=(s.team_name, s.agent_name),
             model=s.model,
             effort=s.effort,
+            task_id=task.id,
         )
     except Exception as e:
         logger.error("task.codex_crash", task_id=task.id, error=str(e))
