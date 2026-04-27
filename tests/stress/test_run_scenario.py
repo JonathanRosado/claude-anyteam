@@ -259,13 +259,75 @@ def test_command_for_member_constructs_claude_invocation(tmp_path: Path) -> None
     )
 
     assert cmd is not None
-    assert cmd[:3] == ["claude", "--print", "--append-system-prompt"]
+    assert cmd[0] == "claude"
+    assert "--print" not in cmd
+    assert "--agent-id" in cmd
+    assert cmd[cmd.index("--agent-id") + 1] == "claude-tgt-a@stress-S2-20260427T1530Z"
+    assert "--agent-name" in cmd
+    assert cmd[cmd.index("--agent-name") + 1] == "claude-tgt-a"
+    assert "--team-name" in cmd
+    assert cmd[cmd.index("--team-name") + 1] == "stress-S2-20260427T1530Z"
+    assert "--parent-session-id" in cmd
+    assert cmd[cmd.index("--parent-session-id") + 1] == "stress-stress-S2-20260427T1530Z"
+    assert "--agent-type" in cmd
+    assert cmd[cmd.index("--agent-type") + 1] == "claude"
     assert "--model" in cmd
     assert cmd[cmd.index("--model") + 1] == "sonnet"
     assert "claude_anyteam" not in cmd
-    assert "claude-tgt-a" in cmd[3]
-    assert "stress-S2-20260427T1530Z" in cmd[3]
-    assert str(sandbox / "repo") in cmd[3]
+
+
+def test_spawn_teammates_uses_native_claude_agent_team_argv(
+    isolated_protocol_roots,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    scenario = {
+        "members": [
+            {"name": "claude-tgt-a", "agent_type": "claude", "model": "sonnet"},
+        ]
+    }
+    run_scenario.init_sandbox_repo(sandbox / "repo")
+    run_scenario.create_stress_team("stress-S2-test", scenario, sandbox)
+
+    popen_calls: list[dict] = []
+
+    class FakePopen:
+        def __init__(self, cmd, cwd=None, env=None, stdout=None, stderr=None):
+            popen_calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(run_scenario.subprocess, "Popen", FakePopen)
+
+    notes: list[str] = []
+    procs = run_scenario.spawn_teammates(
+        "stress-S2-test",
+        scenario["members"],
+        env={"CLAUDECODE": "1", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"},
+        sandbox=sandbox,
+        notes=notes,
+    )
+
+    assert notes == []
+    assert set(procs) == {"claude-tgt-a"}
+    cmd = popen_calls[0]["cmd"]
+    assert cmd[0] == "claude"
+    assert "--team-name" in cmd
+    assert cmd[cmd.index("--team-name") + 1] == "stress-S2-test"
+    assert "--agent-name" in cmd
+    assert cmd[cmd.index("--agent-name") + 1] == "claude-tgt-a"
+    assert "--agent-type" in cmd
+    assert cmd[cmd.index("--agent-type") + 1] == "claude"
+    assert "--agent-color" in cmd
+    assert cmd[cmd.index("--agent-color") + 1] == "blue"
+    assert "--print" not in cmd
+    assert "claude_anyteam" not in cmd
+    assert popen_calls[0]["cwd"] == sandbox / "repo"
 
 
 def test_command_for_member_passes_explicit_gemini_binary(monkeypatch, tmp_path: Path) -> None:

@@ -297,6 +297,35 @@ def test_team_roster_json_output(fake_home, capsys):
     assert payload[0]["model"] == "codex-cli"
 
 
+def test_team_roster_native_claude_capabilities_empty_or_host_supplied(fake_home, capsys):
+    _seed_team_config(fake_home, "build", [
+        {
+            "name": "claude-a",
+            "agentType": "claude",
+            "model": "sonnet",
+            "backendType": "claude_native",
+            "color": "blue",
+        },
+        {
+            "name": "claude-b",
+            "agentType": "claude",
+            "model": "opus",
+            "backendType": "claude_native",
+            "color": "purple",
+            "capabilities": ["host_supplied"],
+        },
+    ])
+
+    rc = cli_main(["team-roster", "--team", "build", "--json"])
+
+    assert rc == 0
+    payload = {row["name"]: row for row in json.loads(capsys.readouterr().out)}
+    assert payload["claude-a"]["agent_type"] == "claude"
+    assert payload["claude-a"]["capabilities"] == []
+    assert payload["claude-b"]["agent_type"] == "claude"
+    assert payload["claude-b"]["capabilities"] == ["host_supplied"]
+
+
 def test_team_roster_empty_members(fake_home, capsys):
     _seed_team_config(fake_home, "build", [])
     rc = cli_main(["team-roster", "--team", "build"])

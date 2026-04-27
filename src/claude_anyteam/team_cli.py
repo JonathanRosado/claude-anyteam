@@ -1,17 +1,20 @@
 """Team-management CLI helpers.
 
-Three subcommands of ``claude-anyteam``:
+Team-management subcommands of ``claude-anyteam``:
 
   * ``team-agent``  — write per-teammate ``model``/``effort``/watchdog overrides at
                       ``~/.claude/teams/<team>/agents/<agent>.json``. The spawn
                       shim reads this file and forwards the values to the
-                      routed adapter (Codex, Gemini, Kimi).
+                      routed adapter (Codex, Gemini, Kimi). Native Claude
+                      teammates keep their host-supplied model/agent type and
+                      do not consume these adapter overrides.
 
   * ``team-patch``  — apply post-spawn fixups to a teammate row in
                       ``~/.claude/teams/<team>/config.json``. Today this
-                      means setting ``agentType`` to ``claude-anyteam`` so
-                      the wrapper MCP validation passes; the Agent tool
-                      omits this field when spawning external-LLM teammates.
+                      means setting ``agentType`` to ``claude-anyteam`` for
+                      routed external-LLM teammates so wrapper MCP validation
+                      passes. Native ``claude-*`` teammates are intentionally
+                      left as host-managed Claude rows.
 
   * ``team-roster`` — print a one-line-per-member roster summary so a
                       coordinating LLM can introspect the team without
@@ -119,7 +122,8 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
             "Write or update a per-teammate config file at "
             "~/.claude/teams/<team>/agents/<agent>.json. The spawn shim reads "
             "this file and forwards model/effort/watchdog overrides to the "
-            "routed adapter."
+            "routed adapter. Native Claude teammates keep host-supplied "
+            "spawn settings instead."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -131,7 +135,8 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
             "  claude-anyteam team-agent kimi-cara   --team build --model kimi-for-coding\n"
             "  claude-anyteam team-agent codex-alice --team build --remove\n"
             "\nThe agent name's prefix (codex-/gemini-/kimi-) determines which adapter receives the\n"
-            "config; this command does not validate the model slug against any backend catalog."
+            "config; claude-* names are native Claude and do not consume this file. This command\n"
+            "does not validate the model slug against any backend catalog."
         ),
     )
     p.add_argument("agent", type=_validate_agent_name, help="Agent name (e.g. codex-alice, gemini-bob, kimi-cara)")
@@ -276,7 +281,7 @@ def _build_team_patch_parser() -> argparse.ArgumentParser:
             "~/.claude/teams/<team>/config.json. The Agent tool spawns "
             "external-LLM teammates with agentType='general-purpose'; the "
             "wrapper MCP requires agentType='claude-anyteam'. This command "
-            "patches that field idempotently."
+            "patches that field idempotently for routed adapters only."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -284,7 +289,8 @@ def _build_team_patch_parser() -> argparse.ArgumentParser:
             "  claude-anyteam team-patch codex-alice --team build\n"
             "  claude-anyteam team-patch --team build --all-external\n"
             "\nWith --all-external the command patches every member whose name starts with\n"
-            "codex-, gemini-, or kimi- (the routed-adapter prefixes)."
+            "codex-, gemini-, or kimi- (the routed-adapter prefixes). Native\n"
+            "claude-* members are host-managed and are not patched."
         ),
     )
     p.add_argument(
@@ -307,6 +313,9 @@ def _build_team_patch_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Native Claude is the host teammate harness, not a routed adapter. Keep
+# claude-* out of this set so those rows preserve agentType="claude" (or any
+# host-supplied value) and host-supplied capabilities.
 _ROUTED_PREFIXES = ("codex-", "gemini-", "kimi-")
 
 

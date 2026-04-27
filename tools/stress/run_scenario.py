@@ -265,6 +265,8 @@ def member_backend_type(member: Mapping[str, Any]) -> str:
 def scenario_environment(scenario: Mapping[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
     env_overrides = {key: str(value) for key, value in scenario.get("env", {}).items()}
     spawn_env = os.environ.copy()
+    spawn_env.setdefault("CLAUDECODE", "1")
+    spawn_env.setdefault("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
     for key in ABLATION_ENV_KEYS:
         if key in env_overrides:
             spawn_env[key] = env_overrides[key]
@@ -401,14 +403,26 @@ def _command_for_member(member: Mapping[str, Any], team_name: str, sandbox: Path
     cwd = str(sandbox / "repo")
     base = [sys.executable, "-m"]
     if agent_type == "claude":
-        prompt = (
-            f"Phase-3 stress target {name}. You are a native Claude Code "
-            f"harness member for team {team_name}. Work from assigned tasks "
-            f"and inbox messages under ~/.claude/teams/{team_name}, using "
-            f"the repository at {cwd}."
-        )
         model = str(member.get("model") or "sonnet")
-        return ["claude", "--print", "--append-system-prompt", prompt, "--model", model]
+        agent_type_arg = str(member.get("agent_type") or "claude")
+        color = str(member.get("color") or "cyan")
+        return [
+            "claude",
+            "--agent-id",
+            f"{name}@{team_name}",
+            "--agent-name",
+            name,
+            "--team-name",
+            team_name,
+            "--agent-color",
+            color,
+            "--parent-session-id",
+            f"stress-{team_name}",
+            "--agent-type",
+            agent_type_arg,
+            "--model",
+            model,
+        ]
     if agent_type == "codex":
         cmd = [*base, "claude_anyteam.cli", "--team", team_name, "--name", name, "--cwd", cwd]
         if member.get("model"):
@@ -453,9 +467,11 @@ def spawn_teammates(
     procs: dict[str, subprocess.Popen[Any]] = {}
     proc_dir = cs_teams.TEAMS_DIR / team_name / "procs"
     proc_dir.mkdir(parents=True, exist_ok=True)
-    for member in members:
+    for index, member in enumerate(members):
         name = str(member["name"])
-        cmd = _command_for_member(member, team_name, sandbox)
+        member_for_cmd = dict(member)
+        member_for_cmd.setdefault("color", COLOR_PALETTE[index % len(COLOR_PALETTE)])
+        cmd = _command_for_member(member_for_cmd, team_name, sandbox)
         if cmd is None:
             notes.append(f"partial_native_claude:skipped:{name}")
             continue

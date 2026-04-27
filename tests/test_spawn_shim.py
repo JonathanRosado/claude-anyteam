@@ -26,6 +26,7 @@ def _clear_binary_env(monkeypatch) -> None:
 def _clear_route_env(monkeypatch) -> None:
     monkeypatch.delenv("CLAUDE_ANYTEAM_SHIM_MATCH", raising=False)
     monkeypatch.delenv("CODEX_TEAMMATE_SHIM_MATCH", raising=False)
+    monkeypatch.delenv("CLAUDE_ANYTEAM_CLAUDE_SHIM_MATCH", raising=False)
     monkeypatch.delenv("CLAUDE_ANYTEAM_GEMINI_SHIM_MATCH", raising=False)
     monkeypatch.delenv("CLAUDE_ANYTEAM_KIMI_SHIM_MATCH", raising=False)
 
@@ -76,13 +77,43 @@ def test_codex_dispatch(monkeypatch, capsys):
     }
 
 
-def test_native_passthrough_for_non_codex_agent(monkeypatch, capsys):
+def test_claude_prefix_passthrough_preserves_argv(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
     monkeypatch.delenv("CLAUDE_ANYTEAM_BINARY", raising=False)
+    _clear_route_env(monkeypatch)
     argv = [
         "/usr/local/bin/claude-anyteam-spawn-shim",
         "--agent-name",
         "claude-worker",
+        "--team-name",
+        "shim-build",
+        "--agent-id",
+        "agent-123",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        spawn_shim.shutil,
+        "which",
+        lambda name: {
+            "claude": "/usr/local/bin/claude",
+            "claude-anyteam": "/usr/local/bin/claude-anyteam",
+        }.get(name),
+    )
+
+    assert spawn_shim.main() == 0
+
+    assert calls == [("/usr/local/bin/claude", argv)]
+    stderr = capsys.readouterr().err.strip()
+    assert json.loads(stderr)["route"] == "claude"
+
+
+def test_non_matching_agent_native_passthrough_preserves_argv(monkeypatch, capsys):
+    calls = _record_execv(monkeypatch)
+    _clear_route_env(monkeypatch)
+    argv = [
+        "/usr/local/bin/claude-anyteam-spawn-shim",
+        "--agent-name",
+        "research-worker",
         "--team-name",
         "shim-build",
         "--agent-id",
@@ -184,6 +215,29 @@ def test_env_override_native_claude_binary(monkeypatch):
     assert spawn_shim.main() == 0
 
     assert calls == [("/custom/bin/claude-real", argv)]
+
+
+def test_native_claude_override_cannot_resolve_to_current_shim(monkeypatch):
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NATIVE_CLAUDE", "claude")
+    monkeypatch.setattr(
+        spawn_shim,
+        "_resolve_current_invocation",
+        lambda argv0: "/shim/bin/claude",
+    )
+    monkeypatch.setattr(
+        spawn_shim.shutil,
+        "which",
+        lambda name: "/shim/bin/claude" if name == "claude" else None,
+    )
+    monkeypatch.setattr(spawn_shim.os, "get_exec_path", lambda: ["/shim/bin"])
+    monkeypatch.setattr(
+        spawn_shim.os.path,
+        "isfile",
+        lambda path: path == "/shim/bin/claude",
+    )
+    monkeypatch.setattr(spawn_shim.os, "access", lambda path, mode: True)
+
+    assert spawn_shim._resolve_native_claude("/shim/bin/claude") is None
 
 
 def test_plan_mode_flag_is_forwarded(monkeypatch):

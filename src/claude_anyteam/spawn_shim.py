@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from .env import (
     BINARY_ENV,
+    CLAUDE_SHIM_MATCH_ENV,
     LEGACY_BINARY_ENV,
     GEMINI_BINARY_ENV,
     GEMINI_SHIM_MATCH_ENV,
@@ -27,6 +28,7 @@ from .env import (
 )
 
 DEFAULT_CODEX_MATCH = r"^codex-"
+DEFAULT_CLAUDE_MATCH = r"^claude-"
 DEFAULT_GEMINI_MATCH = r"^gemini-"
 DEFAULT_KIMI_MATCH = r"^kimi-"
 PRIMARY_BINARY = "claude-anyteam"
@@ -183,11 +185,13 @@ def _resolve_current_invocation(argv0: str) -> str | None:
 
 
 def _resolve_native_claude(argv0: str) -> str | None:
+    current = _resolve_current_invocation(argv0)
     override = env_first(os.environ, NATIVE_CLAUDE_ENV, LEGACY_NATIVE_CLAUDE_ENV)
     if override:
-        return shutil.which(override) or override
+        resolved = shutil.which(override) or override
+        if not (current and os.path.realpath(resolved) == current):
+            return resolved
 
-    current = _resolve_current_invocation(argv0)
     candidate = shutil.which("claude")
     if candidate and os.path.realpath(candidate) != current:
         return candidate
@@ -219,6 +223,10 @@ def _route_match(parsed: ParsedArgs, *, env_name: str, legacy_env_name: str | No
 
 def _codex_route(parsed: ParsedArgs) -> bool:
     return _route_match(parsed, env_name=SHIM_MATCH_ENV, legacy_env_name=LEGACY_SHIM_MATCH_ENV, default=DEFAULT_CODEX_MATCH)
+
+
+def _claude_route(parsed: ParsedArgs) -> bool:
+    return _route_match(parsed, env_name=CLAUDE_SHIM_MATCH_ENV, legacy_env_name=None, default=DEFAULT_CLAUDE_MATCH)
 
 
 def _gemini_route(parsed: ParsedArgs) -> bool:
@@ -327,6 +335,12 @@ def main(argv: list[str] | None = None) -> int:
         adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=True)
         _log_dispatch("kimi", parsed.agent_name, binary, agent_config or None)
         os.execv(binary, adapter_argv)
+        return 0
+
+    if _claude_route(parsed):
+        binary = _require_binary(_resolve_native_claude(full_argv[0]), "claude")
+        _log_dispatch("claude", parsed.agent_name, binary)
+        os.execv(binary, full_argv)
         return 0
 
     binary = _require_binary(_resolve_native_claude(full_argv[0]), "claude")
