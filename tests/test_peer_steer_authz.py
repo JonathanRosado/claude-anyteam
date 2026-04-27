@@ -60,6 +60,10 @@ def _steer_msg(sender: str, message: str = "Please use the revised constraint.")
     )
 
 
+def _prose_msg(sender: str, text: str = "FYI: I found the relevant file."):
+    return SimpleNamespace(from_=sender, text=text, summary="info")
+
+
 def _codex_result() -> codex_mod.CodexResult:
     return codex_mod.CodexResult(
         exit_code=0,
@@ -173,6 +177,120 @@ def test_codex_app_server_mid_turn_peer_steer_rejected_by_runtime_capabilities(
             },
         )
     ]
+
+
+def test_codex_app_server_mid_turn_peer_prose_without_peer_steer_capability_is_deferred(
+    monkeypatch, tmp_path: Path
+):
+    schema_path = tmp_path / "task-complete.schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    state = codex_loop.LoopState(settings=_codex_settings(tmp_path))
+    msg = _prose_msg(PEER)
+    deferred: list[tuple[str, str]] = []
+    warnings: list[tuple[str, dict]] = []
+
+    def fake_invoke(**kwargs):
+        kwargs["mid_turn_hook"]()
+        assert kwargs["steer_queue"].pop_nowait() is None
+        return _codex_result()
+
+    monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
+    monkeypatch.setattr(codex_loop.pio, "read_own_inbox", lambda *_args: [msg])
+    monkeypatch.setattr(codex_loop.codex_mod, "app_server_invoke", fake_invoke)
+    monkeypatch.setattr(
+        codex_loop,
+        "_handle_prose",
+        lambda _state, prose_msg: deferred.append((prose_msg.from_, prose_msg.text)),
+    )
+    monkeypatch.setattr(
+        codex_mod.logger,
+        "warn",
+        lambda msg, **fields: warnings.append((msg, fields)),
+    )
+
+    codex_loop._execute_task_app_server(
+        state,
+        SimpleNamespace(id="42"),
+        prompt="do work",
+    )
+
+    assert deferred == [(PEER, msg.text)]
+    assert warnings == []
+
+
+def test_codex_app_server_mid_turn_lead_prose_still_becomes_steer(
+    monkeypatch, tmp_path: Path
+):
+    schema_path = tmp_path / "task-complete.schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    state = codex_loop.LoopState(settings=_codex_settings(tmp_path))
+    msg = _prose_msg("team-lead", "Please checkpoint now.")
+    deferred: list[tuple[str, str]] = []
+
+    def fake_invoke(**kwargs):
+        kwargs["mid_turn_hook"]()
+        assert (
+            kwargs["steer_queue"].pop_nowait()
+            == "mid-task message from team-lead: Please checkpoint now."
+        )
+        return _codex_result()
+
+    monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
+    monkeypatch.setattr(codex_loop.pio, "read_own_inbox", lambda *_args: [msg])
+    monkeypatch.setattr(codex_loop.codex_mod, "app_server_invoke", fake_invoke)
+    monkeypatch.setattr(
+        codex_loop,
+        "_handle_prose",
+        lambda _state, prose_msg: deferred.append((prose_msg.from_, prose_msg.text)),
+    )
+
+    codex_loop._execute_task_app_server(
+        state,
+        SimpleNamespace(id="42"),
+        prompt="do work",
+    )
+
+    assert deferred == []
+
+
+def test_codex_app_server_mid_turn_peer_prose_becomes_steer_when_recipient_accepts(
+    monkeypatch, tmp_path: Path
+):
+    schema_path = tmp_path / "task-complete.schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    state = codex_loop.LoopState(settings=_codex_settings(tmp_path))
+    msg = _prose_msg(PEER, "Use the revised constraint.")
+    deferred: list[tuple[str, str]] = []
+
+    def fake_invoke(**kwargs):
+        kwargs["mid_turn_hook"]()
+        assert (
+            kwargs["steer_queue"].pop_nowait()
+            == f"mid-task message from {PEER}: Use the revised constraint."
+        )
+        return _codex_result()
+
+    monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
+    monkeypatch.setattr(codex_loop.pio, "read_own_inbox", lambda *_args: [msg])
+    monkeypatch.setattr(codex_loop.codex_mod, "app_server_invoke", fake_invoke)
+    monkeypatch.setattr(
+        codex_loop,
+        "_backend_metadata",
+        lambda _settings: SimpleNamespace(capabilities=["accepts_peer_steer"]),
+    )
+    monkeypatch.setattr(
+        codex_loop,
+        "_handle_prose",
+        lambda _state, prose_msg: deferred.append((prose_msg.from_, prose_msg.text)),
+    )
+
+    codex_loop._execute_task_app_server(
+        state,
+        SimpleNamespace(id="42"),
+        prompt="do work",
+    )
+
+    assert deferred == []
 
 
 def test_team_lead_steer_allowed_without_peer_steer_capability(tmp_path: Path):

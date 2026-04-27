@@ -53,6 +53,27 @@ from .registration import BackendMetadata, deregister, register
 APP_SERVER_TASK_STATE_SAMPLE_EVERY = 5
 
 
+def _mid_turn_prose_should_be_steer(
+    *,
+    sender: str | None,
+    recipient_capabilities: list[str],
+) -> bool:
+    """Return whether an untyped prose inbox message should become steer.
+
+    Lead prose remains an operational steer while a task is in flight. Peer
+    prose is more ambiguous: it can be ordinary coordination/informational DM
+    traffic, and treating all such prose as ``turn/steer`` creates noisy
+    peer_steer_rejected events for recipients that explicitly do not accept
+    peer steer. The recipient's own capability declaration governs that
+    interpretation: only recipients advertising ``accepts_peer_steer`` opt in
+    to converting peer prose into mid-turn steer fragments.
+    """
+
+    if sender == "team-lead":
+        return True
+    return bool(sender and "accepts_peer_steer" in recipient_capabilities)
+
+
 @dataclass
 class LoopState:
     settings: Settings
@@ -894,19 +915,23 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
     # inline in `turn/start` params, not as a file path).
     schema = _sv.load_schema(codex_mod.TASK_COMPLETE_SCHEMA)
 
+    recipient_capabilities = _backend_metadata(s).capabilities
     steer_queue = codex_mod.SteerQueue(
-        capabilities=_backend_metadata(s).capabilities,
+        capabilities=recipient_capabilities,
         # 09 R15-vis-followup: pass team + agent so SteerQueue.push can emit
         # visibility_degraded(surface=peer_steer_rejected) per 08 CD-6 / 07 §6.5.
         team=s.team_name,
         agent=s.agent_name,
     )
     sampled_task_events = 0
+    deferred_prose_messages: list[Any] = []
 
     def _mid_turn_hook() -> None:
-        # Drain own inbox. Prose messages become steer fragments; shutdown
-        # requests are snapshotted for the outer loop to handle after the
-        # turn completes. Ignore everything else.
+        # Drain own inbox. Lead prose and peer prose explicitly accepted by
+        # this recipient become steer fragments; other peer prose is deferred
+        # to the normal conversational handler after the task turn completes.
+        # Shutdown requests are snapshotted for the outer loop to handle after
+        # the turn completes. Ignore everything else.
         try:
             messages = pio.read_own_inbox(s.team_name, s.agent_name, s.agent_name)
         except Exception:
@@ -917,6 +942,17 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
             ).parse_protocol_text(m.text)
             if payload is None:
                 sender = getattr(m, "from_", None)
+                if not _mid_turn_prose_should_be_steer(
+                    sender=sender,
+                    recipient_capabilities=recipient_capabilities,
+                ):
+                    deferred_prose_messages.append(m)
+                    logger.info(
+                        "task.mid_turn_prose_deferred",
+                        from_=sender,
+                        text_head=m.text[:120],
+                    )
+                    continue
                 accepted = steer_queue.push(
                     f"mid-task message from {sender}: {m.text}",
                     sender=sender,
@@ -1046,7 +1082,7 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
                     error=str(e),
                 )
 
-    return codex_mod.app_server_invoke(
+    result = codex_mod.app_server_invoke(
         task_prompt=prompt,
         cwd=s.cwd,
         schema=schema,
@@ -1064,6 +1100,16 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
         task_id=str(task.id),
         event_sink=_visibility_event_sink,
     )
+    for msg in deferred_prose_messages:
+        try:
+            _handle_prose(state, msg)
+        except Exception as e:
+            logger.warn(
+                "task.mid_turn_prose_deferred_fail",
+                from_=getattr(msg, "from_", None),
+                error=str(e),
+            )
+    return result
 
 
 def _mark_blocked(state: LoopState, task, reason: str) -> None:
