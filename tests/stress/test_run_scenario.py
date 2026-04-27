@@ -63,6 +63,9 @@ def _fake_scorer_modules(*, fail: str | None = None):
                 "M4_team_cross_peer_ratio": 0.75,
                 "M9_team_steer_ack_rate": 0.9,
                 "M11a_team_p95_rtt_seconds": 42.0,
+                "samples_used_for_M11a": 7,
+                "M11a_p50": 12.0,
+                "M11a_max": 99.0,
                 "M13_total_collisions": 0,
             },
             "per_agent_files": ["agents/codex-tgt-app.json"],
@@ -304,6 +307,9 @@ def test_dry_run_S5_mixed(isolated_protocol_roots, fake_scorers, tmp_path: Path)
     assert "gemini_acp" in by_backend
     headline = _scorecard(out)["headline_metrics"]
     assert headline["M11a_team_p95_rtt_seconds"] == 42.0
+    assert headline["samples_used_for_M11a"] == 7
+    assert headline["M11a_p50"] == 12.0
+    assert headline["M11a_max"] == 99.0
     assert headline["M11b_team_p95_turn_duration_seconds"] == 84.0
 
 

@@ -101,19 +101,25 @@ def steer_ack(team: str, agent: str, seq: int, delivery: str):
     )
 
 
-def run_score(team: str, out: Path) -> tuple[dict, dict, dict[str, dict]]:
-    rc = score_collab.main(
-        [
-            "--team",
-            team,
-            "--scenario",
-            "S5",
-            "--run-id",
-            "20260427T1530Z",
-            "--out",
-            str(out),
-        ]
-    )
+def run_score(
+    team: str,
+    out: Path,
+    *,
+    coupling_intent: str | None = None,
+) -> tuple[dict, dict, dict[str, dict]]:
+    argv = [
+        "--team",
+        team,
+        "--scenario",
+        "S5",
+        "--run-id",
+        "20260427T1530Z",
+        "--out",
+        str(out),
+    ]
+    if coupling_intent is not None:
+        argv.extend(["--coupling-intent", coupling_intent])
+    rc = score_collab.main(argv)
     assert rc == 0
     scenario = json.loads((out / "scenario.json").read_text())
     pairs = json.loads((out / "pairs.json").read_text())
@@ -238,8 +244,36 @@ def test_m11_rtt_basic(teams_dir: Path, tmp_path: Path):
     assert rtt["max"] == 15.0
     assert rtt["samples"] == 1
     assert rtt["unmatched_send_count"] == 0
+    assert metrics["samples_used_for_M11a"] == 1
+    assert metrics["M11a_p50"] is None
+    assert metrics["M11a_max"] == 15.0
     pair = next(row for row in pairs["pairs"] if row["from"] == "agent-a" and row["to"] == "agent-b")
     assert pair["rtt_seconds"]["mean"] == 15.0
+
+
+def test_m11a_team_percentiles_expose_sample_count_p50_and_max(teams_dir: Path, tmp_path: Path):
+    team = "team-m11a-fields"
+    for seq, delta in enumerate([10, 20, 30, 40, 50], start=1):
+        send(team, "agent-a", seq, "agent-b", at=seq)
+        send(team, "agent-b", seq, "agent-a", at=seq + delta)
+
+    scenario, _pairs, agents = run_score(team, tmp_path / "out")
+    aggregate = scenario["aggregate"]
+    agent_metrics = agents["agent-a"]["metrics"]
+
+    assert aggregate["samples_used_for_M11a"] == 5
+    assert aggregate["M11a_p50"] == aggregate["M11a_team_rtt_seconds"]["p50"]
+    assert aggregate["M11a_max"] == 50.0
+    assert aggregate["M11a_team_p95_rtt_seconds"] == aggregate["M11a_team_rtt_seconds"]["p95"]
+    assert agent_metrics["samples_used_for_M11a"] == 5
+    assert agent_metrics["M11a_max"] == 50.0
+    assert agent_metrics["M11a_peer_dm_rtt_seconds"]["p95"] <= agent_metrics["M11a_max"]
+
+
+def test_m11a_p95_is_clamped_to_observed_max_for_small_samples():
+    triplet = score_collab.percentile_triplet([1, 2, 3, 4, 5])
+    assert triplet["p95"] == 5.0
+    assert triplet["max"] == 5.0
 
 
 def test_m11_rtt_unmatched_at_cap(teams_dir: Path, tmp_path: Path):
@@ -278,6 +312,58 @@ def test_m11a_per_backend_distinct_distributions(teams_dir: Path, tmp_path: Path
     assert buckets["codex_app_server"]["max"] == 5.0
     assert buckets["gemini_acp"]["max"] == 24.0
     assert buckets["codex_app_server"]["p50"] != buckets["gemini_acp"]["p50"]
+
+
+def test_m11a_semantic_buckets_and_classification_coverage(teams_dir: Path, tmp_path: Path):
+    team = "team-m11a-semantic"
+    send(team, "agent-a", 1, "agent-b", at=0, summary="ask: need review")
+    send(team, "agent-b", 1, "agent-a", at=10, summary="answer: reviewed")
+    send(team, "agent-a", 2, "agent-b", at=20, summary="fyi: continuing")
+    send(team, "agent-b", 2, "agent-a", at=30, summary="answer: noted")
+    send(team, "agent-a", 3, "agent-b", at=40, summary="please review without prefix")
+    send(team, "agent-b", 3, "agent-a", at=50, summary="answer: done")
+
+    scenario, _pairs, agents = run_score(team, tmp_path / "out")
+    metrics = agents["agent-a"]["metrics"]
+    by_semantic = metrics["M11a_peer_dm_rtt_seconds_by_semantic"]
+
+    assert by_semantic["classifier_method"] == "prefix_v1"
+    assert by_semantic["ask"]["samples"] == 1
+    assert by_semantic["ask"]["max"] == 10.0
+    assert by_semantic["fyi"]["samples"] == 1
+    assert by_semantic["other"]["samples"] == 1
+    assert metrics["M11a_classification_coverage"] == 0.667
+    assert scenario["aggregate"]["M11a_classification_coverage"] == 0.833
+    assert "m11a_unclassified_semantic:1" in agents["agent-a"]["notes"]
+
+
+def test_m11a_loose_coupling_compliance_uses_structured_reason_and_alias(
+    teams_dir: Path,
+    tmp_path: Path,
+):
+    team = "team-m11a-coupling"
+    send(team, "agent-a", 1, "agent-b", at=0, turn_id="turn-1", summary="handoff: please take over")
+    send(team, "agent-b", 1, "agent-a", at=10, turn_id="turn-2", summary="answer: ok")
+    send(team, "agent-a", 2, "agent-b", at=20, turn_id="turn-1", summary="fyi: local shard done")
+
+    scenario, _pairs, agents = run_score(team, tmp_path / "out", coupling_intent="loose")
+    compliance = agents["agent-a"]["metrics"]["M11a_coupling_compliance"]
+    team_compliance = scenario["aggregate"]["M11a_coupling_compliance"]
+
+    assert compliance["declared_intent"] == "loose_parallel"
+    assert compliance["blocking_candidate_peer_dms"] == 1
+    assert compliance["nonblocking_peer_dms"] == 1
+    assert compliance["violations"] == [
+        {
+            "event_id": "agent-a:turn-1:1",
+            "reason": "blocking_candidate_under_loose_parallel",
+            "recipient": "agent-b",
+            "semantic": "handoff",
+            "sender": "agent-a",
+            "turn_id": "turn-1",
+        }
+    ]
+    assert team_compliance["violations"][0]["reason"] == "blocking_candidate_under_loose_parallel"
 
 
 def test_m11a_undersampled_backend_emits_null_percentiles(teams_dir: Path, tmp_path: Path):
