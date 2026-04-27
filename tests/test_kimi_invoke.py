@@ -334,8 +334,17 @@ def test_headless_completed_payload_preserves_kimi_tool_calls(events_root, tmp_p
     assert result.exit_code == 0
     assert result.tool_call_events == 5
     events = pio.read_visibility_events("team-x", "kimi-a")
-    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
-    payload = events[1].payload
+    assert [event.kind for event in events] == [
+        "turn_started",
+        "tool_event",
+        "tool_event",
+        "tool_event",
+        "tool_event",
+        "tool_event",
+        "turn_completed",
+    ]
+    assert [event.payload["tool_name"] for event in events[1:6]] == ["Shell"] * 5
+    payload = events[-1].payload
     assert payload["tool_call_events"] == 5
     assert payload["tool_call_event_source"] == "kimi assistant.tool_calls[]"
     assert payload["events"][0]["tool_calls"] == tool_calls

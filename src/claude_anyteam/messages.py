@@ -224,6 +224,7 @@ class TaskCompleteOut(_Base):
 
 
 VisibilityEventKind = Literal[
+    "agent_registered",
     "turn_started",
     "turn_progress",
     "tool_event",
@@ -320,6 +321,7 @@ def parse_protocol_text(text: str) -> _Base | None:
     if t == "steer":
         return _safe_load(SteerIn, raw)
     if t in {
+        "agent_registered",
         "turn_started",
         "turn_progress",
         "tool_event",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,136 @@ def error_class_for_terminal(*, exit_code: int, error: str | None, default: str 
             return "schema_validation_failed"
         return "turn_error"
     return None
+
+
+def _json_preview(value: Any, *, limit: int = 1000) -> str:
+    try:
+        text = json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        text = repr(value)
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _tool_call_name(call: Any) -> str | None:
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return function["name"]
+    if isinstance(call.get("name"), str):
+        return call["name"]
+    if isinstance(call.get("tool_name"), str):
+        return call["tool_name"]
+    return None
+
+
+def _tool_call_target(call: dict[str, Any]) -> Any:
+    function = call.get("function")
+    if isinstance(function, dict):
+        return function.get("arguments")
+    for key in ("arguments", "input", "command", "query", "path"):
+        if key in call:
+            return call.get(key)
+    return None
+
+
+def _category_for_tool(*, raw_type: str, tool_name: str | None, source: str | None) -> str:
+    joined = " ".join(part.lower() for part in (raw_type, tool_name or "", source or ""))
+    if "mcp" in joined or (tool_name or "").startswith("mcp_"):
+        return "mcp_tool"
+    if source in {"gemini_acp", "gemini_headless"}:
+        return "mcp_tool"
+    return "host_tool"
+
+
+def _headless_tool_event_payloads(
+    events: list[dict[str, Any]],
+    *,
+    source: str | None,
+) -> list[dict[str, Any]]:
+    """Extract best-effort per-tool envelopes from backend-native streams.
+
+    The terminal digest still carries the full raw event list. These payloads
+    add the stable ``tool_event`` envelope required by 07 §7 without flattening
+    away the backend-native shape: raw type/name/id/details stay in payload.
+    """
+
+    payloads: list[dict[str, Any]] = []
+    for idx, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            continue
+        ev_type = str(ev.get("type") or "")
+        # Gemini headless and ACP-normalized streams expose tool invocations as
+        # type=tool_use. Codex exec JSONL has used mcp_tool_call/tool_call-like
+        # names across releases. Tool *results* are terminal data, not a new
+        # invocation, so do not count them here.
+        if ev_type and any(
+            frag in ev_type.lower()
+            for frag in ("tool_use", "mcp_tool_call", "tool_call", "function_call")
+        ) and "result" not in ev_type.lower():
+            tool_name = (
+                ev.get("tool_name")
+                or ev.get("name")
+                or ev.get("title")
+                or ev.get("function_name")
+            )
+            tool_name = str(tool_name) if tool_name else ev_type
+            raw_source = str(ev.get("source") or source or "")
+            target = (
+                ev.get("target")
+                or ev.get("command")
+                or ev.get("query")
+                or ev.get("arguments")
+                or ev.get("input")
+            )
+            payloads.append(
+                {
+                    "category": _category_for_tool(
+                        raw_type=ev_type,
+                        tool_name=tool_name,
+                        source=raw_source,
+                    ),
+                    "tool_name": tool_name,
+                    "phase": ev.get("phase") or ev.get("status") or "started",
+                    "target": target,
+                    "status": ev.get("status"),
+                    "raw_backend_type": ev_type,
+                    "raw_event_index": idx,
+                    "raw_event_preview": _json_preview(ev),
+                    "tool_call_id": ev.get("tool_call_id") or ev.get("id"),
+                    "tool_event_source": source,
+                }
+            )
+
+        tool_calls = ev.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call_idx, call in enumerate(tool_calls):
+                if not isinstance(call, dict):
+                    continue
+                tool_name = _tool_call_name(call) or "tool_call"
+                raw_type = str(call.get("type") or "assistant.tool_calls[]")
+                payloads.append(
+                    {
+                        "category": _category_for_tool(
+                            raw_type=raw_type,
+                            tool_name=tool_name,
+                            source=source,
+                        ),
+                        "tool_name": tool_name,
+                        "phase": "started",
+                        "target": _tool_call_target(call),
+                        "raw_backend_type": "assistant.tool_calls[]",
+                        "raw_event_index": idx,
+                        "raw_tool_call_index": call_idx,
+                        "raw_event_preview": _json_preview(call),
+                        "tool_call_id": call.get("id"),
+                        "tool_event_source": source,
+                    }
+                )
+    return [
+        {key: value for key, value in payload.items() if value is not None}
+        for payload in payloads
+    ]
 
 
 @dataclass
@@ -221,6 +352,18 @@ class HeadlessTurnVisibility:
             )
         if extra_payload:
             payload.update(extra_payload)
+        source = payload.get("tool_call_event_source")
+        source = source if isinstance(source, str) else None
+        for tool_payload in _headless_tool_event_payloads(events, source=source):
+            name = str(tool_payload.get("tool_name") or "tool")
+            target = tool_payload.get("target")
+            summary = f"{name}: {target}" if target else name
+            self.emit(
+                kind="tool_event",
+                severity="info",
+                summary=summary[:200],
+                payload=tool_payload,
+            )
         return self.emit(
             kind="turn_completed" if success else "turn_failed",
             severity="info" if success else "error",

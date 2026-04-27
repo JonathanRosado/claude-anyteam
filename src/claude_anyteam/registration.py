@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from claude_teams._filelock import config_lock
+from claude_teams._filelock import config_lock, file_lock
 
 from . import logger
 from .capabilities import build_agent_card
@@ -32,7 +32,7 @@ from .capability_manifest import (
     write_manifest,
 )
 from .config import Settings
-from .messages import CapabilityManifestUpdatedOut
+from .messages import CapabilityManifestUpdatedOut, VisibilityEvent
 
 
 @dataclass(frozen=True)
@@ -263,6 +263,15 @@ def register(settings: Settings, metadata: BackendMetadata | None = None) -> dic
             team=settings.team_name,
             name=settings.agent_name,
         )
+    _emit_agent_registered_event(
+        settings,
+        metadata,
+        entry,
+        registration_status=(
+            "added" if added else "upgraded" if upgraded_fields else "existing"
+        ),
+        upgraded_fields=upgraded_fields,
+    )
     return entry
 
 
@@ -271,6 +280,113 @@ def _ensure_inbox(team: str, name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         _atomic_write_text(path, "[]\n")
+
+
+def _emit_agent_registered_event(
+    settings: Settings,
+    metadata: BackendMetadata,
+    entry: dict,
+    *,
+    registration_status: str,
+    upgraded_fields: list[str],
+) -> None:
+    """Fan out a startup registration envelope.
+
+    The append uses ``registration.TEAMS_ROOT`` directly (rather than
+    ``protocol_io``'s view of ``claude_teams.messaging.TEAMS_DIR``) so tests
+    that isolate only the registration root stay hermetic. In normal runtime
+    both roots are ``~/.claude/teams`` and the event is readable through
+    ``protocol_io.read_events`` like every other visibility envelope.
+    """
+
+    event = VisibilityEvent(
+        kind="agent_registered",
+        event_id=f"{settings.agent_name}:agent-registered:{int(time.time() * 1000)}",
+        team=settings.team_name,
+        agent=settings.agent_name,
+        backend=metadata.transport or metadata.backend_type,
+        seq=0,
+        severity="info",
+        summary=(
+            f"{settings.agent_name} registered "
+            f"({metadata.transport or metadata.backend_type})"
+        )[:300],
+        visibility={
+            "mailbox": True,
+            "task_state": False,
+            "event_log": True,
+            "stderr": True,
+        },
+        payload={
+            "registration_status": registration_status,
+            "agent_id": entry.get("agentId"),
+            "agent_type": entry.get("agentType"),
+            "backend_type": entry.get("backendType"),
+            "transport": metadata.transport,
+            "host_tool_surface": metadata.host_tool_surface,
+            "capabilities": list(metadata.capabilities),
+            "upgraded_fields": list(upgraded_fields),
+        },
+    )
+    try:
+        _append_registration_event(settings.team_name, settings.agent_name, event)
+        _append_registration_event_to_lead(settings.team_name, settings.agent_name, event)
+    except Exception as e:
+        # Registration itself is load-bearing for the adapter. Visibility is
+        # required for observability, but a transient event-log/mailbox race
+        # must not prevent the teammate from joining the team.
+        logger.warn(
+            "registration.visibility_emit_failed",
+            team=settings.team_name,
+            name=settings.agent_name,
+            error=str(e),
+        )
+
+
+def _append_registration_event(
+    team: str,
+    agent: str,
+    event: VisibilityEvent,
+) -> None:
+    events_dir = team_dir(team) / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = events_dir / ".lock"
+    lock_path.touch(exist_ok=True)
+    line = event.model_dump_json(by_alias=True, exclude_none=True)
+    with file_lock(lock_path):
+        with (events_dir / f"{agent}.jsonl").open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.write("\n")
+    lock_path.touch(exist_ok=True)
+
+
+def _append_registration_event_to_lead(
+    team: str,
+    agent: str,
+    event: VisibilityEvent,
+) -> None:
+    inbox_dir = team_dir(team) / "inboxes"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    inbox_path_ = inbox_dir / "team-lead.json"
+    lock_path = inbox_dir / ".lock"
+    lock_path.touch(exist_ok=True)
+    row = {
+        "from": agent,
+        "text": event.model_dump_json(by_alias=True, exclude_none=True),
+        "timestamp": event.timestamp,
+        "read": False,
+        "summary": f"visibility:{event.kind}",
+        "messageKind": event.kind,
+    }
+    with file_lock(lock_path):
+        try:
+            raw = json.loads(inbox_path_.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            raw = []
+        if not isinstance(raw, list):
+            raw = []
+        raw.append(row)
+        inbox_path_.write_text(json.dumps(raw), encoding="utf-8")
 
 
 def deregister(settings: Settings) -> bool:

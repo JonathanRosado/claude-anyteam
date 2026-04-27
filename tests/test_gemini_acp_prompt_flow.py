@@ -85,12 +85,13 @@ def test_acp_success_emits_turn_lifecycle_events(events_root, tmp_path, monkeypa
 
     assert result.exit_code == 0
     events = pio.read_events("team-x", "gemini-acp")
-    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
-    assert [event.backend for event in events] == ["gemini_acp", "gemini_acp"]
+    assert [event.kind for event in events] == ["turn_started", "tool_event", "turn_completed"]
+    assert [event.backend for event in events] == ["gemini_acp", "gemini_acp", "gemini_acp"]
     assert events[0].task_id == "46"
     assert events[0].payload["prompt_kind"] == "task_complete"
     assert events[0].payload["effective_model"]
-    completed = events[1]
+    assert events[1].payload["raw_backend_type"] == "tool_use"
+    completed = events[2]
     assert completed.task_id == "46"
     assert completed.payload["exit_code"] == 0
     assert completed.payload["structured"] is True

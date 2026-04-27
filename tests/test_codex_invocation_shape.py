@@ -201,11 +201,13 @@ def test_codex_exec_emits_headless_turn_digest(events_root, tmp_path):
     assert result.exit_code == 0
     assert result.tool_call_events == 1
     events = pio.read_visibility_events("team-x", "codex-a")
-    assert [event.kind for event in events] == ["turn_started", "turn_completed"]
+    assert [event.kind for event in events] == ["turn_started", "tool_event", "turn_completed"]
     assert events[0].backend == "codex_exec"
     assert events[0].task_id == "19"
-    assert events[1].payload["tool_call_events"] == 1
-    assert events[1].payload["events"][1]["name"] == "send_message"
+    assert events[1].payload["raw_backend_type"] == "mcp_tool_call"
+    assert events[1].payload["tool_name"] == "send_message"
+    assert events[2].payload["tool_call_events"] == 1
+    assert events[2].payload["events"][1]["name"] == "send_message"
 
 
 def test_codex_exec_digest_marks_task_complete_json_structured_without_schema(
