@@ -34,11 +34,21 @@ KNOWN_STEER_VALUES = {
     "dropped",
 }
 SEMANTIC_LABELS = ("ask", "answer", "handoff", "fyi", "other")
+CLASSIFIER_METHOD = "prefix_v1"
 SEMANTIC_PREFIXES = {
     "ask:": "ask",
     "answer:": "answer",
     "handoff:": "handoff",
     "fyi:": "fyi",
+}
+BLOCKING_CANDIDATE_SEMANTICS = {"ask", "handoff"}
+NONBLOCKING_SEMANTICS = {"answer", "fyi"}
+COUPLING_INTENT_ALIASES = {
+    "tight": "tight_peer_loop",
+    "tight_peer_loop": "tight_peer_loop",
+    "loose": "loose_parallel",
+    "loose_parallel": "loose_parallel",
+    "batched_async": "batched_async",
 }
 
 
@@ -66,6 +76,8 @@ class TerminalEvent:
 class RttResult:
     by_pair: dict[tuple[str, str], list[float]]
     unmatched_by_pair: Counter[tuple[str, str]]
+    by_sender_semantic: dict[tuple[str, str], list[float]]
+    unmatched_by_sender_semantic: Counter[tuple[str, str]]
     self_dm_warnings: int = 0
 
 
@@ -102,14 +114,16 @@ def parse_timestamp(value: str | None) -> datetime | None:
 
 def stats(samples: Iterable[float], *, include_unmatched: int | None = None) -> dict[str, Any]:
     values = sorted(float(v) for v in samples)
+    p95 = None
+    if len(values) >= 5:
+        # Historical scorer contract uses stdlib's exclusive percentile.
+        # Clamp to the observed maximum so undersampled pair-level buckets
+        # cannot report an impossible p95 above max.
+        p95 = min(statistics.quantiles(values, n=20)[18], max(values))
     out: dict[str, Any] = {
         "mean": round(statistics.mean(values), 3) if values else None,
         "median": round(statistics.median(values), 3) if values else None,
-        "p95": (
-            round(statistics.quantiles(values, n=20)[18], 3)
-            if len(values) >= 5
-            else None
-        ),
+        "p95": round(p95, 3) if p95 is not None else None,
         "samples": len(values),
     }
     if include_unmatched is not None:
@@ -118,14 +132,20 @@ def stats(samples: Iterable[float], *, include_unmatched: int | None = None) -> 
 
 
 def percentile_triplet(samples: Iterable[float], *, include_unmatched: int | None = None) -> dict[str, Any]:
-    """p50/p95/max shape for M11a backend-sliced RTT distributions."""
+    """p50/p95/max shape for M11a RTT distributions.
+
+    Percentiles are computed across *matched RTT samples only*. Unmatched
+    sends are exposed separately as ``unmatched_send_count`` so p95 cannot be
+    inflated or deflated by synthetic cap values.
+    """
 
     values = sorted(float(v) for v in samples)
     enough = len(values) >= 5
     quantiles = statistics.quantiles(values, n=20) if enough else []
+    p95 = min(quantiles[18], max(values)) if enough else None
     out: dict[str, Any] = {
         "p50": round(quantiles[9], 3) if enough else None,
-        "p95": round(quantiles[18], 3) if enough else None,
+        "p95": round(p95, 3) if p95 is not None else None,
         "max": round(max(values), 3) if values else None,
         "samples": len(values),
     }
@@ -140,8 +160,40 @@ def ratio(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 3)
 
 
+def normalize_coupling_intent(raw: Any) -> str | None:
+    """Normalize scorer-only legacy aliases for coupling intent.
+
+    New workload manifests should use the canonical nested form
+    ``{"coupling": {"intent": "tight_peer_loop" | "loose_parallel" |
+    "batched_async"}}``. This scorer accepts legacy string aliases
+    (``"tight"``/``"loose"``) only while interpreting old run fixtures; the
+    workload loader should not grow parallel schema spellings.
+    """
+
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, dict):
+        raw = raw.get("intent")
+    value = str(raw)
+    normalized = COUPLING_INTENT_ALIASES.get(value)
+    if normalized is None:
+        warn(f"unknown coupling intent {value!r}; compliance checks disabled")
+    return normalized
+
+
+def classification_coverage(counter: Counter[str], total_peer_sends: int) -> float | None:
+    classified = sum(counter.get(label, 0) for label in SEMANTIC_LABELS if label != "other")
+    return ratio(classified, total_peer_sends)
+
+
 def classify_semantic(summary: str | None, payload: dict[str, Any]) -> str:
-    """Coarse semantic label for peer-DM summaries."""
+    """Coarse semantic label for peer-DM summaries.
+
+    ``prefix_v1`` is intentionally strict: only explicit ``ask:``,
+    ``answer:``, ``handoff:``, and ``fyi:`` prefixes classify. Older W7 runs
+    without prefix discipline should remain ``other`` rather than getting
+    silently reinterpreted by heuristic content matching.
+    """
 
     candidates = (
         payload.get("message_summary"),
@@ -149,22 +201,11 @@ def classify_semantic(summary: str | None, payload: dict[str, Any]) -> str:
         payload.get("tool_summary"),
         summary,
     )
-    text = " ".join(str(candidate) for candidate in candidates if candidate).strip().lower()
-    if not text:
-        return "other"
     for candidate in candidates:
         candidate_text = str(candidate or "").strip().lower()
         for prefix, label in SEMANTIC_PREFIXES.items():
             if candidate_text.startswith(prefix):
                 return label
-    if any(token in text for token in ("handoff", "hand off", "take over", "delegate", "passing to")):
-        return "handoff"
-    if any(token in text for token in ("answer", "answered", "reply", "response", "resolved", "confirmed")):
-        return "answer"
-    if "?" in text or any(token in text for token in ("ask", "question", "clarify", "need", "can you", "could you", "please review", "help")):
-        return "ask"
-    if any(token in text for token in ("fyi", "heads up", "status", "update", "note", "progress")):
-        return "fyi"
     return "other"
 
 
@@ -347,6 +388,8 @@ def compute_rtt(send_messages: list[SendMessageEvent]) -> RttResult:
 
     by_pair: dict[tuple[str, str], list[float]] = defaultdict(list)
     unmatched_by_pair: Counter[tuple[str, str]] = Counter()
+    by_sender_semantic: dict[tuple[str, str], list[float]] = defaultdict(list)
+    unmatched_by_sender_semantic: Counter[tuple[str, str]] = Counter()
 
     for pair, sends in sends_by_pair.items():
         replies = replies_by_pair.get(pair, [])
@@ -359,8 +402,10 @@ def compute_rtt(send_messages: list[SendMessageEvent]) -> RttResult:
             sends,
             key=lambda s: s.timestamp or datetime.max.replace(tzinfo=timezone.utc),
         ):
+            semantic_key = (send.sender, send.semantic)
             if send.timestamp is None:
                 unmatched_by_pair[pair] += 1
+                unmatched_by_sender_semantic[semantic_key] += 1
                 continue
             matched_delta: float | None = None
             matched_index: int | None = None
@@ -377,12 +422,20 @@ def compute_rtt(send_messages: list[SendMessageEvent]) -> RttResult:
                 break
             if matched_delta is not None and matched_delta <= RTT_CAP_SECONDS:
                 by_pair[pair].append(float(matched_delta))
+                by_sender_semantic[semantic_key].append(float(matched_delta))
                 assert matched_index is not None
                 consumed.add(matched_index)
             else:
                 unmatched_by_pair[pair] += 1
+                unmatched_by_sender_semantic[semantic_key] += 1
 
-    return RttResult(by_pair=dict(by_pair), unmatched_by_pair=unmatched_by_pair, self_dm_warnings=self_dm_warnings)
+    return RttResult(
+        by_pair=dict(by_pair),
+        unmatched_by_pair=unmatched_by_pair,
+        by_sender_semantic=dict(by_sender_semantic),
+        unmatched_by_sender_semantic=unmatched_by_sender_semantic,
+        self_dm_warnings=self_dm_warnings,
+    )
 
 
 def delivery_breakdown(events: Iterable[VisibilityEvent]) -> Counter[str]:
@@ -441,6 +494,76 @@ def recipient_backend_buckets(
         buckets[backend].extend(rtt.by_pair.get(pair, []))
         unmatched[backend] += rtt.unmatched_by_pair.get(pair, 0)
     return dict(buckets), unmatched
+
+
+def semantic_rtt_buckets(
+    rtt: RttResult,
+    *,
+    sender: str | None = None,
+) -> tuple[dict[str, list[float]], Counter[str]]:
+    """Return M11a RTT samples/unmatched counts partitioned by semantic label."""
+
+    buckets: dict[str, list[float]] = {label: [] for label in SEMANTIC_LABELS}
+    unmatched: Counter[str] = Counter({label: 0 for label in SEMANTIC_LABELS})
+    for (sample_sender, semantic), samples in rtt.by_sender_semantic.items():
+        if sender is not None and sample_sender != sender:
+            continue
+        label = semantic if semantic in SEMANTIC_LABELS else "other"
+        buckets[label].extend(samples)
+    for (sample_sender, semantic), count in rtt.unmatched_by_sender_semantic.items():
+        if sender is not None and sample_sender != sender:
+            continue
+        label = semantic if semantic in SEMANTIC_LABELS else "other"
+        unmatched[label] += count
+    return buckets, unmatched
+
+
+def semantic_rtt_doc(
+    rtt: RttResult,
+    *,
+    sender: str | None = None,
+) -> dict[str, Any]:
+    buckets, unmatched = semantic_rtt_buckets(rtt, sender=sender)
+    out: dict[str, Any] = {"classifier_method": CLASSIFIER_METHOD}
+    for label in SEMANTIC_LABELS:
+        out[label] = percentile_triplet(
+            buckets.get(label, []),
+            include_unmatched=unmatched.get(label, 0),
+        )
+    return out
+
+
+def coupling_compliance_doc(
+    *,
+    coupling_intent: str | None,
+    sends: Iterable[SendMessageEvent],
+) -> dict[str, Any]:
+    peer_sends = [send for send in sends if send.is_peer]
+    violations: list[dict[str, Any]] = []
+    if coupling_intent == "loose_parallel":
+        for send in peer_sends:
+            if send.semantic not in BLOCKING_CANDIDATE_SEMANTICS:
+                continue
+            violations.append(
+                {
+                    "turn_id": send.event.turn_id,
+                    "sender": send.sender,
+                    "recipient": send.recipient,
+                    "semantic": send.semantic,
+                    "reason": "blocking_candidate_under_loose_parallel",
+                    "event_id": send.event.event_id,
+                }
+            )
+    return {
+        "declared_intent": coupling_intent,
+        "blocking_candidate_peer_dms": sum(
+            1 for send in peer_sends if send.semantic in BLOCKING_CANDIDATE_SEMANTICS
+        ),
+        "nonblocking_peer_dms": sum(
+            1 for send in peer_sends if send.semantic in NONBLOCKING_SEMANTICS
+        ),
+        "violations": violations,
+    }
 
 
 def sort_events(events: Iterable[VisibilityEvent]) -> list[VisibilityEvent]:
@@ -504,7 +627,9 @@ def build_scorecards(
     *,
     scenario: str,
     run_id: str,
+    coupling_intent: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+    coupling_intent = normalize_coupling_intent(coupling_intent)
     merged_events_by_agent: dict[str, list[VisibilityEvent]] = defaultdict(list)
     for file_agent, events in dataset.events_by_agent.items():
         if not events:
@@ -605,11 +730,21 @@ def build_scorecards(
             )
             for backend, samples in sorted(backend_samples.items())
         }
+        m11a_peer = percentile_triplet(agent_samples, include_unmatched=agent_unmatched)
+        m11a_by_semantic = semantic_rtt_doc(rtt, sender=agent)
+        agent_classification_coverage = classification_coverage(semantic_by_sender[agent], peer_sent)
+        agent_compliance = coupling_compliance_doc(
+            coupling_intent=coupling_intent,
+            sends=sends,
+        )
 
         notes: list[str] = []
         for backend, samples in sorted(backend_samples.items()):
             if len(samples) < 5:
                 notes.append(f"m11a_undersampled:{backend}")
+        unclassified = semantic_by_sender[agent].get("other", 0)
+        if unclassified:
+            notes.append(f"m11a_unclassified_semantic:{unclassified}")
         if send_total == 0:
             notes.append("no_send_message_calls")
         if missing_recipient:
@@ -647,8 +782,14 @@ def build_scorecards(
                 "M9_steer_ack_total": steer_total,
                 "M9_inflight_count": steer_inflight,
                 "M9_delivery_breakdown": delivery_breakdown_dict(steer_counter),
-                "M11a_peer_dm_rtt_seconds": percentile_triplet(agent_samples, include_unmatched=agent_unmatched),
+                "M11a_peer_dm_rtt_seconds": m11a_peer,
                 "M11a_peer_dm_rtt_seconds_by_recipient_backend": m11a_by_backend,
+                "M11a_peer_dm_rtt_seconds_by_semantic": m11a_by_semantic,
+                "M11a_classification_coverage": agent_classification_coverage,
+                "M11a_coupling_compliance": agent_compliance,
+                "samples_used_for_M11a": m11a_peer["samples"],
+                "M11a_p50": m11a_peer["p50"],
+                "M11a_max": m11a_peer["max"],
                 "M13_prose_fallback_collisions": collisions,
                 "M13_total_send_message_replies": len(agent_terminals),
                 "M13_prose_fallback_collision_rate": ratio(collisions, len(agent_terminals)),
@@ -666,6 +807,15 @@ def build_scorecards(
         total_semantic.update(semantic_by_sender[agent])
 
     team_steer_observed, team_steer_total, team_steer_inflight, team_steer_rate = delivery_rate_parts(total_steer_counter)
+    team_m11a = percentile_triplet(
+        all_rtt_samples,
+        include_unmatched=sum(rtt.unmatched_by_pair.values()),
+    )
+    team_classification_coverage = classification_coverage(total_semantic, total_peer_sends)
+    team_compliance = coupling_compliance_doc(
+        coupling_intent=coupling_intent,
+        sends=[send for sends in sends_by_sender.values() for send in sends],
+    )
     scenario_doc = {
         "schema_version": SCHEMA_VERSION,
         "scenario": scenario,
@@ -687,11 +837,14 @@ def build_scorecards(
             "M9_team_steer_ack_total": team_steer_total,
             "M9_team_inflight_count": team_steer_inflight,
             "M9_delivery_breakdown": delivery_breakdown_dict(total_steer_counter),
-            "M11a_team_p95_rtt_seconds": percentile_triplet(all_rtt_samples)["p95"],
-            "M11a_team_rtt_seconds": percentile_triplet(
-                all_rtt_samples,
-                include_unmatched=sum(rtt.unmatched_by_pair.values()),
-            ),
+            "M11a_team_p95_rtt_seconds": team_m11a["p95"],
+            "M11a_team_rtt_seconds": team_m11a,
+            "M11a_peer_dm_rtt_seconds_by_semantic": semantic_rtt_doc(rtt),
+            "M11a_classification_coverage": team_classification_coverage,
+            "M11a_coupling_compliance": team_compliance,
+            "samples_used_for_M11a": team_m11a["samples"],
+            "M11a_p50": team_m11a["p50"],
+            "M11a_max": team_m11a["max"],
             "M13_total_collisions": total_collisions,
             "M13_total_send_message_replies": total_terminals,
             "M13_prose_fallback_collision_rate": ratio(total_collisions, total_terminals),
@@ -738,6 +891,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scenario", required=True, help="scenario id, e.g. S5")
     parser.add_argument("--run-id", required=True, help="run id/timestamp")
     parser.add_argument("--out", type=Path, required=True, help="output directory")
+    parser.add_argument(
+        "--coupling-intent",
+        help=(
+            "Optional scorer-only coupling intent for M11a compliance. "
+            "Canonical values: tight_peer_loop, loose_parallel, batched_async. "
+            "Legacy aliases tight/loose are normalized here only."
+        ),
+    )
     return parser
 
 
@@ -750,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
             dataset,
             scenario=args.scenario,
             run_id=args.run_id,
+            coupling_intent=args.coupling_intent,
         )
         write_outputs(args.out, scenario_doc, pairs_doc, per_agent)
     except ScoreInputError as exc:
