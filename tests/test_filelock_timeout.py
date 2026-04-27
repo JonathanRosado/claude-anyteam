@@ -49,3 +49,13 @@ def test_file_lock_timeout_env_override(monkeypatch, tmp_path: Path):
         pass
 
     assert captured == [2.5]
+
+
+def test_config_lock_is_reentrant_for_nested_config_writers(tmp_path: Path):
+    team_dir = tmp_path / "teams" / "reentrant"
+
+    with _filelock.config_lock(team_dir):
+        with _filelock.config_lock(team_dir, timeout=0.01):
+            pass
+
+    assert (team_dir / "config.lock").exists()

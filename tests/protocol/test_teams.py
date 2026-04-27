@@ -12,6 +12,7 @@ from claude_teams.teams import (
     add_member,
     create_team,
     delete_team,
+    locked_team_config,
     read_config,
     remove_member,
     write_config,
@@ -143,6 +144,16 @@ class TestDuplicateMember:
 
 
 class TestWriteConfig:
+    def test_should_allow_direct_write_config_under_existing_config_lock(self, tmp_claude_dir: Path) -> None:
+        create_team("nested", "sess-1", base_dir=tmp_claude_dir)
+        config = read_config("nested", base_dir=tmp_claude_dir)
+        config.description = "nested update"
+
+        with locked_team_config("nested", base_dir=tmp_claude_dir):
+            write_config("nested", config, base_dir=tmp_claude_dir)
+
+        assert read_config("nested", base_dir=tmp_claude_dir).description == "nested update"
+
     def test_should_cleanup_temp_file_when_replace_fails(self, tmp_claude_dir: Path) -> None:
         create_team("atomic", "sess-1", base_dir=tmp_claude_dir)
         config = read_config("atomic", base_dir=tmp_claude_dir)

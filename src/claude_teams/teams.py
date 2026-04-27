@@ -90,8 +90,7 @@ def create_team(
     )
 
     config_path = team_dir / "config.json"
-    config_lock_path(name, base_dir=base_dir).touch(exist_ok=True)
-    config_path.write_text(json.dumps(config.model_dump(by_alias=True, exclude_none=True), indent=2))
+    write_config(name, config, base_dir=base_dir)
 
     return TeamCreateResult(
         team_name=name,
@@ -130,19 +129,23 @@ def write_config(name: str, config: TeamConfig, base_dir: Path | None = None) ->
     config_dir = _teams_dir(base_dir) / name
     data = json.dumps(config.model_dump(by_alias=True, exclude_none=True), indent=2)
 
-    # NOTE(victor): atomic write to avoid partial reads from concurrent agents
-    fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-    try:
-        os.write(fd, data.encode())
-        os.close(fd)
-        fd = -1
-        _replace_with_retry(tmp_path, config_dir / "config.json")
-    except BaseException:
-        if fd >= 0:
+    with locked_team_config(name, base_dir=base_dir):
+        # NOTE(victor): atomic write to avoid partial reads from concurrent agents.
+        # R5: take the shared per-team config.lock here too, so direct
+        # write_config() callers cannot bypass the mutex used by vendored
+        # add_member/remove_member, adapter registration, and manifest writes.
+        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+        try:
+            os.write(fd, data.encode())
             os.close(fd)
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
+            fd = -1
+            _replace_with_retry(tmp_path, config_dir / "config.json")
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
 
 def delete_team(name: str, base_dir: Path | None = None) -> TeamDeleteResult:

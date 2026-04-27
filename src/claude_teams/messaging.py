@@ -34,8 +34,10 @@ def inbox_path(team_name: str, agent_name: str, base_dir: Path | None = None) ->
 def ensure_inbox(team_name: str, agent_name: str, base_dir: Path | None = None) -> Path:
     path = inbox_path(team_name, agent_name, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text("[]")
+    lock_path = path.parent / ".lock"
+    with file_lock(lock_path):
+        if not path.exists():
+            path.write_text("[]")
     return path
 
 
