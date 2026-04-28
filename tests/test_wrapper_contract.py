@@ -822,6 +822,63 @@ def test_handoff_peer_dm_allowed_without_manifest_query(
     assert _wrapper_refusals() == []
 
 
+def test_send_message_accepts_typed_lifecycle_payload(
+    identity,
+    monkeypatch,
+):
+    mcp = _seeded_wrapper(identity, monkeypatch)
+    body = json.dumps(
+        {
+            "kind": "task_complete",
+            "task_id": "7",
+            "files_changed": ["src/foo.py"],
+            "summary": "done",
+            "codex_exit_code": 0,
+        }
+    )
+
+    result = _call_existing_tool(
+        mcp,
+        "send_message",
+        {
+            "to": "peer-a",
+            "body": body,
+            "summary": "task complete",
+            "kind": "task_complete",
+        },
+    )
+
+    assert result == {"delivered_to": "peer-a", "sender": "contract-test"}
+    inbox = _peer_a_inbox(identity)
+    assert len(inbox) == 1
+    assert inbox[0]["messageKind"] == "task_complete"
+    payload = json.loads(inbox[0]["text"])
+    assert payload["kind"] == "task_complete"
+    assert payload["schema_version"] == 1
+    assert payload["task_id"] == "7"
+
+
+def test_send_message_rejects_lifecycle_kind_with_prose_body(
+    identity,
+    monkeypatch,
+):
+    mcp = _seeded_wrapper(identity, monkeypatch)
+
+    with pytest.raises(Exception, match="requires a JSON protocol payload"):
+        _call_existing_tool(
+            mcp,
+            "send_message",
+            {
+                "to": "peer-a",
+                "body": "done",
+                "summary": "task complete",
+                "kind": "task_complete",
+            },
+        )
+
+    assert _peer_a_inbox(identity) == []
+
+
 def test_peer_steer_allowed_for_prose_body_when_recipient_accepts(
     identity,
     monkeypatch,

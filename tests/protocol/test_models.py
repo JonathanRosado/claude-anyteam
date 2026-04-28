@@ -9,11 +9,16 @@ from claude_teams.models import (
     IdleNotification,
     InboxMessage,
     LeadMember,
+    PermissionRequest,
+    PlanApprovalResponse,
+    PlanBlocked,
     SendMessageResult,
     ShutdownApproved,
     ShutdownRequest,
     SpawnResult,
     TaskAssignment,
+    TaskBlocked,
+    TaskCompleted,
     TaskFile,
     TeamConfig,
     TeamCreateResult,
@@ -533,3 +538,46 @@ class TestInboxMessageKindRoundTrip:
         rewritten = json.loads(inbox_file.read_text(encoding="utf-8"))
         assert [r["messageKind"] for r in rewritten] == ["turn_progress", "peer_dm"]
         assert all(r["read"] is True for r in rewritten)
+
+
+class TestLifecyclePayloadModels:
+    def test_task_completed_and_blocked_models_round_trip(self):
+        completed = TaskCompleted(
+            task_id="7",
+            files_changed=["src/foo.py"],
+            summary="done",
+            codex_exit_code=0,
+        )
+        blocked = TaskBlocked(task_id="8", reason="needs approval", timestamp="ts")
+
+        assert completed.model_dump(by_alias=True)["kind"] == "task_complete"
+        assert completed.model_dump(by_alias=True)["schema_version"] == 1
+        assert blocked.model_dump(by_alias=True)["kind"] == "task_blocked"
+        assert blocked.model_dump(by_alias=True)["schema_version"] == 1
+
+    def test_plan_and_permission_models_round_trip(self):
+        plan_blocked = PlanBlocked(
+            request_id="p1",
+            reason="no claimable task",
+            timestamp="ts",
+        )
+        plan_response = PlanApprovalResponse(
+            requestId="p2",
+            approve=False,
+            feedback="revise",
+            timestamp="ts",
+        )
+        permission = PermissionRequest(
+            request_id="perm-1",
+            tool_name="Bash",
+            tool_args={"cmd": "pytest"},
+            task_id="7",
+            teammate_name="worker",
+            trust_mode="default",
+            timestamp="ts",
+        )
+
+        assert plan_blocked.model_dump(by_alias=True)["kind"] == "plan_blocked"
+        assert plan_response.model_dump(by_alias=True)["type"] == "plan_approval_response"
+        assert plan_response.model_dump(by_alias=True)["requestId"] == "p2"
+        assert permission.model_dump(by_alias=True)["type"] == "permission_request"
