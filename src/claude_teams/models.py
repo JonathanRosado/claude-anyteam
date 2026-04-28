@@ -119,6 +119,25 @@ class TaskFile(BaseModel):
         return coupling_contract(value)
 
 
+class InboxAttachment(BaseModel):
+    """Reference to a full message body stored outside the inbox row.
+
+    Inbox rows keep a bounded preview in ``text`` so mailbox scans remain
+    cheap.  When a body is too large, the complete text is written as an
+    artifact and referenced here.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    kind: Literal["artifact"] = "artifact"
+    path: str
+    relative_path: str | None = Field(alias="relativePath", default=None)
+    mime_type: str = Field(alias="mimeType", default="text/plain")
+    char_count: int = Field(alias="charCount")
+    preview_char_count: int = Field(alias="previewCharCount")
+    sha256: str | None = None
+
+
 class InboxMessage(BaseModel):
     model_config = {"populate_by_name": True}
 
@@ -135,6 +154,7 @@ class InboxMessage(BaseModel):
     # §3 anti-pattern A11 (no parse-prose-to-route): consumers filter by
     # this kind, never by parsing JSON inside `text`.
     message_kind: str = Field(default="peer_dm", alias="messageKind")
+    attachment: InboxAttachment | None = Field(default=None)
 
 
 LIFECYCLE_MESSAGE_KINDS = frozenset(
