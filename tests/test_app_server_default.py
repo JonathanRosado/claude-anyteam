@@ -37,6 +37,7 @@ def test_default_app_server_is_on():
     """Task #21 default flip: no flag, no env → app_server=True."""
     s = from_env(overrides=_baseline_overrides())
     assert s.app_server is True
+    assert s.turn_timeout_s == 900.0
     assert s.non_progress_warn_s == 300.0
     assert s.non_progress_interrupt_s is None
 
@@ -131,6 +132,33 @@ def test_cli_help_mentions_app_server_default():
     assert "no-app-server" in help_text
     # The help prose mentions default behavior.
     assert "default: on" in help_text or "default on" in help_text.lower()
+
+
+def test_turn_timeout_env_and_overrides_are_honored():
+    os.environ["CLAUDE_ANYTEAM_TURN_TIMEOUT_S"] = "1800"
+    try:
+        s = from_env(overrides=_baseline_overrides())
+        assert s.turn_timeout_s == 1800.0
+
+        overrides = _baseline_overrides() | {"turn_timeout_s": 3600}
+        s = from_env(overrides=overrides)
+        assert s.turn_timeout_s == 3600.0
+    finally:
+        del os.environ["CLAUDE_ANYTEAM_TURN_TIMEOUT_S"]
+
+
+def test_turn_timeout_range_is_validated():
+    with pytest.raises(ValueError, match="turn_timeout_s"):
+        from_env(overrides=_baseline_overrides() | {"turn_timeout_s": 59})
+    with pytest.raises(ValueError, match="turn_timeout_s"):
+        from_env(overrides=_baseline_overrides() | {"turn_timeout_s": 3601})
+
+
+def test_cli_parses_turn_timeout_flag():
+    ns = cli_mod._parse_args(
+        ["--team", "t", "--name", "a", "--turn-timeout-s", "1800"]
+    )
+    assert ns.turn_timeout_s == 1800
 
 
 def test_non_progress_env_and_overrides_are_honored():

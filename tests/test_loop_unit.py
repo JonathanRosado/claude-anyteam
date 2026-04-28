@@ -153,6 +153,13 @@ def _settings_no_app_server() -> Settings:
     return s.__class__(**d)
 
 
+def _settings_with_turn_timeout(timeout_s: float) -> Settings:
+    s = _settings()
+    d = {f: getattr(s, f) for f in s.__dataclass_fields__}
+    d["turn_timeout_s"] = timeout_s
+    return s.__class__(**d)
+
+
 def test_prose_message_app_server_invokes_codex_and_replies_to_sender():
     """App Server mode (default): prose invocation uses app_server_invoke, reply goes to sender."""
     state = LoopState(settings=_settings())  # app_server=True by default
@@ -183,6 +190,24 @@ def test_prose_message_app_server_invokes_codex_and_replies_to_sender():
     to, text = sent[0]
     assert to == "peer-bob"
     assert "Four." in text
+
+
+def test_prose_message_app_server_uses_configured_turn_timeout():
+    state = LoopState(settings=_settings_with_turn_timeout(1800.0))
+    msg = FakeInboxMessage(text="status?", from_="peer-bob")
+    captured: dict[str, object] = {}
+
+    def fake_invoke(**kwargs):
+        captured.update(kwargs)
+        return _fake_codex_result("Still working.")
+
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(loop_mod.pio, "send_prose"),
+    ):
+        _handle_message(state, msg)
+
+    assert captured["overall_timeout_s"] == 1800.0
 
 
 def test_prose_message_fresh_exec_path_replies_to_sender():
@@ -361,6 +386,27 @@ def test_mid_turn_shutdown_sends_reject_response_immediately(tmp_path: Path):
     args, kwargs = sent[0]
     assert args[2] == "mid-task-1"
     assert kwargs["reason"] == "in-flight task #42"
+
+
+def test_task_app_server_uses_configured_turn_timeout(tmp_path: Path):
+    state = LoopState(settings=_settings_with_turn_timeout(2400.0))
+    task = SimpleNamespace(id="42")
+    schema_path = tmp_path / "task-complete-schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_invoke(**kwargs):
+        captured.update(kwargs)
+        return _fake_codex_result("done")
+
+    with (
+        patch.object(loop_mod.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path),
+        patch.object(loop_mod.pio, "read_own_inbox", return_value=[]),
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+    ):
+        loop_mod._execute_task_app_server(state, task, prompt="do work")
+
+    assert captured["overall_timeout_s"] == 2400.0
 
 
 def test_mid_turn_shutdown_duplicate_request_id_is_ignored(tmp_path: Path):
