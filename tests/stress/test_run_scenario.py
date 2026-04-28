@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -203,6 +204,63 @@ def test_no_cleanup_sandbox_preserves_prior_sandboxes(
     assert (sandbox / run_scenario.STRESS_SANDBOX_MARKER).is_file()
 
 
+def test_cleanup_sandbox_preserves_active_peer_sandboxes(
+    isolated_protocol_roots,
+    fake_scorers,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(run_scenario, "STRESS_SANDBOX_ROOT", tmp_path)
+    current = tmp_path / "stress-sandbox-current"
+    active_peer = tmp_path / "stress-sandbox-active-peer"
+    stale = tmp_path / "stress-sandbox-stale"
+    _mark_stress_sandbox(current)
+    _mark_stress_sandbox(stale)
+    marker = run_scenario.write_sandbox_marker(
+        active_peer,
+        scenario_id="S6",
+        run_id="ACTIVE-PEER",
+    )
+
+    removed = run_scenario.cleanup_stress_sandboxes(current)
+
+    assert stale in removed
+    assert not stale.exists()
+    assert active_peer.is_dir()
+    assert run_scenario.sandbox_marker_is_active(marker)
+    assert current.is_dir()
+
+
+def test_write_sandbox_marker_records_active_owner_pid(tmp_path: Path) -> None:
+    marker = run_scenario.write_sandbox_marker(
+        tmp_path / "stress-sandbox-marker",
+        scenario_id="S6",
+        run_id="MARKER",
+    )
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["kind"] == run_scenario.STRESS_SANDBOX_MARKER_KIND
+    assert payload["state"] == "active"
+    assert payload["owner_pid"] == os.getpid()
+    assert run_scenario.sandbox_marker_is_active(marker)
+
+
+def test_run_scenario_marks_sandbox_completed_after_return(
+    isolated_protocol_roots,
+    fake_scorers,
+    tmp_path: Path,
+) -> None:
+    rc, _, sandbox = _invoke(tmp_path, "S1", run_id="MARKER-COMPLETED")
+
+    assert rc == 0
+    payload = json.loads((sandbox / run_scenario.STRESS_SANDBOX_MARKER).read_text())
+    assert payload["state"] == "completed"
+    assert "completed_at" in payload
+    assert not run_scenario.sandbox_marker_is_active(
+        sandbox / run_scenario.STRESS_SANDBOX_MARKER
+    )
+
+
 def test_cleanup_sandbox_marker_safety_preserves_unmarked_pattern_dirs(
     isolated_protocol_roots,
     fake_scorers,
@@ -260,11 +318,31 @@ def test_cleanup_sandbox_never_removes_current_sandbox(
 
 def test_cleanup_sandbox_help_documents_default_and_marker_safety() -> None:
     help_text = run_scenario.build_parser().format_help()
+    normalized_help = " ".join(help_text.split())
 
     assert "--cleanup-sandbox" in help_text
     assert "--no-cleanup-sandbox" in help_text
     assert "/tmp/stress-sandbox-*" in help_text
     assert run_scenario.STRESS_SANDBOX_MARKER in help_text
+    assert "active runner-owned sandboxes are preserved" in normalized_help
+
+
+def test_run_scenario_fails_before_team_creation_when_repo_init_missing(
+    isolated_protocol_roots,
+    fake_scorers,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(run_scenario, "init_sandbox_repo", lambda repo: None)
+    create_team = Mock()
+    monkeypatch.setattr(run_scenario, "create_stress_team", create_team)
+
+    rc, _, _ = _invoke(tmp_path, "S1", run_id="MISSING-REPO")
+
+    assert rc == 1
+    assert "sandbox repo was not initialized before teammate spawn" in capsys.readouterr().err
+    create_team.assert_not_called()
 
 
 def test_dry_run_S1(isolated_protocol_roots, fake_scorers, tmp_path: Path) -> None:

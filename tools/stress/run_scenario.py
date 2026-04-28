@@ -36,6 +36,7 @@ TEAM_LEAD = "team-lead"
 STRESS_SANDBOX_ROOT = Path("/tmp")
 STRESS_SANDBOX_PREFIX = "stress-sandbox-"
 STRESS_SANDBOX_MARKER = ".stress_sandbox_marker"
+STRESS_SANDBOX_MARKER_KIND = "claude-anyteam-stress-sandbox"
 ABLATION_ENV_KEYS = (
     "CLAUDE_ANYTEAM_DISABLE_PEER_PROMPT_FRAGMENTS",
     "CLAUDE_ANYTEAM_DISABLE_MANIFEST_CACHE",
@@ -295,6 +296,13 @@ def cleanup_stress_sandboxes(
     default-on, but deletion is marker-gated: a directory must match the stress
     prefix and contain ``.stress_sandbox_marker``. The current ``--sandbox`` is
     never removed, even if it already has a marker.
+
+    S6+W7-postD1 regression (2026-04-27): two stress scenarios can run at the
+    same time. With marker-only deletion, the later run can remove the earlier
+    run's freshly initialized sandbox after its Codex App Server has started but
+    before the first wrapper shell call. Active markers now carry the owning
+    runner PID, and cleanup skips those live sandboxes while still removing
+    completed/crashed/legacy marked sandboxes.
     """
 
     root = (root or STRESS_SANDBOX_ROOT).expanduser()
@@ -314,11 +322,57 @@ def cleanup_stress_sandboxes(
             marker = candidate / STRESS_SANDBOX_MARKER
             if not marker.is_file():
                 continue
+            if sandbox_marker_is_active(marker):
+                continue
             shutil.rmtree(candidate)
             removed.append(candidate)
         except FileNotFoundError:
             continue
     return removed
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _read_sandbox_marker(marker: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def sandbox_marker_is_active(marker: Path) -> bool:
+    payload = _read_sandbox_marker(marker)
+    if not payload:
+        return False
+    if payload.get("kind") != STRESS_SANDBOX_MARKER_KIND:
+        return False
+    if payload.get("state") != "active":
+        return False
+    owner_pid = payload.get("owner_pid")
+    if isinstance(owner_pid, str) and owner_pid.isdigit():
+        owner_pid = int(owner_pid)
+    if not isinstance(owner_pid, int):
+        return False
+    return _pid_is_running(owner_pid)
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def write_sandbox_marker(
@@ -331,24 +385,34 @@ def write_sandbox_marker(
 
     sandbox.mkdir(parents=True, exist_ok=True)
     marker = sandbox / STRESS_SANDBOX_MARKER
-    marker.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "kind": "claude-anyteam-stress-sandbox",
-                "scenario": scenario_id,
-                "run_id": run_id,
-                "sandbox": str(sandbox),
-                "created_at": datetime.now(timezone.utc)
-                .isoformat(timespec="milliseconds")
-                .replace("+00:00", "Z"),
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_json_atomic(
+        marker,
+        {
+            "schema_version": 1,
+            "kind": STRESS_SANDBOX_MARKER_KIND,
+            "state": "active",
+            "owner_pid": os.getpid(),
+            "scenario": scenario_id,
+            "run_id": run_id,
+            "sandbox": str(sandbox),
+            "created_at": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+        },
     )
     return marker
+
+
+def mark_sandbox_marker_completed(sandbox: Path) -> None:
+    marker = sandbox / STRESS_SANDBOX_MARKER
+    payload = _read_sandbox_marker(marker)
+    if not payload or payload.get("kind") != STRESS_SANDBOX_MARKER_KIND:
+        return
+    payload["state"] = "completed"
+    payload["completed_at"] = datetime.now(timezone.utc).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+    _write_json_atomic(marker, payload)
 
 
 def init_sandbox_repo(repo: Path) -> None:
@@ -386,6 +450,21 @@ def init_sandbox_repo(repo: Path) -> None:
         subprocess.run(["git", "config", "user.name", "Stress Harness"], cwd=repo, check=True)
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "seed sandbox repo"], cwd=repo, check=True)
+
+
+def verify_sandbox_repo_ready(repo: Path) -> None:
+    """Fail before team creation if the sandbox repo was not initialized."""
+
+    missing = [
+        str(path)
+        for path in (repo, repo / ".git", repo / "src", repo / "tests")
+        if not path.exists()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "sandbox repo was not initialized before teammate spawn; "
+            f"missing: {', '.join(missing)}"
+        )
 
 
 def ensure_team_absent(team_name: str) -> None:
@@ -1183,6 +1262,7 @@ def run_scenario(args: argparse.Namespace, *, stderr: TextIO | None = None) -> i
             cleanup_stress_sandboxes(sandbox)
         write_sandbox_marker(sandbox, scenario_id=scenario_id, run_id=run_id)
         init_sandbox_repo(sandbox / "repo")
+        verify_sandbox_repo_ready(sandbox / "repo")
         create_stress_team(team_name, scenario, sandbox)
         run_manifest = build_run_workload_manifest(
             workload,
@@ -1274,6 +1354,7 @@ def run_scenario(args: argparse.Namespace, *, stderr: TextIO | None = None) -> i
                     proc.terminate()
                 except OSError:
                     pass
+        mark_sandbox_marker_completed(sandbox)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1294,7 +1375,8 @@ def build_parser() -> argparse.ArgumentParser:
             "/tmp/stress-sandbox-* directories (default: on; use "
             "--no-cleanup-sandbox to opt out). Safety: only directories "
             f"containing {STRESS_SANDBOX_MARKER} are deleted, symlinks are "
-            "skipped, and the current --sandbox path is never removed."
+            "skipped, active runner-owned sandboxes are preserved, and the "
+            "current --sandbox path is never removed."
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Skip live spawns and seed deterministic synthetic events")
