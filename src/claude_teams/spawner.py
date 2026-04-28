@@ -5,6 +5,7 @@ import json
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -18,10 +19,143 @@ DEFAULT_MANIFEST_READ_CONCURRENCY = 4
 DEFAULT_MANIFEST_READ_TIMEOUT_S = 2.0
 MANIFEST_READ_CONCURRENCY_ENV = "CLAUDE_TEAMS_MANIFEST_READ_CONCURRENCY"
 MANIFEST_READ_TIMEOUT_ENV = "CLAUDE_TEAMS_MANIFEST_READ_TIMEOUT_S"
+WORKTREE_ROOT_ENV = "CLAUDE_TEAMS_WORKTREE_ROOT"
+
+# Tests patch ``claude_teams.spawner.subprocess`` to fake tmux spawning.
+# Git isolation probes must still use the real subprocess runner.
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def discover_harness_binary(name: str) -> str | None:
     return shutil.which(name)
+
+
+def _git_output(cwd: Path, *args: str) -> str | None:
+    try:
+        result = _REAL_SUBPROCESS_RUN(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _git_toplevel(cwd: Path) -> Path | None:
+    out = _git_output(cwd, "rev-parse", "--show-toplevel")
+    return Path(out).resolve() if out else None
+
+
+def _git_index_path(cwd: Path) -> Path | None:
+    out = _git_output(cwd, "rev-parse", "--git-path", "index")
+    if not out:
+        return None
+    path = Path(out)
+    if not path.is_absolute():
+        path = cwd / path
+    return path.resolve()
+
+
+def _worktree_root() -> Path:
+    override = os.environ.get(WORKTREE_ROOT_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(tempfile.gettempdir()) / "claude-anyteam-worktrees"
+
+
+def _safe_branch_fragment(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value).strip(
+        "-."
+    ) or "agent"
+
+
+def _member_git_toplevel(member: Any) -> Path | None:
+    cwd = getattr(member, "cwd", None)
+    if not cwd:
+        return None
+    return _git_toplevel(Path(str(cwd)))
+
+
+def ensure_git_worktree_isolation(
+    team_name: str,
+    agent_name: str,
+    requested_cwd: str,
+    *,
+    base_dir: Path | None = None,
+) -> str:
+    """Return a cwd that does not share a Git worktree index with teammates.
+
+    The public spawn tool receives a caller-supplied ``cwd``.  Different
+    absolute cwd strings are not necessarily isolated: two subdirectories of
+    the same Git worktree share one ``.git/index``.  When the requested Git
+    top-level is already used by another team member (including the lead), make
+    a real Git worktree for this teammate and preserve any requested
+    subdirectory within that worktree.
+
+    Non-Git directories, already-distinct Git worktrees, and direct
+    ``spawn_teammate(..., cwd=None)`` callers are left to the existing behavior.
+    """
+
+    requested_path = Path(requested_cwd).expanduser().resolve()
+    requested_top = _git_toplevel(requested_path)
+    if requested_top is None:
+        return str(requested_path)
+
+    config = teams.read_config(team_name, base_dir)
+    collides = any(
+        getattr(member, "name", None) != agent_name
+        and _member_git_toplevel(member) == requested_top
+        for member in config.members
+    )
+    if not collides:
+        return str(requested_path)
+
+    isolation_root = _worktree_root() / _safe_branch_fragment(team_name)
+    worktree_path = isolation_root / _safe_branch_fragment(agent_name)
+    rel = requested_path.relative_to(requested_top)
+
+    if not (worktree_path / ".git").exists():
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        branch = (
+            "claude-anyteam/"
+            f"{_safe_branch_fragment(team_name)}/"
+            f"{_safe_branch_fragment(agent_name)}/"
+            f"{int(time.time() * 1000)}"
+        )
+        result = _REAL_SUBPROCESS_RUN(
+            [
+                "git",
+                "-C",
+                str(requested_top),
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(worktree_path),
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "failed to create isolated git worktree for teammate "
+                f"{agent_name!r} from {requested_top}: {result.stderr.strip()}"
+            )
+
+    isolated_cwd = (worktree_path / rel).resolve()
+    isolated_cwd.mkdir(parents=True, exist_ok=True)
+    if _git_index_path(isolated_cwd) == _git_index_path(requested_path):
+        raise RuntimeError(
+            "isolated git worktree did not produce a distinct index for "
+            f"teammate {agent_name!r}"
+        )
+    return str(isolated_cwd)
 
 
 def use_tmux_windows() -> bool:
@@ -249,7 +383,16 @@ def spawn_teammate(
             "Install Claude Code or ensure it is in your PATH."
         )
 
-    resolved_cwd = cwd or str(Path.cwd())
+    resolved_cwd = (
+        ensure_git_worktree_isolation(
+            team_name,
+            name,
+            cwd,
+            base_dir=base_dir,
+        )
+        if cwd is not None
+        else str(Path.cwd())
+    )
 
     color = assign_color(team_name, base_dir)
     now_ms = int(time.time() * 1000)
