@@ -119,6 +119,91 @@ def test_handle_prose_batch_single_message_uses_fast_path(tmp_path: Path, monkey
     assert calls == [msg]
 
 
+def test_kimi_peer_dm_message_kind_plain_prose_stays_prose(tmp_path: Path, monkeypatch):
+    """Phase4 #19: peer-DM discriminators must not become Kimi steers."""
+
+    state = loop.KimiLoopState(settings=_settings(tmp_path))
+    msg = SimpleNamespace(
+        from_="codex-implementer",
+        text="FYI: I found the relevant Kimi loop path.",
+        message_kind="peer-DM",
+        summary="coordination",
+    )
+    handled_as_prose: list[object] = []
+    monkeypatch.setattr(
+        loop,
+        "_handle_prose",
+        lambda _state, prose_msg: handled_as_prose.append(prose_msg),
+    )
+
+    assert loop._partition_inbox([msg]) == [("prose", [msg])]
+
+    loop._handle_message(state, msg)
+
+    assert state.queued_steers == []
+    assert handled_as_prose == [msg]
+
+
+def test_kimi_message_kind_steer_plain_prose_queues_team_lead_steer(tmp_path: Path):
+    """Phase4 #19: explicit sender-side steer intent uses Kimi's steer queue."""
+
+    state = loop.KimiLoopState(settings=_settings(tmp_path))
+    msg = SimpleNamespace(
+        from_="team-lead",
+        text="Use the messageKind discriminator before prose batching.",
+        messageKind="steer",
+        summary="intentional steer",
+    )
+
+    assert loop._partition_inbox([msg]) == [("protocol", [msg])]
+
+    loop._handle_message(state, msg)
+
+    assert len(state.queued_steers) == 1
+    assert state.queued_steers[0].message == msg.text
+
+
+def test_kimi_unknown_or_absent_message_kind_falls_back_to_existing_heuristic(
+    tmp_path: Path, monkeypatch
+):
+    """Unknown/missing discriminators preserve the old parse_protocol_text path."""
+
+    state = loop.KimiLoopState(settings=_settings(tmp_path))
+    unknown_plain = SimpleNamespace(
+        from_="codex-implementer",
+        text="Plain coordination with a future message kind.",
+        message_kind="future_kind",
+        summary="future",
+    )
+    unknown_marker = SimpleNamespace(
+        from_="team-lead",
+        text="STEER: keep the test narrow.",
+        message_kind="future_kind",
+        summary="future steer marker",
+    )
+    absent_marker = SimpleNamespace(
+        from_="team-lead",
+        text="STEER: preserve legacy marker behavior.",
+        summary="legacy steer marker",
+    )
+    handled_as_prose: list[object] = []
+    monkeypatch.setattr(
+        loop,
+        "_handle_prose",
+        lambda _state, prose_msg: handled_as_prose.append(prose_msg),
+    )
+
+    loop._handle_message(state, unknown_plain)
+    loop._handle_message(state, unknown_marker)
+    loop._handle_message(state, absent_marker)
+
+    assert handled_as_prose == [unknown_plain]
+    assert [s.message for s in state.queued_steers] == [
+        "keep the test narrow.",
+        "preserve legacy marker behavior.",
+    ]
+
+
 def test_kimi_prose_paths_pass_visibility_event_sink(tmp_path: Path, monkeypatch):
     state = loop.KimiLoopState(settings=_settings(tmp_path))
     invocations: list[dict] = []
