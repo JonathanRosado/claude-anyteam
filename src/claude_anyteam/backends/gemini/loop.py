@@ -327,7 +327,14 @@ def _main_loop(state: GeminiLoopState) -> None:
 def _handle_message(state: GeminiLoopState, msg: Any) -> None:
     payload = parse_protocol_text(msg.text)
     if payload is None:
-        _handle_prose(state, msg)
+        if _message_kind_requests_plain_prose_steer(msg):
+            _handle_steer(
+                state,
+                SteerIn(message=msg.text, from_=getattr(msg, "from_", None)),
+                msg,
+            )
+        else:
+            _handle_prose(state, msg)
     elif isinstance(payload, ShutdownRequestIn):
         _handle_shutdown(state, payload)
     elif isinstance(payload, PlanApprovalRequestIn):
@@ -351,7 +358,10 @@ def _partition_inbox(messages: list[Any]) -> list[tuple[str, list[Any]]]:
     """Group consecutive prose inbox messages while preserving protocol order."""
     groups: list[tuple[str, list[Any]]] = []
     for m in messages:
-        is_prose = parse_protocol_text(m.text) is None
+        is_prose = (
+            parse_protocol_text(m.text) is None
+            and not _message_kind_requests_plain_prose_steer(m)
+        )
         if is_prose:
             if groups and groups[-1][0] == "prose":
                 groups[-1][1].append(m)
@@ -360,6 +370,46 @@ def _partition_inbox(messages: list[Any]) -> list[tuple[str, list[Any]]]:
         else:
             groups.append(("protocol", [m]))
     return groups
+
+
+def _message_kind(msg: Any) -> str | None:
+    """Return a normalized inbox messageKind discriminator, if present.
+
+    The substrate exposes the wire field as ``message_kind`` on
+    ``InboxMessage`` models, while tests and forward-compat callers may carry
+    the camelCase spelling.  Normalize separators so the historic
+    ``peer_dm`` default and the human-facing ``peer-DM`` spelling compare the
+    same way.
+    """
+
+    raw = getattr(msg, "message_kind", None)
+    if raw is None:
+        raw = getattr(msg, "messageKind", None)
+    if not isinstance(raw, str):
+        return None
+    kind = raw.strip().lower()
+    if not kind:
+        return None
+    return kind.replace("_", "-")
+
+
+def _message_kind_requests_plain_prose_steer(msg: Any) -> bool:
+    """Whether an otherwise-untyped prose message is an explicit steer.
+
+    Gemini ACP does not have Codex App Server's mid-turn prose drain; its
+    steer surface is the existing ``SteerIn`` queue consumed at the next task
+    turn.  Phase4 #14 therefore hooks the #59 sender-side discriminator at
+    the recipient boundary before prose batching: ordinary peer-DMs
+    (``peer_dm``/``peer-DM``/``informational``) remain prose, while
+    ``messageKind=steer`` is converted into the same structured steer path.
+
+    Missing or unknown kinds intentionally return False so the caller falls
+    back to the pre-existing heuristic: only ``parse_protocol_text`` decides
+    whether the text itself is a steer payload (JSON ``{"type":"steer"}`` or
+    ``STEER:`` marker).
+    """
+
+    return _message_kind(msg) == "steer"
 
 
 def _peer_prompt_fragments(state: GeminiLoopState) -> str:

@@ -96,6 +96,90 @@ def test_team_lead_plain_text_steer_marker_injects_next_task_once():
     assert "# Original task prompt" in prompts[0]
     assert state.queued_steers == []
 
+
+def test_acp_peer_dm_message_kind_plain_prose_stays_prose(monkeypatch):
+    """Phase4 #14: peer-DM discriminators must not become ACP steers."""
+
+    state = GeminiLoopState(settings=_settings(backend="acp"))
+    msg = SimpleNamespace(
+        from_="codex-implementer",
+        text="FYI: I found the relevant Gemini loop path.",
+        message_kind="peer-DM",
+        summary="coordination",
+    )
+    handled_as_prose: list[object] = []
+    monkeypatch.setattr(
+        loop,
+        "_handle_prose",
+        lambda _state, prose_msg: handled_as_prose.append(prose_msg),
+    )
+
+    assert loop._partition_inbox([msg]) == [("prose", [msg])]
+
+    loop._handle_message(state, msg)
+
+    assert state.queued_steers == []
+    assert handled_as_prose == [msg]
+
+
+def test_acp_message_kind_steer_plain_prose_queues_peer_steer():
+    """Phase4 #14: explicit sender-side steer intent uses the ACP steer queue."""
+
+    state = GeminiLoopState(settings=_settings(backend="acp"))
+    msg = SimpleNamespace(
+        from_="codex-implementer",
+        text="Use the messageKind discriminator before prose batching.",
+        message_kind="steer",
+        summary="intentional steer",
+    )
+
+    assert loop._partition_inbox([msg]) == [("protocol", [msg])]
+
+    loop._handle_message(state, msg)
+
+    assert len(state.queued_steers) == 1
+    assert state.queued_steers[0].message == msg.text
+
+
+def test_acp_unknown_or_absent_message_kind_falls_back_to_existing_heuristic(monkeypatch):
+    """Unknown/missing discriminators preserve the old parse_protocol_text path."""
+
+    state = GeminiLoopState(settings=_settings(backend="acp"))
+    unknown_plain = SimpleNamespace(
+        from_="codex-implementer",
+        text="Plain coordination with a future message kind.",
+        message_kind="future_kind",
+        summary="future",
+    )
+    unknown_marker = SimpleNamespace(
+        from_="codex-implementer",
+        text="STEER: keep the test narrow.",
+        message_kind="future_kind",
+        summary="future steer marker",
+    )
+    absent_marker = SimpleNamespace(
+        from_="codex-implementer",
+        text="STEER: preserve legacy marker behavior.",
+        summary="legacy steer marker",
+    )
+    handled_as_prose: list[object] = []
+    monkeypatch.setattr(
+        loop,
+        "_handle_prose",
+        lambda _state, prose_msg: handled_as_prose.append(prose_msg),
+    )
+
+    loop._handle_message(state, unknown_plain)
+    loop._handle_message(state, unknown_marker)
+    loop._handle_message(state, absent_marker)
+
+    assert handled_as_prose == [unknown_plain]
+    assert [s.message for s in state.queued_steers] == [
+        "keep the test narrow.",
+        "preserve legacy marker behavior.",
+    ]
+
+
 def test_matching_task_id_steer_injects_and_nonmatching_is_retained():
     state = GeminiLoopState(
         settings=_settings(),
