@@ -1,0 +1,90 @@
+name: Auto-tag and release on version bump
+
+# When a push to main changes the version in npm/package.json, this workflow:
+#   1. Verifies the version is consistent with pyproject.toml
+#   2. Creates a v$VERSION tag at the new commit
+#   3. Creates a GitHub release on that tag
+# Pushing the tag triggers .github/workflows/release.yml, which runs tests
+# and publishes to npm + PyPI. This means a merge to main is the only
+# manual step needed to ship a new version — no separate `gh release create`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'npm/package.json'
+      - 'pyproject.toml'
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  maybe-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read manifest versions
+        id: ver
+        run: |
+          set -euo pipefail
+          npm_version=$(node -p "require('./npm/package.json').version")
+          py_version=$(awk -F\" '/^version *= */ {print $2; exit}' pyproject.toml)
+          echo "npm=$npm_version" >> "$GITHUB_OUTPUT"
+          echo "py=$py_version" >> "$GITHUB_OUTPUT"
+          if [ "$npm_version" != "$py_version" ]; then
+            echo "::error::npm/package.json version ($npm_version) does not match pyproject.toml ($py_version). Bump both in lock-step."
+            exit 1
+          fi
+          echo "version=$npm_version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $npm_version"
+
+      - name: Skip if v$VERSION tag already exists
+        id: check_tag
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.ver.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release notes from PR body
+        if: steps.check_tag.outputs.exists == 'false'
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr_number=$(gh pr list --state merged --base main --search "${{ github.sha }}" --json number --jq '.[0].number // empty')
+          if [ -n "$pr_number" ]; then
+            gh pr view "$pr_number" --json body --jq '.body' > pr_body.md
+            echo "source=PR #$pr_number" >> "$GITHUB_OUTPUT"
+          else
+            git log -1 --format='%B' "${{ github.sha }}" > pr_body.md
+            echo "source=commit ${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "notes_path=pr_body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.ver.outputs.version }}"
+          title="$tag"
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --title "$title" \
+            --notes-file "${{ steps.notes.outputs.notes_path }}"
+          echo "Released $tag (notes from ${{ steps.notes.outputs.source }})."

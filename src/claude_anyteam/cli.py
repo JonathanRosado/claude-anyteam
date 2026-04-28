@@ -19,6 +19,7 @@ from typing import TextIO
 from urllib.parse import urlencode
 
 from . import logger
+from ._theme import get_theme, render_box
 from .config import from_env
 from claude_anyteam import installer as installer_mod
 from claude_anyteam.installer import (
@@ -315,11 +316,46 @@ def _interactive_prompt(current_value: str) -> bool:
 def _yes_default_prompt(question: str) -> bool | None:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return None
+    theme = get_theme()
+    prompt = f"{theme.symbols['info']} {theme.heading(question)} {theme.muted('[Y/n]')} "
     try:
-        answer = input(f"{question} [Y/n] ")
+        answer = input(prompt)
     except EOFError:
         return None
     return answer.strip().lower() not in {"n", "no"}
+
+
+def _refresh_path_for_uv_tools() -> None:
+    """After `uv tool install`, the new binary lives in `uv tool dir --bin`.
+
+    On Windows that's typically %APPDATA%\\Local\\uv\\tools\\bin, which may not
+    be on the calling shell's PATH. Without this refresh, subsequent
+    shutil.which() probes for the freshly-installed CLI return None and the
+    provider-status table reports it as missing — even though the install
+    succeeded. Prepend the uv tool bin dir to os.environ["PATH"] so checks
+    later in the same Python process can find the binary.
+    """
+    uv = shutil.which("uv")
+    if not uv:
+        return
+    try:
+        completed = subprocess.run(
+            [uv, "tool", "dir", "--bin"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    bin_dir = (completed.stdout or "").strip().splitlines()[-1] if completed.stdout else ""
+    if not bin_dir or not os.path.isdir(bin_dir):
+        return
+    current = os.environ.get("PATH", "")
+    parts = current.split(os.pathsep) if current else []
+    if bin_dir in parts:
+        return
+    os.environ["PATH"] = bin_dir + os.pathsep + current
 
 
 def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool, str]:
@@ -336,7 +372,12 @@ def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool
     output = "\n".join(
         part for part in ((completed.stdout or "").strip(), (completed.stderr or "").strip()) if part
     )
-    return completed.returncode == 0, output or f"exit code {completed.returncode}"
+    ok = completed.returncode == 0
+    if ok and len(args) >= 3 and "tool" in args and "install" in args:
+        # uv tool install — refresh PATH so subsequent shutil.which() finds the
+        # freshly-installed binary in the same Python process.
+        _refresh_path_for_uv_tools()
+    return ok, output or f"exit code {completed.returncode}"
 
 
 def _provider_install_command(provider_key: str) -> tuple[str, list[str]] | None:
@@ -418,27 +459,31 @@ def _offer_multiplexer_install(*, no_input: bool, stream: TextIO) -> None:
         "We need tmux (a terminal multiplexer that lets teammates appear in their own panes). "
         "Want me to try installing it for you?"
     )
+    theme = get_theme()
     if answer is None or not answer:
         if answer is False:
-            print("Okay — I will not install tmux. Manual steps will be shown below.", file=stream)
+            print(f"{theme.symbols['info']} {theme.muted('Okay — skipping tmux auto-install. Manual steps will be shown below.')}", file=stream)
         return
     command = _multiplexer_install_command()
     if command is None:
-        print("I could not find a package manager (brew/apt-get/dnf/pacman/apk) to install tmux automatically.", file=stream)
+        print(f"{theme.symbols['warn']} {theme.warn('No package manager found')} {theme.muted('(brew / apt-get / dnf / pacman / apk) to install tmux automatically.')}", file=stream)
         return
     display, argv = command
-    print(f"Trying: {display}", file=stream)
+    print(f"{theme.symbols['arrow']} {theme.heading('Running:')} {theme.accent(display)}", file=stream)
     if argv and argv[0] == "sudo":
-        print("(You may be prompted for your sudo password.)", file=stream)
+        print(f"{theme.symbols['info']} {theme.muted('You may be prompted for your sudo password.')}", file=stream)
     ok, output = _run_install_command(argv)
     if ok:
-        print("Installed tmux. Continuing with claude-anyteam setup.", file=stream)
+        print(f"{theme.symbols['success']} {theme.success('Installed tmux.')} {theme.muted('Continuing with claude-anyteam setup.')}", file=stream)
         return
-    print("I tried to install tmux, but it failed.", file=stream)
-    print("Raw installer output:", file=stream)
-    for line in output.splitlines() or ["No output captured."]:
-        print(f"  {line}", file=stream)
-    print("Falling through to manual instructions below.", file=stream)
+    body = [
+        f"{theme.symbols['error']} {theme.heading('I tried to install tmux, but it failed.')}",
+        theme.muted("Raw installer output:"),
+        *(f"  {theme.muted(line)}" for line in (output.splitlines() or ["No output captured."])),
+        "",
+        theme.muted("Falling through to manual instructions below."),
+    ]
+    print(render_box(theme.danger("tmux auto-install failed"), body, "red", theme=theme), file=stream)
 
 
 def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> None:
@@ -451,9 +496,10 @@ def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> No
     if not missing:
         return
 
+    theme = get_theme()
     if no_input or not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(
-            "Skipping interactive dependency install because this terminal cannot answer questions; manual steps are shown below.",
+            f"{theme.symbols['info']} {theme.muted('Skipping interactive dependency install (this terminal cannot answer questions); manual steps follow below.')}",
             file=stream,
         )
         return
@@ -463,37 +509,43 @@ def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> No
             f"We need {label} for {key}-* teammates. Want me to try installing it for you?"
         )
         if answer is None:
-            print(f"Skipping {label} auto-install; manual steps will be shown below.", file=stream)
+            print(f"{theme.symbols['info']} {theme.muted(f'Skipping {label} auto-install; manual steps will be shown below.')}", file=stream)
             continue
         if not answer:
-            print(f"Okay — I will not install {label}. Manual steps will be shown below.", file=stream)
+            print(f"{theme.symbols['info']} {theme.muted(f'Okay — skipping {label}. Manual steps will be shown below.')}", file=stream)
             continue
         command = _provider_install_command(key)
         if command is None:
-            print(f"I could not find the installer tool for {label}. Try this next:", file=stream)
+            print(f"{theme.symbols['warn']} {theme.warn(f'No installer tool found for {label}.')} {theme.muted('Try this next:')}", file=stream)
             for idx, step in enumerate(_manual_provider_steps(key), start=1):
-                print(f"  {idx}. {step}", file=stream)
-            print("Still stuck? Report it:", file=stream)
+                print(f"  {theme.muted(f'{idx}.')} {step}", file=stream)
+            print(theme.muted("Still stuck? Report it:"), file=stream)
             print(
                 f"  {_issue_url(title=f'{label} installer tool missing', raw_error=f'No installer command found for {label}')}",
                 file=stream,
             )
             continue
         display, argv = command
-        print(f"Trying: {display}", file=stream)
+        print(f"{theme.symbols['arrow']} {theme.heading('Running:')} {theme.accent(display)}", file=stream)
         ok, output = _run_install_command(argv)
         if ok:
-            print(f"Installed {label}. You may still need to sign in before teammates can use it.", file=stream)
+            print(
+                f"{theme.symbols['success']} {theme.success(f'Installed {label}.')} {theme.muted('You may still need to sign in before teammates can use it.')}",
+                file=stream,
+            )
         else:
-            print(f"I tried to install {label}, but it failed.", file=stream)
-            print("Raw installer output:", file=stream)
-            for line in output.splitlines() or ["No output captured."]:
-                print(f"  {line}", file=stream)
-            print("Try this next:", file=stream)
-            for idx, step in enumerate(_manual_provider_steps(key), start=1):
-                print(f"  {idx}. {step}", file=stream)
-            print("Still stuck? Report it:", file=stream)
-            print(f"  {_issue_url(title=f'{label} auto-install failed', raw_error=output)}", file=stream)
+            body = [
+                f"{theme.symbols['error']} {theme.heading(f'I tried to install {label}, but it failed.')}",
+                theme.muted("Raw installer output:"),
+                *(f"  {theme.muted(line)}" for line in (output.splitlines() or ["No output captured."])),
+                "",
+                theme.muted("Try this next:"),
+                *(f"  {theme.muted(f'{idx}.')} {step}" for idx, step in enumerate(_manual_provider_steps(key), start=1)),
+                "",
+                theme.muted("Still stuck? Report it:"),
+                f"  {theme.accent(_issue_url(title=f'{label} auto-install failed', raw_error=output))}",
+            ]
+            print(render_box(theme.danger(f"{label} auto-install failed"), body, "red", theme=theme), file=stream)
 
 
 def _install_command(

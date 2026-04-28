@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlencode
 
+from ._theme import get_theme, render_box
+
 TEAMMATE_COMMAND_KEY = "CLAUDE_CODE_TEAMMATE_COMMAND"
 TEAMMATE_BINARY_KEY = "CLAUDE_ANYTEAM_BINARY"
 GEMINI_TEAMMATE_BINARY_KEY = "CLAUDE_ANYTEAM_GEMINI_BINARY"
@@ -2943,11 +2945,11 @@ def _format_no_provider_ready_message(
 
 def _format_soft_diagnostic(diagnostic: InstallError) -> str:
     raw_error = diagnostic.as_plain_text(include_details=True, include_report=False)
-    lines = [
+    plain_lines = [
         f"Warning: {diagnostic.title}",
         diagnostic.explanation,
     ]
-    lines.extend(
+    plain_lines.extend(
         format_installer_diagnostic(
             summary=diagnostic.explanation,
             raw_error=raw_error,
@@ -2956,11 +2958,19 @@ def _format_soft_diagnostic(diagnostic: InstallError) -> str:
             include_what_happened=False,
         )
     )
-    lines.append(f"Severity: {diagnostic.severity}")
+    plain_lines.append(f"Severity: {diagnostic.severity}")
     if diagnostic.details:
-        lines.append("Raw details (for debugging):")
-        lines.extend(f"  {line}" for line in diagnostic.details.splitlines())
-    return "\n".join(lines)
+        plain_lines.append("Raw details (for debugging):")
+        plain_lines.extend(f"  {line}" for line in diagnostic.details.splitlines())
+
+    theme = get_theme()
+    if theme.color and sys.stderr.isatty():
+        body = [theme.muted(line) if line.startswith(("Severity:", "Raw details")) or line.startswith("  ")
+                else theme.heading(line) if line == diagnostic.explanation
+                else line
+                for line in plain_lines[1:]]  # skip the title; it goes in the box header
+        return render_box(theme.warn(f"Warning: {diagnostic.title}"), body, "yellow", theme=theme)
+    return "\n".join(plain_lines)
 
 
 def format_install_message(result: InstallResult, *, include_provider_status: bool = True) -> str:
@@ -3029,7 +3039,27 @@ def format_install_message(result: InstallResult, *, include_provider_status: bo
     receipt_lines.append("Restart Claude Code for the changes to take effect. Use codex-*, gemini-*, or kimi-* teammate names to route to the matching backend.")
     if not result.changed_anything:
         receipt_lines.insert(1, "The existing settings already matched this install.")
-    lines.append("\n".join(receipt_lines))
+
+    # Beautify at display time only when stdout is a real TTY. Tests capture
+    # plain output for substring assertions; users get the boxed/themed view.
+    theme = get_theme()
+    if theme.color and sys.stdout.isatty():
+        themed_lines = []
+        for line in receipt_lines:
+            if line.startswith("Updated ") or line.startswith("Set ") or line.startswith("Removed "):
+                themed_lines.append(f"{theme.symbols['success']} {line}")
+            elif line.startswith("Restart Claude Code"):
+                themed_lines.append("")
+                themed_lines.append(f"{theme.symbols['warn']} {theme.warn(line)}")
+            elif "already" in line and "no change" in line:
+                themed_lines.append(f"{theme.symbols['info']} {theme.muted(line)}")
+            elif line.startswith("Permission allowlist written"):
+                themed_lines.append(f"{theme.symbols['success']} {line}")
+            else:
+                themed_lines.append(f"{theme.symbols['info']} {line}")
+        lines.append(render_box(theme.success("Setup applied"), themed_lines, "green", theme=theme))
+    else:
+        lines.append("\n".join(receipt_lines))
     return "\n\n".join(lines)
 
 
