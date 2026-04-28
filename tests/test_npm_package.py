@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
+
+ANSI_RE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 import pytest
 
@@ -17,7 +20,7 @@ def test_npm_package_metadata_matches_installer_contract() -> None:
     package = json.loads((NPM_DIR / 'package.json').read_text(encoding='utf-8'))
 
     assert package['name'] == 'claude-anyteam'
-    assert package['version'] == '0.6.1'
+    assert package['version'] == '0.7.0'
     assert package['bin']['claude-anyteam-setup'] == 'bin/setup.js'
     assert package['bin']['claude-anyteam'] == 'bin/setup.js'
     assert package['scripts']['postinstall'] == 'node bin/setup.js --postinstall'
@@ -193,7 +196,8 @@ def test_npm_art_ascii_fallback_under_c_locale() -> None:
     assert '[OK]' in rendered['success']
     assert '[X]' in rendered['error']
     assert rendered['banner'].strip().endswith('claude-anyteam')
-    assert rendered['box'].startswith('+')
+    box_visible = ANSI_RE.sub('', rendered['box'])
+    assert box_visible.startswith('+'), box_visible[:40]
     assert '╭' not in rendered['box']
     assert '│' not in rendered['box']
 
@@ -201,13 +205,13 @@ def test_npm_art_ascii_fallback_under_c_locale() -> None:
 def test_pyproject_version_matches_npm_version() -> None:
     """Both package manifests ship as one behavior-coupled unit."""
     pyproject = (ROOT / 'pyproject.toml').read_text(encoding='utf-8')
-    # Light TOML match — we already know pyproject has `version = "X.Y.Z"` on a
-    # single line and don't want a new dep just for this one assertion.
     version_line = next(
         line for line in pyproject.splitlines()
         if line.startswith('version = ')
     )
-    assert version_line == 'version = "0.6.1"', version_line
+    pyproject_version = version_line.split('=', 1)[1].strip().strip('"')
 
     package = json.loads((NPM_DIR / 'package.json').read_text(encoding='utf-8'))
-    assert package['version'] == '0.6.1'
+    assert package['version'] == pyproject_version, (
+        f'pyproject={pyproject_version!r} npm={package["version"]!r}'
+    )

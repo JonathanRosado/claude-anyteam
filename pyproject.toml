@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "claude-anyteam"
-version = "0.6.1"
+version = "0.7.0"
 description = "Bring Codex, Gemini, and Kimi CLI powered teammates into Claude Code with multi-backend routing."
 requires-python = ">=3.12"
 license = "MIT"
