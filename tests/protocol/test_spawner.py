@@ -12,6 +12,7 @@ from claude_teams.spawner import (
     build_spawn_command,
     discover_harness_binary,
     kill_tmux_pane,
+    read_team_manifests_parallel,
     spawn_teammate,
 )
 
@@ -279,6 +280,55 @@ class TestSpawnTeammateBackendType:
         msgs = messaging.read_inbox(TEAM, "oc-reader", base_dir=team_dir)
         assert len(msgs) == 1
         assert msgs[0].text == raw_prompt
+
+
+class TestManifestReads:
+    def test_reads_team_manifests_parallel(self, team_dir: Path) -> None:
+        manifest_dir = team_dir / "teams" / TEAM / "manifests"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "worker-a.json").write_text('{"agent_name":"worker-a"}')
+        (manifest_dir / "worker-b.json").write_text('{"agent_name":"worker-b"}')
+
+        manifests = read_team_manifests_parallel(
+            TEAM,
+            agent_names=["worker-a", "missing", "worker-b"],
+            base_dir=team_dir,
+            concurrency=2,
+            timeout_s=1,
+        )
+
+        assert set(manifests) == {"worker-a", "worker-b"}
+        assert manifests["worker-a"]["agent_name"] == "worker-a"
+
+    def test_manifest_read_timeout_skips_slow_file(
+        self,
+        team_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manifest_dir = team_dir / "teams" / TEAM / "manifests"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "slow.json").write_text('{"agent_name":"slow"}')
+        (manifest_dir / "fast.json").write_text('{"agent_name":"fast"}')
+        original_read_text = Path.read_text
+
+        def read_text_with_slow_file(self: Path, *args, **kwargs):
+            if self.name == "slow.json":
+                import time
+
+                time.sleep(0.25)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text_with_slow_file)
+
+        manifests = read_team_manifests_parallel(
+            TEAM,
+            agent_names=["slow", "fast"],
+            base_dir=team_dir,
+            concurrency=2,
+            timeout_s=0.05,
+        )
+
+        assert set(manifests) == {"fast"}
 
 
 class TestDiscoverHarnessBinary:

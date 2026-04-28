@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -198,10 +200,99 @@ def test_backend_loops_prewarm_manifests_before_first_inbox_poll(
     # First read is the backend's own self_capability_manifest. The startup
     # prewarm then walks the roster and calls read_agent_manifest for every
     # member before the first inbox poll.
-    assert read_calls == [SELF, SELF, PEER, OTHER_PEER, "team-lead"]
-    assert "team-lead" in read_calls
+    assert read_calls[0] == SELF
+    assert set(read_calls[1:]) == {SELF, PEER, OTHER_PEER, "team-lead"}
     assert caches and {PEER, OTHER_PEER}.issubset(caches[0].entries)
     assert caches[0].capability_versions[PEER] == "1"
+
+
+def test_roster_prewarm_uses_bounded_parallel_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teams_root = tmp_path / "teams"
+    _seed_team(teams_root)
+    for i in range(6):
+        _write_manifest(
+            teams_root,
+            f"peer-{i}",
+            version="1",
+            description=f"peer {i}",
+        )
+    team_root = teams_root / TEAM
+    raw = json.loads((team_root / "config.json").read_text(encoding="utf-8"))
+    raw["members"] = [{"name": f"peer-{i}"} for i in range(6)]
+    (team_root / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    original_read_agent_manifest = pio.read_agent_manifest
+
+    def slow_read_agent_manifest(
+        team: str,
+        agent: str,
+        *,
+        teams_root: Path | None = None,
+    ) -> dict[str, Any] | None:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return original_read_agent_manifest(team, agent, teams_root=teams_root)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(pio, "read_agent_manifest", slow_read_agent_manifest)
+    started = time.monotonic()
+    cache = CapabilityManifestCache(TEAM, self_name=SELF, root=teams_root)
+    cache.load_startup(concurrency=3, timeout_s=1.0)
+    elapsed = time.monotonic() - started
+
+    assert set(cache.entries) == {f"peer-{i}" for i in range(6)}
+    assert 1 < max_active <= 3
+    assert elapsed < 0.25
+
+
+def test_roster_prewarm_timeout_skips_slow_peer_without_blocking_fast_peers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teams_root = tmp_path / "teams"
+    _write_config(teams_root)
+    team_root = teams_root / TEAM
+    raw = json.loads((team_root / "config.json").read_text(encoding="utf-8"))
+    raw["members"] = [{"name": "slow-peer"}, {"name": PEER}, {"name": OTHER_PEER}]
+    (team_root / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+    _write_manifest(teams_root, "slow-peer", version="1", description="slow")
+    _write_manifest(teams_root, PEER, version="1", description="fast one")
+    _write_manifest(teams_root, OTHER_PEER, version="1", description="fast two")
+
+    original_read_agent_manifest = pio.read_agent_manifest
+
+    def read_agent_manifest_with_slow_peer(
+        team: str,
+        agent: str,
+        *,
+        teams_root: Path | None = None,
+    ) -> dict[str, Any] | None:
+        if agent == "slow-peer":
+            time.sleep(0.25)
+        return original_read_agent_manifest(team, agent, teams_root=teams_root)
+
+    monkeypatch.setattr(pio, "read_agent_manifest", read_agent_manifest_with_slow_peer)
+    started = time.monotonic()
+    cache = CapabilityManifestCache(TEAM, self_name=SELF, root=teams_root)
+    cache.load_startup(concurrency=2, timeout_s=0.05)
+    elapsed = time.monotonic() - started
+
+    assert PEER in cache.entries
+    assert OTHER_PEER in cache.entries
+    assert "slow-peer" not in cache.entries
+    assert elapsed < 0.2
 
 
 @pytest.mark.parametrize(
