@@ -2,42 +2,97 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AnyTeam capability manifest",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema_version",
     "capability_version",
     "team_name",
     "agent_name",
     "agent_id",
+    "agent_type",
+    "model",
+    "backend_type",
+    "transport",
     "capabilities"
   ],
   "properties": {
-    "schema_version": {"type": "integer", "const": 1},
-    "capability_version": {"type": "string", "minLength": 1},
-    "team_name": {"type": "string", "minLength": 1},
-    "agent_name": {"type": "string", "minLength": 1},
-    "agent_id": {"type": "string", "minLength": 1},
-    "agent_type": {"type": "string"},
-    "model": {"type": "string"},
-    "backend_type": {"type": "string"},
-    "transport": {"type": "string"},
-    "host_tool_surface": {"type": ["string", "null"]},
-    "coupling_regime": {"enum": ["tight", "loose"]},
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "capability_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "team_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "backend_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transport": {
+      "type": "string",
+      "minLength": 1
+    },
+    "host_tool_surface": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "coupling_regime": {
+      "enum": [
+        "tight",
+        "loose"
+      ]
+    },
     "coupling": {
       "type": "object",
-      "additionalProperties": true,
-      "required": ["intent"],
+      "additionalProperties": false,
+      "required": [
+        "intent"
+      ],
       "properties": {
         "intent": {
-          "enum": ["tight_peer_loop", "loose_parallel", "batched_async"]
+          "enum": [
+            "tight_peer_loop",
+            "loose_parallel",
+            "batched_async"
+          ]
         },
-        "blocking_peer_reply": {"type": "string"},
-        "peer_dm_policy": {"type": "string"},
+        "blocking_peer_reply": {
+          "type": "string"
+        },
+        "peer_dm_policy": {
+          "type": "string"
+        },
         "sync_points": {
           "type": "array",
-          "items": {"type": "string"}
+          "items": {
+            "type": "string"
+          }
         },
-        "completion_boundary": {"type": "string"},
+        "completion_boundary": {
+          "type": "string"
+        },
         "expected_metric_shape": {
           "type": "object",
           "additionalProperties": true
@@ -46,9 +101,89 @@
     },
     "capabilities": {
       "type": "object",
+      "propertyNames": {
+        "enum": [
+          "accepts_peer_steer",
+          "large_context",
+          "live_tool_events",
+          "permission_bridge",
+          "soft_non_progress_watchdog",
+          "structured_output",
+          "thread_fork",
+          "turn_steer"
+        ]
+      },
       "additionalProperties": {
-        "type": "object",
-        "additionalProperties": true
+        "$ref": "#/$defs/capabilityEntry"
+      }
+    }
+  },
+  "$defs": {
+    "jsonSchemaObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "capabilityEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "schema",
+        "description",
+        "when_to_use",
+        "when_not_to",
+        "failure_modes",
+        "callable_from_peers"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "$ref": "#/$defs/jsonSchemaObject"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "when_to_use": {
+          "type": "string",
+          "minLength": 1
+        },
+        "when_not_to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failure_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "callable_from_peers": {
+          "type": "boolean"
+        },
+        "delivery_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expiry_semantics": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorization": {
+          "enum": [
+            "lead_only",
+            "any_peer"
+          ]
+        },
+        "host_tool_surface": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }

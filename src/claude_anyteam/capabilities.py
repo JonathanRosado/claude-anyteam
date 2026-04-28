@@ -9,6 +9,7 @@ add the rich manifest that the wrapper MCP returns from cache.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from claude_teams.coupling import declaration_for_regime
@@ -22,7 +23,6 @@ CAPABILITY_NAMES = frozenset(
         "structured_output",
         "large_context",
         "accepts_peer_steer",
-        "native_swarm",
         "soft_non_progress_watchdog",
     }
 )
@@ -52,7 +52,7 @@ GEMINI_ACP_CAPABILITIES = [
 
 GEMINI_HEADLESS_CAPABILITIES: list[str] = []
 
-KIMI_HEADLESS_CAPABILITIES = ["large_context", "native_swarm"]
+KIMI_HEADLESS_CAPABILITIES = ["large_context"]
 
 CAPABILITY_MANIFEST_SCHEMA_VERSION = 1
 CAPABILITY_MANIFEST_VERSION = "2"
@@ -65,9 +65,123 @@ _CAPABILITY_DISPLAY_NAMES = {
     "structured_output": "structured output (`structured_output`)",
     "large_context": "large context (`large_context`)",
     "accepts_peer_steer": "peer steer acceptance (`accepts_peer_steer`)",
-    "native_swarm": "native swarm (`native_swarm`)",
     "soft_non_progress_watchdog": "soft non-progress watchdog (`soft_non_progress_watchdog`)",
 }
+
+
+@dataclass(frozen=True)
+class CapabilityRuntimeHook:
+    """Registry entry proving a capability is not decorative.
+
+    ``runtime_paths`` point at code that delivers or enforces the capability.
+    ``test_paths`` point at focused regression tests for that runtime path.
+    The paths are intentionally stringly-typed so tests can validate the
+    registry without importing backend CLIs or spawning subprocesses.
+    """
+
+    runtime_paths: tuple[str, ...]
+    test_paths: tuple[str, ...]
+    note: str
+
+
+CAPABILITY_HOOKS: dict[str, CapabilityRuntimeHook] = {
+    "turn_steer": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.codex:_SteerQueue.push",
+            "claude_anyteam.backends.gemini.loop:_handle_steer",
+            "claude_anyteam.backends.kimi.loop:_handle_steer",
+        ),
+        test_paths=(
+            "tests/test_peer_steer_authz.py::test_phase4_17_codex_mid_turn_peer_steer_kind_with_capability_still_queues",
+            "tests/test_gemini_next_turn_steer.py::test_acp_message_kind_steer_plain_prose_queues_peer_steer",
+            "tests/test_kimi_loop.py::test_kimi_message_kind_steer_plain_prose_queues_team_lead_steer",
+        ),
+        note="Codex live turn/steer plus Gemini/Kimi next-turn steer queues.",
+    ),
+    "thread_fork": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.codex:_start_or_fork_thread",
+            "claude_anyteam.app_server:AppServerClient.thread_fork",
+        ),
+        test_paths=(
+            "tests/test_fork_dispatch.py::test_second_task_uses_thread_fork",
+            "tests/test_fork_dispatch.py::test_thread_fork_method_hits_app_server_with_correct_params",
+        ),
+        note="Codex App Server session lineage uses thread/fork on resumed tasks.",
+    ),
+    "permission_bridge": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.backends.gemini.acp_client:GeminiAcpClient.handle_server_request",
+            "claude_anyteam.protocol_io:send_permission_request_to_lead",
+            "claude_anyteam.protocol_io:wait_for_permission_response",
+        ),
+        test_paths=(
+            "tests/test_gemini_acp_client.py::test_request_permission_default_bridges_allow_once",
+            "tests/test_permission_bridge.py::test_wait_for_permission_response_marks_only_matching_lead_message",
+        ),
+        note="Gemini ACP permission requests bridge to the team-lead mailbox.",
+    ),
+    "live_tool_events": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.codex:_visibility_for_app_server_item",
+            "claude_anyteam.headless_visibility:HeadlessTurnVisibility",
+            "claude_anyteam.wrapper_server:build_server",
+        ),
+        test_paths=(
+            "tests/test_visibility_events.py::test_app_server_command_execution_writes_tool_event_to_event_log_and_active_form",
+            "tests/test_wrapper_contract.py::test_exposed_tool_handlers_are_instrumented",
+        ),
+        note="Host-tool activity is normalized into visibility envelopes.",
+    ),
+    "structured_output": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.schema_validation:parse_and_validate",
+            "claude_anyteam.codex:TASK_COMPLETE_SCHEMA",
+        ),
+        test_paths=(
+            "tests/test_schema_validation.py::test_valid_output_parses_and_returns_dict",
+            "tests/test_packaged_schemas.py::test_wheel_install_ships_schemas_and_validates_task_complete",
+        ),
+        note="Task completion output is schema-constrained and Python-validated.",
+    ),
+    "large_context": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.backends.kimi.invoke:run",
+            "claude_anyteam.backends.kimi.loop:_backend_metadata",
+        ),
+        test_paths=(
+            "tests/test_kimi_invocation_shape.py::test_fresh_argv_uses_print_stream_json_model_and_prompt",
+            "tests/test_capability_declarations.py::test_kimi_headless_backend_metadata_declares_large_context",
+        ),
+        note="Kimi is the routed large-context backend; the adapter invokes the Kimi CLI directly.",
+    ),
+    "accepts_peer_steer": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.capabilities:manifest_accepts_peer_steer",
+            "claude_anyteam.wrapper_server:build_server",
+            "claude_anyteam.backends.gemini.loop:_handle_steer",
+        ),
+        test_paths=(
+            "tests/test_peer_steer_authz.py::test_peer_steer_from_non_lead_succeeds_for_gemini_acp",
+            "tests/test_wrapper_contract.py::test_wrapper_peer_steer_still_refused_after_query_when_manifest_denies",
+        ),
+        note="Peer steer is opt-in and enforced by sender and recipient gates.",
+    ),
+    "soft_non_progress_watchdog": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.codex:app_server_invoke",
+            "claude_anyteam.config:Settings",
+        ),
+        test_paths=(
+            "tests/test_visibility_events.py::test_app_server_no_checkpoint_after_300s_emits_turn_progress",
+            "tests/test_app_server_default.py::test_non_progress_env_and_overrides_are_honored",
+        ),
+        note="Codex App Server turns emit non-progress warnings and optional interrupts.",
+    ),
+}
+
+# Backwards-readable alias for callers/tests that want the longer name.
+CAPABILITY_RUNTIME_REGISTRY = CAPABILITY_HOOKS
 
 _BASE_CAPABILITY_MANIFEST: dict[str, dict[str, Any]] = {
     "turn_steer": {
@@ -184,15 +298,6 @@ _BASE_CAPABILITY_MANIFEST: dict[str, dict[str, Any]] = {
         "failure_modes": ["PEER_STEER_REJECTED", "STEER_AUTH_REJECTED"],
         "callable_from_peers": False,
     },
-    "native_swarm": {
-        "version": "1",
-        "schema": {"type": "object", "additionalProperties": True},
-        "description": "Use the harness's native internal multi-agent or swarm features inside one teammate process.",
-        "when_to_use": "Route broad exploration or parallelizable research to a teammate that can fan out internally.",
-        "when_not_to": "Do not assume internal swarm activity is visible as separate team members or mailbox participants.",
-        "failure_modes": ["SWARM_UNAVAILABLE", "SUBAGENT_LIMIT_REACHED", "SWARM_OUTPUT_COLLAPSED"],
-        "callable_from_peers": False,
-    },
     "soft_non_progress_watchdog": {
         "version": "1",
         "schema": {
@@ -241,7 +346,88 @@ def assert_known_capabilities(capabilities: list[str]) -> list[str]:
     unknown = sorted(set(capabilities) - CAPABILITY_NAMES)
     if unknown:
         raise ValueError(f"unknown capability flag(s): {', '.join(unknown)}")
+    missing_hooks = [
+        name
+        for name in sorted(set(capabilities))
+        if name not in CAPABILITY_RUNTIME_REGISTRY
+        or not CAPABILITY_RUNTIME_REGISTRY[name].runtime_paths
+        or not CAPABILITY_RUNTIME_REGISTRY[name].test_paths
+    ]
+    if missing_hooks:
+        raise ValueError(
+            "capability flag(s) missing runtime hook/test registry: "
+            + ", ".join(missing_hooks)
+        )
     return list(capabilities)
+
+
+_REQUIRED_CAPABILITY_ENTRY_FIELDS = frozenset(
+    {
+        "version",
+        "schema",
+        "description",
+        "when_to_use",
+        "when_not_to",
+        "failure_modes",
+        "callable_from_peers",
+    }
+)
+
+
+def validate_capability_manifest_entries(entries: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Validate rich manifest entries before an Agent Card is written.
+
+    This is deliberately stricter than the cache reader, which must tolerate
+    old manifests. New declarations must be exact: every advertised flag is
+    part of the known taxonomy, has a registered runtime hook and regression
+    test, and exposes the fields peers need to use the capability safely.
+    """
+
+    if not isinstance(entries, dict):
+        raise ValueError("capability manifest entries must be an object")
+    unknown = sorted(set(entries) - CAPABILITY_NAMES)
+    if unknown:
+        raise ValueError(f"unknown capability manifest entry(s): {', '.join(unknown)}")
+    assert_known_capabilities(list(entries))
+
+    validated: dict[str, dict[str, Any]] = {}
+    for name, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"capability {name!r} entry must be an object")
+        missing = sorted(_REQUIRED_CAPABILITY_ENTRY_FIELDS - set(raw_entry))
+        if missing:
+            raise ValueError(
+                f"capability {name!r} missing required field(s): "
+                + ", ".join(missing)
+            )
+        for field in ("version", "description", "when_to_use", "when_not_to"):
+            value = raw_entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"capability {name!r} field {field!r} must be a non-empty string")
+        if not isinstance(raw_entry.get("schema"), dict):
+            raise ValueError(f"capability {name!r} field 'schema' must be an object")
+        failures = raw_entry.get("failure_modes")
+        if (
+            not isinstance(failures, list)
+            or not failures
+            or not all(isinstance(item, str) and item.strip() for item in failures)
+        ):
+            raise ValueError(
+                f"capability {name!r} field 'failure_modes' must be a non-empty string list"
+            )
+        if not isinstance(raw_entry.get("callable_from_peers"), bool):
+            raise ValueError(
+                f"capability {name!r} field 'callable_from_peers' must be boolean"
+            )
+        if name == "turn_steer":
+            authorization = raw_entry.get("authorization")
+            if authorization not in {"lead_only", "any_peer"}:
+                raise ValueError(
+                    "capability 'turn_steer' requires authorization "
+                    "'lead_only' or 'any_peer'"
+                )
+        validated[name] = raw_entry
+    return validated
 
 
 def manifest_accepts_peer_steer(manifest: Any) -> bool:
@@ -343,17 +529,17 @@ def rich_capability_manifest(
     for name in capabilities:
         entry = deepcopy(_BASE_CAPABILITY_MANIFEST[name])
         if name == "turn_steer":
+            steer_authorization = steer_authorization or "lead_only"
             if delivery_mode:
                 entry["delivery_mode"] = delivery_mode
             if expiry_semantics:
                 entry["expiry_semantics"] = expiry_semantics
-            if steer_authorization:
-                entry["authorization"] = steer_authorization
+            entry["authorization"] = steer_authorization
             entry["callable_from_peers"] = steer_authorization == "any_peer"
         if name == "live_tool_events" and host_tool_surface:
             entry["host_tool_surface"] = host_tool_surface
         result[name] = entry
-    return result
+    return validate_capability_manifest_entries(result)
 
 
 def build_agent_card(
@@ -372,7 +558,11 @@ def build_agent_card(
     coupling_regime: str | None = None,
 ) -> dict[str, Any]:
     """Build the rich R12 Agent Card persisted under ``manifests/<agent>.json``."""
-    entries = capability_manifest if capability_manifest is not None else rich_capability_manifest(capabilities)
+    entries = (
+        validate_capability_manifest_entries(capability_manifest)
+        if capability_manifest is not None
+        else rich_capability_manifest(capabilities)
+    )
     card = {
         "schema_version": CAPABILITY_MANIFEST_SCHEMA_VERSION,
         "capability_version": str(capability_version),

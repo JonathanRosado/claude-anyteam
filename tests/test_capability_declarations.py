@@ -96,7 +96,7 @@ def test_gemini_headless_backend_metadata_declares_no_capabilities(tmp_path: Pat
     assert "soft_non_progress_watchdog" not in metadata.capabilities
 
 
-def test_kimi_headless_backend_metadata_declares_large_context_and_swarm(tmp_path: Path):
+def test_kimi_headless_backend_metadata_declares_large_context(tmp_path: Path):
     settings = KimiSettings(
         team_name="t",
         agent_name="kimi-a",
@@ -109,7 +109,7 @@ def test_kimi_headless_backend_metadata_declares_large_context_and_swarm(tmp_pat
     metadata = kimi_loop._backend_metadata(settings)
 
     assert metadata.capabilities == KIMI_HEADLESS_CAPABILITIES
-    assert metadata.capabilities == ["large_context", "native_swarm"]
+    assert metadata.capabilities == ["large_context"]
     assert metadata.coupling_regime == "loose"
     assert "soft_non_progress_watchdog" not in metadata.capabilities
 

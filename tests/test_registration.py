@@ -149,6 +149,7 @@ def test_register_writes_manifest_and_broadcasts_update(tmp_path: Path, monkeypa
                 "when_to_use": "always",
                 "when_not_to": "never",
                 "failure_modes": ["SCHEMA_VALIDATION_FAILED"],
+                "callable_from_peers": False,
             }
         },
         capability_version="1",
