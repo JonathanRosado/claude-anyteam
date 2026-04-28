@@ -18,6 +18,7 @@ from claude_teams.messaging import (
     ensure_inbox,
     inbox_path,
     now_iso,
+    read_attachment_text,
     read_inbox,
     read_inbox_filtered,
     send_plain_message,
@@ -115,6 +116,49 @@ def test_send_plain_message_with_color(tmp_claude_dir):
     send_plain_message("test-team", "lead", "gina", "colorful", summary="c", color="blue", base_dir=tmp_claude_dir)
     msgs = read_inbox("test-team", "gina", mark_as_read=False, base_dir=tmp_claude_dir)
     assert msgs[0].color == "blue"
+
+
+def test_send_plain_message_spills_long_body_to_attachment(tmp_claude_dir, monkeypatch):
+    monkeypatch.setenv("CLAUDE_ANYTEAM_INBOX_SPILL_CHARS", "32")
+    full = "0123456789" * 8
+
+    send_plain_message(
+        "test-team",
+        "lead",
+        "long-reader",
+        full,
+        summary="long",
+        base_dir=tmp_claude_dir,
+    )
+
+    raw = json.loads(
+        inbox_path("test-team", "long-reader", base_dir=tmp_claude_dir).read_text()
+    )
+    assert len(raw) == 1
+    row = raw[0]
+    assert row["text"].startswith(full[:32])
+    assert full[32:] not in row["text"]
+    assert "Full message (80 chars)" in row["text"]
+    attachment = row["attachment"]
+    assert attachment["charCount"] == 80
+    assert attachment["previewCharCount"] == 32
+    assert attachment["relativePath"].startswith("artifacts/inbox/")
+    assert Path(attachment["path"]).read_text(encoding="utf-8") == full
+
+    msg = read_inbox(
+        "test-team",
+        "long-reader",
+        mark_as_read=True,
+        base_dir=tmp_claude_dir,
+    )[0]
+    assert msg.attachment is not None
+    assert read_attachment_text("test-team", msg.attachment, base_dir=tmp_claude_dir) == full
+
+    rewritten = json.loads(
+        inbox_path("test-team", "long-reader", base_dir=tmp_claude_dir).read_text()
+    )
+    assert rewritten[0]["read"] is True
+    assert rewritten[0]["attachment"]["relativePath"] == attachment["relativePath"]
 
 
 def test_send_structured_message_serializes_json_in_text(tmp_claude_dir):

@@ -7,6 +7,7 @@ import pytest
 from claude_teams.models import (
     COLOR_PALETTE,
     IdleNotification,
+    InboxAttachment,
     InboxMessage,
     LeadMember,
     PermissionRequest,
@@ -357,6 +358,30 @@ class TestInboxMessage:
         )
         data = msg.model_dump(by_alias=True, exclude_none=True)
         assert data["color"] == "blue"
+
+    def test_with_attachment_metadata(self):
+        msg = InboxMessage(
+            from_="worker",
+            text="preview",
+            timestamp="ts",
+            attachment=InboxAttachment(
+                path="/tmp/full.txt",
+                relativePath="artifacts/inbox/full.txt",
+                charCount=5000,
+                previewCharCount=4096,
+                sha256="abc123",
+            ),
+        )
+        data = msg.model_dump(by_alias=True, exclude_none=True)
+        assert data["attachment"] == {
+            "kind": "artifact",
+            "path": "/tmp/full.txt",
+            "relativePath": "artifacts/inbox/full.txt",
+            "mimeType": "text/plain",
+            "charCount": 5000,
+            "previewCharCount": 4096,
+            "sha256": "abc123",
+        }
 
 
 class TestStructuredMessages:
