@@ -133,13 +133,18 @@ def test_shutdown_duplicate_request_id_ignored():
     assert rejected.call_count == 0
 
 
-def _fake_codex_result(reply: str = "Four.", exit_code: int = 0, tool_call_events: int = 0):
+def _fake_codex_result(
+    reply: str = "Four.",
+    exit_code: int = 0,
+    tool_call_events: int = 0,
+    events: list[dict] | None = None,
+):
     from claude_anyteam import codex as codex_mod
     return codex_mod.CodexResult(
         exit_code=exit_code,
         structured=None,
         last_message=reply,
-        events=[],
+        events=events or [],
         error=None if exit_code == 0 else "oops",
         tool_call_events=tool_call_events,
     )
@@ -295,6 +300,129 @@ def test_prose_message_skips_final_text_when_codex_used_send_message_tool():
         _handle_message(state, msg)
 
     assert sent == []
+
+
+def test_prose_message_skips_final_text_when_app_server_tool_field_names_send_message():
+    """Codex App Server reports the called wrapper tool in params.item.tool.
+
+    The #51 diagnostic probe observed this exact event shape. Before the
+    regression fix the delivered-via-tool guard only checked name/tool_name,
+    missed this event, and could relay redundant final prose after a real
+    send_message delivery.
+    """
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="hello", from_="peer-bob")
+    result = _fake_codex_result(
+        "Already replied via team mailbox.",
+        exit_code=0,
+        tool_call_events=2,
+        events=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "mcpToolCall",
+                        "server": "claude_anyteam_wrapper",
+                        "tool": "send_message",
+                        "status": "completed",
+                    }
+                },
+            }
+        ],
+    )
+
+    sent: list[tuple] = []
+
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", return_value=result),
+        patch.object(
+            loop_mod.pio,
+            "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_message(state, msg)
+
+    assert sent == []
+
+
+def test_prose_message_retries_send_message_unavailable_flap():
+    """A missing-send_message final answer is repaired, not relayed.
+
+    Pre-fix behavior sent the invalid prose directly to the peer. The fixed
+    path retries once with a hard read_config/protocol_tools repair prompt and
+    suppresses fallback when the retry delivers through send_message.
+    """
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="please ack", from_="peer-bob")
+    bad = _fake_codex_result(
+        "I don't have a send_message MCP tool available in this session.",
+        exit_code=0,
+    )
+    repaired = _fake_codex_result("", exit_code=0, tool_call_events=1)
+    invocations: list[dict] = []
+    results = iter([bad, repaired])
+
+    def fake_invoke(**kwargs):
+        invocations.append(kwargs)
+        return next(results)
+
+    sent: list[tuple] = []
+
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(
+            loop_mod.pio,
+            "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_message(state, msg)
+
+    assert len(invocations) == 2
+    repair_prompt = invocations[1]["task_prompt"]
+    assert "previous final prose claimed" in repair_prompt
+    assert "read_config()" in repair_prompt
+    assert "protocol_tools" in repair_prompt
+    assert "send_message(to='peer-bob'" in repair_prompt
+    assert sent == []
+
+
+def test_prose_message_suppresses_repeated_send_message_unavailable_flap():
+    """If the repair turn still flaps, send diagnostic fallback instead."""
+    state = LoopState(settings=_settings())
+    msg = FakeInboxMessage(text="please ack", from_="peer-bob")
+    bad = _fake_codex_result(
+        "I don't have access to a `send_message` MCP tool.",
+        exit_code=0,
+    )
+    still_bad = _fake_codex_result(
+        "There is no send_message MCP tool available.",
+        exit_code=0,
+    )
+    results = iter([bad, still_bad])
+
+    def fake_invoke(**kwargs):
+        return next(results)
+
+    sent: list[tuple] = []
+
+    with (
+        patch.object(loop_mod.codex_mod, "app_server_invoke", side_effect=fake_invoke),
+        patch.object(
+            loop_mod.pio,
+            "send_prose",
+            side_effect=lambda team, sender, to, text, summary: sent.append((to, text)),
+        ),
+    ):
+        _handle_message(state, msg)
+
+    assert len(sent) == 1
+    to, text = sent[0]
+    assert to == "peer-bob"
+    assert "mcp_send_message_unavailable" in text
+    assert "I don't have" not in text
+    assert "no send_message MCP tool" not in text
 
 
 def test_prose_message_codex_fail_sends_fallback_ack():

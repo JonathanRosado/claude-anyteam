@@ -61,6 +61,20 @@ def test_tool_name_extraction_inner_item():
     assert _tool_name_from_event(ev) == "task_update"
 
 
+def test_tool_name_extraction_app_server_tool_field():
+    """App Server mcpToolCall items use `tool`, not `name`."""
+    ev = {
+        "type": "item/completed",
+        "item": {
+            "type": "mcpToolCall",
+            "server": "claude_anyteam_wrapper",
+            "tool": "send_message",
+        },
+    }
+    assert _tool_name_from_event(ev) == "send_message"
+    assert _is_tool_call_event("item/completed", ev)
+
+
 def test_tool_name_returns_none_when_missing():
     ev = {"type": "mcp_tool_call"}
     assert _tool_name_from_event(ev) is None
@@ -83,6 +97,14 @@ def test_backstop_matches_event_with_wrapper_tool_name_nested():
     ev = {
         "type": "ItemSomething",
         "item": {"type": "message", "name": "send_message"},
+    }
+    assert _is_tool_call_event("ItemSomething", ev)
+
+
+def test_backstop_matches_event_with_wrapper_tool_field_nested():
+    ev = {
+        "type": "ItemSomething",
+        "item": {"type": "mcpToolCall", "tool": "send_message"},
     }
     assert _is_tool_call_event("ItemSomething", ev)
 

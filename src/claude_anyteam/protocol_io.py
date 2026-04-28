@@ -71,7 +71,7 @@ def _event_mentions_send_message_tool(value: Any) -> bool:
     The three prose backends expose different event shapes:
 
     - Codex exec: ``{"type": "mcp_tool_call", "name": "send_message"}``
-    - Codex App Server: ``{"params": {"item": {"name": "send_message"}}}``
+    - Codex App Server: ``{"params": {"item": {"tool": "send_message"}}}``
     - Kimi: ``{"role": "assistant", "tool_calls": [{"function": {"name": ...}}]}``
     - Gemini: ``{"type": "tool_use", "tool_name": "mcp_anyteam_send_message"}``
 
