@@ -1668,8 +1668,21 @@ def _check_gemini_cli() -> GeminiCliCheck:
     )
 
 
+def _resolve_kimi_binary() -> str | None:
+    """Find the Kimi binary by trying every alias kimi-cli registers (`kimi`,
+    `kimi-cli`) and falling back to direct uv-tool-dir scanning for cases
+    where uv installed but PATH wasn't refreshed in this process. Imported
+    lazily to avoid a circular import — cli.py imports from this module.
+    """
+    try:
+        from .cli import _resolve_binary  # noqa: PLC0415
+    except ImportError:
+        return shutil.which(KIMI_CLI_BINARY)
+    return _resolve_binary((KIMI_CLI_BINARY, "kimi-cli"), uv_tool_name="kimi-cli")
+
+
 def _check_kimi_cli() -> KimiCliCheck:
-    found_path = shutil.which(KIMI_CLI_BINARY)
+    found_path = _resolve_kimi_binary()
     if not found_path:
         return KimiCliCheck(
             found=False,

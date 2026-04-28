@@ -62,10 +62,9 @@ def _render_box(title: str, lines: list[str]) -> str:
     )
 
 
-def _installer_version() -> str:
-    env_version = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
-    if env_version:
-        return env_version
+def _python_tool_version() -> str:
+    """The actually-installed Python package version (NOT the npm wrapper's
+    claim). Used for version-mismatch diagnostics."""
     try:
         return importlib.metadata.version("claude-anyteam")
     except importlib.metadata.PackageNotFoundError:
@@ -79,8 +78,33 @@ def _installer_version() -> str:
     return "unknown"
 
 
+def _installer_version() -> str:
+    env_version = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
+    if env_version:
+        return env_version
+    return _python_tool_version()
+
+
 def _version_banner() -> str:
     return f"claude-anyteam installer v{_installer_version()}"
+
+
+def _detect_version_mismatch() -> str | None:
+    """If the npm wrapper's reported version differs from the installed Python
+    tool's version, return a warning string. Caller prints it loudly so the
+    user knows the wrapper bug-fixes won't actually run.
+    """
+    npm_claim = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
+    if not npm_claim:
+        return None
+    actual = _python_tool_version()
+    if actual == "unknown" or actual == npm_claim:
+        return None
+    return (
+        f"npm wrapper is v{npm_claim} but the installed Python tool is v{actual}. "
+        f"Wrapper-version bug fixes won't run until the Python tool refreshes. "
+        f"Try: uv tool install --force --prerelease=allow claude-anyteam=={npm_claim}"
+    )
 
 
 def _command_version(command: str) -> str:
@@ -400,36 +424,114 @@ def _refresh_path_for_uv_tools() -> None:
     parts = current.split(os.pathsep) if current else []
     new_parts = [c for c in candidates if c not in parts]
     if new_parts:
-        os.environ["PATH"] = os.pathsep + current if not current else os.pathsep.join([*new_parts, current])
+        # Bug-fix from codex review: previous form `os.pathsep + current if not current ...`
+        # silently dropped new_parts when current was empty. Use a single join path.
+        os.environ["PATH"] = os.pathsep.join([*new_parts, *parts])
 
 
-def _wait_for_binary(name: str, *, attempts: int = 6, delay_s: float = 0.25) -> str | None:
-    """Poll PATH (refreshed each attempt) for `name`. Used after `uv tool
-    install` because Windows file-system + uv shim writes can lag a moment.
+def _windows_executable_extensions() -> tuple[str, ...]:
+    """Honor PATHEXT (with .EXE fallback) when probing files on Windows."""
+    pathext = os.environ.get("PATHEXT", "")
+    exts = [ext for ext in pathext.split(os.pathsep) if ext.strip()]
+    if not exts:
+        exts = [".COM", ".EXE", ".BAT", ".CMD"]
+    # Lowercase + ensure .exe/.cmd/.bat are present even if PATHEXT is bizarre.
+    seen: list[str] = []
+    for ext in [*[e.lower() for e in exts], ".exe", ".cmd", ".bat"]:
+        if ext not in seen:
+            seen.append(ext)
+    return tuple(seen)
+
+
+def _resolve_binary(
+    names: tuple[str, ...] | str,
+    *,
+    uv_tool_name: str | None = None,
+    update_path: bool = True,
+) -> str | None:
+    """Single shared resolver used by BOTH post-install success checks AND
+    provider-status checks so they cannot disagree about whether a binary
+    exists.
+
+    Tries each alias in order:
+      1. shutil.which(alias) — exact PATH lookup
+      2. <uv tool dir --bin>/<alias>{.exe,.cmd,.bat,...}
+      3. <uv tool dir>/<uv_tool_name>/Scripts|bin/<alias>{ext}
+      4. Walk every (uv tool dir)/<entry>/Scripts|bin to catch installs that
+         landed in a tool dir that doesn't match `uv_tool_name`.
+
+    On success, prepends the containing directory to os.environ["PATH"] so
+    later shutil.which() calls in the same process succeed. Returns the
+    absolute path to the found binary, or None.
+    """
+    if isinstance(names, str):
+        names = (names,)
+    extensions = _windows_executable_extensions() if sys.platform == "win32" else ("",)
+
+    def _record_path(parent: str) -> None:
+        if not update_path:
+            return
+        current = os.environ.get("PATH", "")
+        parts = current.split(os.pathsep) if current else []
+        if parent not in parts:
+            os.environ["PATH"] = os.pathsep.join([parent, *parts])
+
+    for alias in names:
+        hit = shutil.which(alias)
+        if hit:
+            _record_path(os.path.dirname(hit))
+            return hit
+
+    bin_dirs: list[str] = list(_uv_tool_bin_dirs())
+    # Promote uv_tool_name-specific dirs to the front for a faster first hit.
+    if uv_tool_name:
+        uv = shutil.which("uv")
+        if uv:
+            try:
+                completed = subprocess.run(
+                    [uv, "tool", "dir"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                if completed.returncode == 0 and completed.stdout:
+                    for root in (line.strip() for line in completed.stdout.splitlines()):
+                        if not root or not os.path.isdir(root):
+                            continue
+                        for sub in ("Scripts", "bin"):
+                            cand = os.path.join(root, uv_tool_name, sub)
+                            if os.path.isdir(cand) and cand not in bin_dirs:
+                                bin_dirs.insert(0, cand)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+    for bin_dir in bin_dirs:
+        for alias in names:
+            for ext in extensions:
+                cand = os.path.join(bin_dir, f"{alias}{ext}")
+                if os.path.isfile(cand):
+                    _record_path(bin_dir)
+                    return cand
+    return None
+
+
+def _wait_for_binary(
+    names: tuple[str, ...] | str,
+    *,
+    uv_tool_name: str | None = None,
+    attempts: int = 6,
+    delay_s: float = 0.25,
+) -> str | None:
+    """Retry-loop wrapper around _resolve_binary. Used after `uv tool install`
+    because Windows file-system + uv shim writes can lag a moment.
     """
     import time
     for _ in range(attempts):
-        path = shutil.which(name)
-        if path:
-            return path
-        # Also probe direct uv tool bin dirs in case PATH refresh missed them.
-        for bin_dir in _uv_tool_bin_dirs():
-            for ext in ("", ".exe", ".cmd", ".bat"):
-                cand = os.path.join(bin_dir, f"{name}{ext}")
-                if os.path.isfile(cand):
-                    # Critical: ensure the directory containing this binary
-                    # is on PATH so later shutil.which() calls (e.g. inside
-                    # _check_kimi_cli) succeed too. Without this, _wait_for_binary
-                    # returns a path the install-success message uses, but the
-                    # provider-status table still reports the binary as missing.
-                    current = os.environ.get("PATH", "")
-                    parts = current.split(os.pathsep) if current else []
-                    if bin_dir not in parts:
-                        os.environ["PATH"] = bin_dir + os.pathsep + current
-                    return cand
+        hit = _resolve_binary(names, uv_tool_name=uv_tool_name, update_path=True)
+        if hit:
+            return hit
         time.sleep(delay_s)
         _refresh_path_for_uv_tools()
-    return None
+    # Last attempt with the freshly-refreshed PATH.
+    return _resolve_binary(names, uv_tool_name=uv_tool_name, update_path=True)
 
 
 def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool, str]:
@@ -602,13 +704,19 @@ def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> No
         display, argv = command
         print(f"{theme.symbols['arrow']} {theme.heading('Running:')} {theme.accent(display)}", file=stream)
         ok, output = _run_install_command(argv)
-        binary_map = {
-            "codex": installer_mod.CODEX_CLI_BINARY,
-            "gemini": installer_mod.GEMINI_CLI_BINARY,
-            "kimi": installer_mod.KIMI_CLI_BINARY,
+        # Some packages register multiple console_scripts (e.g. kimi-cli ships
+        # both `kimi` and `kimi-cli`). Try every alias so a stale PATH lookup
+        # for one name doesn't make us think the install failed.
+        alias_map: dict[str, tuple[tuple[str, ...], str | None]] = {
+            "codex": ((installer_mod.CODEX_CLI_BINARY,), None),
+            "gemini": ((installer_mod.GEMINI_CLI_BINARY,), None),
+            "kimi": ((installer_mod.KIMI_CLI_BINARY, "kimi-cli"), "kimi-cli"),
         }
-        binary_name = binary_map.get(key)
-        binary_found_path = _wait_for_binary(binary_name) if (ok and binary_name) else None
+        aliases, uv_tool_name = alias_map.get(key, ((key,), None))
+        binary_name = aliases[0] if aliases else key
+        binary_found_path = (
+            _wait_for_binary(aliases, uv_tool_name=uv_tool_name) if (ok and aliases) else None
+        )
         if ok and binary_found_path:
             print(
                 f"{theme.symbols['success']} {theme.success(f'Installed {label}.')} {theme.muted(f'Found at {binary_found_path}.')}",
@@ -675,6 +783,17 @@ def _install_command(
     stream = out or sys.stdout
     if os.environ.get("CLAUDE_ANYTEAM_NPM_PARENT") != "1":
         print(_version_banner(), file=stream)
+    # Loud diagnostic when wrapper claims a newer version than the Python
+    # tool actually installed — this used to silently mask v0.7.5 bug-fixes
+    # because PyPI's index lagged npm publish and uv resolved an older wheel.
+    mismatch = _detect_version_mismatch()
+    if mismatch:
+        from ._theme import get_theme as _get_theme
+        _t = _get_theme()
+        print(
+            f"{_t.symbols['warn']} {_t.warn('Version mismatch:')} {_t.muted(mismatch)}",
+            file=sys.stderr,
+        )
     if assume_yes:
         prompt_fn = lambda _current: True
     elif no_input or self_heal:
