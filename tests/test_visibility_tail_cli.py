@@ -130,6 +130,58 @@ def test_visibility_tail_golden_tricard_output(teams_root: Path):
     )
 
 
+def test_visibility_tail_expands_long_payload_cards(teams_root: Path):
+    pio.append_event(
+        "team-x",
+        "codex-a",
+        _event(
+            "tool_event",
+            4,
+            severity="error",
+            summary="shell failed",
+            payload={
+                "category": "host_tool",
+                "tool_name": "shell",
+                "phase": "completed",
+                "tool_args": {
+                    "cmd": "python - <<'PY'\nprint('alpha')\nPY\n"
+                    + ("x" * 140)
+                },
+                "status": "failed",
+                "exit_code": 1,
+                "duration_ms": 42,
+                "stdout_preview": "first line\nsecond line\n" + ("z" * 130),
+                "stderr_preview": "Traceback (most recent call last)\n" + ("boom " * 45),
+            },
+        ),
+    )
+
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = visibility_tail.main(
+        ["--team", "team-x", "--from-start", "--no-follow", "--no-color"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert rc == 0
+    assert err.getvalue() == ""
+    rendered = out.getvalue()
+    assert rendered.startswith(
+        "2026-04-27T15:30:04.000Z seq=4 codex-a codex_exec ERROR tool_event :: shell failed\n"
+    )
+    assert "\n  [ARGS]\n" in rendered
+    assert "\n    args:\n" in rendered
+    assert '"cmd":' in rendered
+    assert "\n  [RESULT]\n" in rendered
+    assert "\n    stdout:\n" in rendered
+    assert "first line" in rendered
+    assert "\n  [ERROR]\n" in rendered
+    assert "\n    error:\n" in rendered
+    assert "Traceback (most recent call last)" in rendered
+    assert len(rendered.splitlines()) > 12
+
+
 def test_append_event_mirrors_rows_to_per_team_visibility_stream(teams_root: Path):
     event = _event("tool_event", 1, summary="mirrored")
 

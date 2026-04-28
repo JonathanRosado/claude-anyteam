@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import textwrap
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,11 @@ _RELATIVE_SINCE_UNITS: dict[str, float] = {
     "day": 24 * 60 * 60,
     "days": 24 * 60 * 60,
 }
+_CARD_INLINE_VALUE_LIMIT = 220
+_CARD_MULTILINE_VALUE_LIMIT = 120
+_CARD_MULTILINE_MAX_CHARS = 2000
+_CARD_MULTILINE_MAX_LINES = 20
+_CARD_MULTILINE_WRAP_WIDTH = 100
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -197,7 +203,7 @@ def _split_filter_kinds(values: Iterable[str]) -> set[str] | None:
     return kinds or None
 
 
-def _truncate(text: str, *, limit: int = 220) -> str:
+def _truncate(text: str, *, limit: int = _CARD_INLINE_VALUE_LIMIT) -> str:
     return text if len(text) <= limit else text[: max(0, limit - 1)] + "…"
 
 
@@ -229,6 +235,76 @@ def _kv_pairs(pairs: Iterable[tuple[str, Any]]) -> str:
         if value is not None
     ]
     return " ".join(rendered) if rendered else "-"
+
+
+def _full_value_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value if value else '""'
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _needs_multiline_value(value: Any) -> bool:
+    if value is None:
+        return False
+    text = _full_value_text(value)
+    return "\n" in text or len(text) > _CARD_MULTILINE_VALUE_LIMIT
+
+
+def _wrap_preserving_indent(line: str) -> list[str]:
+    if len(line) <= _CARD_MULTILINE_WRAP_WIDTH:
+        return [line]
+    indent = line[: len(line) - len(line.lstrip())]
+    wrapped = textwrap.wrap(
+        line,
+        width=_CARD_MULTILINE_WRAP_WIDTH,
+        subsequent_indent=indent,
+        break_long_words=True,
+        break_on_hyphens=False,
+        replace_whitespace=False,
+        drop_whitespace=False,
+    )
+    return wrapped or [line]
+
+
+def _multiline_value_lines(value: Any) -> list[str]:
+    text = _full_value_text(value)
+    truncated = False
+    if len(text) > _CARD_MULTILINE_MAX_CHARS:
+        text = text[:_CARD_MULTILINE_MAX_CHARS].rstrip()
+        truncated = True
+
+    raw_lines = text.splitlines() or [""]
+    lines: list[str] = []
+    for line in raw_lines:
+        lines.extend(_wrap_preserving_indent(line))
+
+    if len(lines) > _CARD_MULTILINE_MAX_LINES:
+        remaining = len(lines) - _CARD_MULTILINE_MAX_LINES
+        lines = lines[:_CARD_MULTILINE_MAX_LINES]
+        lines.append(f"… ({remaining} lines more)")
+    if truncated:
+        lines.append("… (truncated)")
+    return lines
+
+
+def _card(label: str, pairs: Iterable[tuple[str, Any]]) -> str:
+    fields = [(key, value) for key, value in pairs if value is not None]
+    if not fields:
+        return f"[{label}] -"
+    if not any(_needs_multiline_value(value) for _, value in fields):
+        return f"[{label}] {_kv_pairs(fields)}"
+
+    lines = [f"[{label}]"]
+    for key, value in fields:
+        if _needs_multiline_value(value):
+            lines.append(f"  {key}:")
+            lines.extend(f"    {line}" for line in _multiline_value_lines(value))
+        else:
+            lines.append(f"  {key}: {_value_text(value)}")
+    return "\n".join(lines)
 
 
 def _first_present(payload: dict[str, Any], *keys: str) -> Any:
@@ -287,7 +363,7 @@ def _args_card(event: VisibilityEvent) -> str:
             ("surface", payload.get("surface")),
             ("phase", payload.get("phase")),
         )
-    return f"[ARGS] {_kv_pairs(fields)}"
+    return _card("ARGS", fields)
 
 
 def _result_card(event: VisibilityEvent) -> str:
@@ -299,10 +375,9 @@ def _result_card(event: VisibilityEvent) -> str:
             ("duration_ms", payload.get("duration_ms")),
             ("stdout", payload.get("stdout_preview")),
         )
-        rendered = _kv_pairs(fields)
-        if rendered == "-":
-            rendered = f"phase={_value_text(payload.get('phase') or 'observed')}"
-        return f"[RESULT] {rendered}"
+        if not any(value is not None for _, value in fields):
+            fields = (("phase", payload.get("phase") or "observed"),)
+        return _card("RESULT", fields)
     if event.kind in {"turn_completed", "turn_failed"}:
         fields = (
             ("exit_code", payload.get("exit_code")),
@@ -311,14 +386,14 @@ def _result_card(event: VisibilityEvent) -> str:
             ("events", payload.get("event_count")),
             ("tool_calls", payload.get("tool_call_events")),
         )
-        return f"[RESULT] {_kv_pairs(fields)}"
+        return _card("RESULT", fields)
     if event.kind == "turn_started":
         return "[RESULT] started"
     if event.kind == "artifact_event":
-        return f"[RESULT] {_kv_pairs((('action', payload.get('action')),))}"
+        return _card("RESULT", (("action", payload.get("action")),))
     if event.kind == "agent_registered":
         return "[RESULT] registered"
-    return f"[RESULT] severity={_value_text(event.severity)}"
+    return _card("RESULT", (("severity", event.severity),))
 
 
 def _error_card(event: VisibilityEvent) -> str | None:
@@ -341,11 +416,11 @@ def _error_card(event: VisibilityEvent) -> str | None:
         ("status", payload.get("status") if failed_status else None),
         ("error", error),
     )
-    return f"[ERROR] {_kv_pairs(fields)}"
+    return _card("ERROR", fields)
 
 
 def format_event(event: VisibilityEvent, *, color: bool = True) -> str:
-    """Render one VisibilityEvent as a single tri-card row."""
+    """Render one VisibilityEvent as a tri-card row or expanded card block."""
 
     kind = event.kind
     severity = event.severity.upper()
@@ -358,12 +433,17 @@ def format_event(event: VisibilityEvent, *, color: bool = True) -> str:
         f"{event.timestamp} seq={event.seq} {event.agent} "
         f"{event.backend} {severity} {kind}"
     )
-    parts = [prefix, _args_card(event), _result_card(event)]
+    cards = [_args_card(event), _result_card(event)]
     error = _error_card(event)
     if error:
-        parts.append(error)
-    parts.append(f":: {event.summary}")
-    return " ".join(parts)
+        cards.append(error)
+    if not any("\n" in card for card in cards):
+        return " ".join([prefix, *cards, f":: {event.summary}"])
+
+    lines = [f"{prefix} :: {event.summary}"]
+    for card in cards:
+        lines.extend(f"  {line}" for line in card.splitlines())
+    return "\n".join(lines)
 
 
 @dataclass
