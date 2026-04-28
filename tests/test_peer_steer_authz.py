@@ -273,7 +273,7 @@ def test_codex_app_server_mid_turn_lead_prose_still_becomes_steer(
     assert deferred == []
 
 
-def test_codex_app_server_mid_turn_peer_prose_becomes_steer_when_recipient_accepts(
+def test_codex_app_server_mid_turn_peer_prose_default_kind_defers_even_when_recipient_accepts(
     monkeypatch, tmp_path: Path
 ):
     schema_path = tmp_path / "task-complete.schema.json"
@@ -284,10 +284,7 @@ def test_codex_app_server_mid_turn_peer_prose_becomes_steer_when_recipient_accep
 
     def fake_invoke(**kwargs):
         kwargs["mid_turn_hook"]()
-        assert (
-            kwargs["steer_queue"].pop_nowait()
-            == f"mid-task message from {PEER}: Use the revised constraint."
-        )
+        assert kwargs["steer_queue"].pop_nowait() is None
         return _codex_result()
 
     monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
@@ -310,7 +307,7 @@ def test_codex_app_server_mid_turn_peer_prose_becomes_steer_when_recipient_accep
         prompt="do work",
     )
 
-    assert deferred == []
+    assert deferred == [(PEER, "Use the revised constraint.")]
 
 
 def test_team_lead_steer_allowed_without_peer_steer_capability(tmp_path: Path):
@@ -439,6 +436,108 @@ def test_phase4_17_codex_mid_turn_peer_steer_kind_with_capability_still_queues(
     assert deferred == []
 
 
+def test_codex_mid_turn_structured_steer_body_with_default_kind_is_deferred(
+    monkeypatch, tmp_path: Path
+):
+    """A JSON steer payload is not enough; peer steer requires kind=steer."""
+
+    schema_path = tmp_path / "task-complete.schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    state = codex_loop.LoopState(settings=_codex_settings(tmp_path))
+    msg = SimpleNamespace(
+        from_=PEER,
+        text=json.dumps(
+            {
+                "type": "steer",
+                "from": PEER,
+                "message": "Use the revised constraint.",
+            }
+        ),
+        message_kind="informational",
+    )
+    deferred: list[tuple[str, str]] = []
+
+    def fake_invoke(**kwargs):
+        kwargs["mid_turn_hook"]()
+        assert kwargs["steer_queue"].pop_nowait() is None
+        return _codex_result()
+
+    monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
+    monkeypatch.setattr(codex_loop.pio, "read_own_inbox", lambda *_args: [msg])
+    monkeypatch.setattr(codex_loop.codex_mod, "app_server_invoke", fake_invoke)
+    monkeypatch.setattr(
+        codex_loop,
+        "_backend_metadata",
+        lambda _settings: SimpleNamespace(capabilities=["accepts_peer_steer"]),
+    )
+    monkeypatch.setattr(
+        codex_loop,
+        "_handle_prose",
+        lambda _state, prose_msg: deferred.append((prose_msg.from_, prose_msg.text)),
+    )
+
+    codex_loop._execute_task_app_server(
+        state,
+        SimpleNamespace(id="42"),
+        prompt="do work",
+    )
+
+    assert deferred == [(PEER, msg.text)]
+
+
+def test_codex_mid_turn_peer_steer_kind_respects_self_manifest_denial(
+    monkeypatch, tmp_path: Path
+):
+    """The rich Agent Card is authoritative over cheap accepts_peer_steer."""
+
+    schema_path = tmp_path / "task-complete.schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    state = codex_loop.LoopState(
+        settings=_codex_settings(tmp_path),
+        self_capability_manifest={
+            "capabilities": {
+                "turn_steer": {
+                    "authorization": "lead_only",
+                    "callable_from_peers": False,
+                }
+            }
+        },
+    )
+    msg = _prose_msg_with_kind(
+        PEER,
+        "Use the revised constraint.",
+        message_kind="steer",
+    )
+    deferred: list[tuple[str, str]] = []
+
+    def fake_invoke(**kwargs):
+        kwargs["mid_turn_hook"]()
+        assert kwargs["steer_queue"].pop_nowait() is None
+        return _codex_result()
+
+    monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
+    monkeypatch.setattr(codex_loop.pio, "read_own_inbox", lambda *_args: [msg])
+    monkeypatch.setattr(codex_loop.codex_mod, "app_server_invoke", fake_invoke)
+    monkeypatch.setattr(
+        codex_loop,
+        "_backend_metadata",
+        lambda _settings: SimpleNamespace(capabilities=["accepts_peer_steer"]),
+    )
+    monkeypatch.setattr(
+        codex_loop,
+        "_handle_prose",
+        lambda _state, prose_msg: deferred.append((prose_msg.from_, prose_msg.text)),
+    )
+
+    codex_loop._execute_task_app_server(
+        state,
+        SimpleNamespace(id="42"),
+        prompt="do work",
+    )
+
+    assert deferred == [(PEER, "Use the revised constraint.")]
+
+
 def test_phase4_17_codex_mid_turn_lead_informational_still_steers(
     monkeypatch, tmp_path: Path
 ):
@@ -485,16 +584,10 @@ def test_phase4_17_codex_mid_turn_lead_informational_still_steers(
     assert deferred == []
 
 
-def test_phase4_17_codex_mid_turn_legacy_inbox_row_without_kind_preserves_56_behavior(
+def test_phase4_17_codex_mid_turn_legacy_inbox_row_without_kind_is_informational(
     monkeypatch, tmp_path: Path
 ):
-    """Legacy v0.6.x rows without messageKind keep the post-#56 v2 contract.
-
-    A peer prose with no message_kind attribute (pre-R3 wire row) and
-    recipient declaring accepts_peer_steer must STILL queue as steer — the
-    discriminator only fires when the wire field is explicitly
-    "informational". This protects forward-compat for legacy team configs.
-    """
+    """Legacy/pre-R3 peer rows without messageKind default to informational."""
     schema_path = tmp_path / "task-complete.schema.json"
     schema_path.write_text("{}", encoding="utf-8")
     state = codex_loop.LoopState(settings=_codex_settings(tmp_path))
@@ -504,10 +597,7 @@ def test_phase4_17_codex_mid_turn_legacy_inbox_row_without_kind_preserves_56_beh
 
     def fake_invoke(**kwargs):
         kwargs["mid_turn_hook"]()
-        assert (
-            kwargs["steer_queue"].pop_nowait()
-            == f"mid-task message from {PEER}: Use the revised constraint."
-        )
+        assert kwargs["steer_queue"].pop_nowait() is None
         return _codex_result()
 
     monkeypatch.setattr(codex_loop.codex_mod, "TASK_COMPLETE_SCHEMA", schema_path)
@@ -530,7 +620,7 @@ def test_phase4_17_codex_mid_turn_legacy_inbox_row_without_kind_preserves_56_beh
         prompt="do work",
     )
 
-    assert deferred == []
+    assert deferred == [(PEER, "Use the revised constraint.")]
 
 
 # ──────────────────────────────────────────────────────────────────────────

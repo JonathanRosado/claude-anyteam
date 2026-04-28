@@ -244,6 +244,86 @@ def assert_known_capabilities(capabilities: list[str]) -> list[str]:
     return list(capabilities)
 
 
+def manifest_accepts_peer_steer(manifest: Any) -> bool:
+    """Return whether a rich Agent Card authorizes non-lead peer steer.
+
+    The protocol has carried this bit in a few compatible shapes while the
+    R11/R12 split settled:
+
+    - top-level ``accepts_peer_steer: true`` from prototype Agent Cards,
+    - rich ``capabilities.accepts_peer_steer`` entries,
+    - ``turn_steer.authorization == "any_peer"`` /
+      ``turn_steer.callable_from_peers == true``.
+
+    Explicit false wins over any looser shape.  A plain ``turn_steer`` entry
+    by itself is not peer authorization; lead-only steer-capable backends also
+    declare that primitive.
+    """
+
+    if not isinstance(manifest, dict):
+        return False
+
+    top_level = manifest.get("accepts_peer_steer")
+    if isinstance(top_level, bool):
+        return top_level
+
+    capabilities = manifest.get("capabilities")
+    if isinstance(capabilities, list):
+        return "accepts_peer_steer" in capabilities
+    if not isinstance(capabilities, dict):
+        return False
+
+    accepts = capabilities.get("accepts_peer_steer")
+    if isinstance(accepts, bool):
+        return accepts
+    if isinstance(accepts, dict):
+        if accepts.get("enabled") is False or accepts.get("value") is False:
+            return False
+        return True
+    if accepts is not None:
+        return True
+
+    turn_steer = capabilities.get("turn_steer")
+    if isinstance(turn_steer, dict):
+        nested_accepts = turn_steer.get("accepts_peer_steer")
+        if isinstance(nested_accepts, bool):
+            return nested_accepts
+        if turn_steer.get("authorization") == "any_peer":
+            return True
+        if turn_steer.get("callable_from_peers") is True:
+            return True
+
+    return False
+
+
+def peer_steer_authorized(
+    capabilities: list[str] | tuple[str, ...],
+    manifest: Any | None = None,
+) -> bool:
+    """Return whether the recipient currently authorizes peer steer.
+
+    When a rich manifest is available it is authoritative.  The cheap
+    ``accepts_peer_steer`` flag remains a fallback for focused unit tests and
+    older adapters that have not loaded an Agent Card yet.
+    """
+
+    if isinstance(manifest, dict):
+        return manifest_accepts_peer_steer(manifest)
+    return "accepts_peer_steer" in capabilities
+
+
+def effective_peer_steer_capabilities(
+    capabilities: list[str] | tuple[str, ...],
+    manifest: Any | None = None,
+) -> list[str]:
+    """Return cheap capability flags with manifest peer-steer policy applied."""
+
+    result = [cap for cap in capabilities if cap != "accepts_peer_steer"]
+    if peer_steer_authorized(capabilities, manifest):
+        result.append("accepts_peer_steer")
+    return result
+
+
 def rich_capability_manifest(
     capabilities: list[str],
     *,

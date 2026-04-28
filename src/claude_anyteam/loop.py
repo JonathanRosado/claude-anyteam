@@ -36,6 +36,7 @@ from .capabilities import (
     CODEX_APP_SERVER_CAPABILITIES,
     CODEX_EXEC_CAPABILITIES,
     assert_known_capabilities,
+    effective_peer_steer_capabilities,
     rich_capability_manifest,
 )
 from .capability_manifest import CapabilityManifestCache
@@ -54,6 +55,22 @@ from .watch_inbox import WatchInbox, adaptive_wait_s
 APP_SERVER_TASK_STATE_SAMPLE_EVERY = 5
 
 
+def _normalized_message_kind(kind: str | None) -> str | None:
+    if not isinstance(kind, str):
+        return None
+    normalized = kind.strip().lower()
+    if not normalized:
+        return None
+    return normalized.replace("_", "-")
+
+
+def _message_kind(msg: Any) -> str | None:
+    raw = getattr(msg, "message_kind", None)
+    if raw is None:
+        raw = getattr(msg, "messageKind", None)
+    return raw if isinstance(raw, str) else None
+
+
 def _mid_turn_prose_should_be_steer(
     *,
     sender: str | None,
@@ -63,27 +80,21 @@ def _mid_turn_prose_should_be_steer(
     """Return whether an untyped prose inbox message should become steer.
 
     Lead prose remains an operational steer while a task is in flight. Peer
-    prose is more ambiguous: it can be ordinary coordination/informational DM
-    traffic, and treating all such prose as ``turn/steer`` creates noisy
-    peer_steer_rejected events for recipients that explicitly do not accept
-    peer steer. The recipient's own capability declaration governs that
-    interpretation: only recipients advertising ``accepts_peer_steer`` opt in
-    to converting peer prose into mid-turn steer fragments.
-
-    Per phase4 #59 sender-side messageKind discriminator: peer-sent prose
-    with kind="informational" is routine coordination, NOT a steer attempt,
-    even when the recipient declares accepts_peer_steer. Honoring the
-    discriminator at L4 closes the post-#59 throughput regression where
-    informational peer-DMs jammed recipient turn budgets via queued steers.
-    Lead prose still becomes a steer regardless of kind — the lead's
-    operational authority is unchanged.
+    prose is ordinary coordination by default: only an explicit
+    ``messageKind=steer`` label, combined with recipient peer-steer
+    authorization, may become a mid-turn steer fragment.  This closes the
+    aproto-codex-bridge anti-pattern where any peer body that looked like a
+    steer (or any unlabelled peer prose to an accepting recipient) could
+    interrupt the active turn.
     """
 
     if sender == "team-lead":
         return True
-    if message_kind == "informational":
+    if sender is None:
         return False
-    return bool(sender and "accepts_peer_steer" in recipient_capabilities)
+    if _normalized_message_kind(message_kind) != "steer":
+        return False
+    return "accepts_peer_steer" in recipient_capabilities
 
 
 @dataclass
@@ -1239,7 +1250,10 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
     # inline in `turn/start` params, not as a file path).
     schema = _sv.load_schema(codex_mod.TASK_COMPLETE_SCHEMA)
 
-    recipient_capabilities = _backend_metadata(s).capabilities
+    recipient_capabilities = effective_peer_steer_capabilities(
+        _backend_metadata(s).capabilities,
+        state.self_capability_manifest,
+    )
     steer_queue = codex_mod.SteerQueue(
         capabilities=recipient_capabilities,
         # 09 R15-vis-followup: pass team + agent so SteerQueue.push can emit
@@ -1266,11 +1280,12 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
             ).parse_protocol_text(m.text)
             if payload is None:
                 sender = getattr(m, "from_", None)
-                # Phase4 #17: honor R3/#59 sender-side messageKind discriminator.
-                # InboxMessage.message_kind defaults to "peer_dm" when the wire
-                # row omits it (legacy v0.6.x rows); explicit "informational"
-                # marks routine coordination DMs that must not become steer.
-                message_kind = getattr(m, "message_kind", None)
+                # Phase4 #17 + matrix lift #5: honor the R3/#59
+                # messageKind discriminator as positive intent.  Peer prose is
+                # informational by default (including legacy peer_dm rows);
+                # only explicit kind=steer plus recipient authorization may
+                # interrupt an active turn.
+                message_kind = _message_kind(m)
                 if not _mid_turn_prose_should_be_steer(
                     sender=sender,
                     recipient_capabilities=recipient_capabilities,
@@ -1296,6 +1311,19 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
                     )
             elif isinstance(payload, SteerIn):
                 sender = getattr(m, "from_", None) or payload.from_
+                message_kind = _message_kind(m)
+                if (
+                    sender != "team-lead"
+                    and _normalized_message_kind(message_kind) != "steer"
+                ):
+                    deferred_prose_messages.append(m)
+                    logger.info(
+                        "task.mid_turn_steer_payload_deferred",
+                        from_=sender,
+                        text_head=m.text[:120],
+                        message_kind=message_kind,
+                    )
+                    continue
                 message = (
                     payload.message.strip()
                     if isinstance(payload.message, str)

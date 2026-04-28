@@ -616,36 +616,33 @@ def test_mid_turn_prose_should_be_steer_peer_steer_kind_with_capability_is_steer
     ) is True
 
 
-def test_mid_turn_prose_should_be_steer_peer_handoff_with_capability_is_steer():
-    # kind="handoff" is not "informational"; it falls through to the
-    # capability check. With accepts_peer_steer declared, it queues as steer
-    # so the recipient picks up the handoff context mid-turn rather than
-    # parking it for after-turn drain.
+def test_mid_turn_prose_should_be_steer_peer_handoff_with_capability_defers():
+    # Matrix lift #5: peer messages are informational by default; handoff is
+    # ordinary coordination, not a mid-turn interrupt.
     assert _mid_turn_prose_should_be_steer(
         sender="codex-r1",
         recipient_capabilities=["accepts_peer_steer"],
         message_kind="handoff",
-    ) is True
+    ) is False
 
 
-def test_mid_turn_prose_should_be_steer_peer_unknown_kind_with_capability_is_steer():
-    # Unknown kinds (forward-compat wire fields) fall through the
-    # informational gate and respect the capability declaration.
+def test_mid_turn_prose_should_be_steer_peer_unknown_kind_with_capability_defers():
+    # Unknown kinds must not accidentally acquire interrupt semantics.
     assert _mid_turn_prose_should_be_steer(
         sender="codex-r1",
         recipient_capabilities=["accepts_peer_steer"],
         message_kind="future_kind",
-    ) is True
+    ) is False
 
 
-def test_mid_turn_prose_should_be_steer_peer_default_kind_with_capability_is_steer():
-    # Pre-R3 wire rows (no messageKind) preserve the post-#56 v2 behavior:
-    # peer prose without a kind label respects accepts_peer_steer.
+def test_mid_turn_prose_should_be_steer_peer_default_kind_with_capability_defers():
+    # Missing/legacy peer kind is now informational by default; only explicit
+    # kind="steer" may interrupt.
     assert _mid_turn_prose_should_be_steer(
         sender="codex-r1",
         recipient_capabilities=["accepts_peer_steer"],
         message_kind=None,
-    ) is True
+    ) is False
 
 
 def test_mid_turn_prose_should_be_steer_peer_default_kind_without_capability_defers():
