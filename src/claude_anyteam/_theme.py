@@ -33,28 +33,56 @@ def _supports_unicode(env: dict | None = None, platform: str | None = None) -> b
 
 
 def _supports_color(stream=None) -> bool:
-    if os.environ.get("NO_COLOR"):
+    """Belt-and-suspenders color detection. Multiple positive signals.
+
+    The Python installer is often spawned through `npx → uv tool run` on
+    Windows, which means `sys.stdout.isatty()` returns False even when the
+    user's PowerShell window is a real interactive terminal. Without a
+    parent-injected signal, the user gets plain white text. So:
+
+    - Any of CLAUDE_ANYTEAM_FORCE_COLOR, FORCE_COLOR, CLAUDE_ANYTEAM_NPM_PARENT
+      forces color ON.
+    - NO_COLOR / CLAUDE_ANYTEAM_NO_COLOR force OFF.
+    - Modern Windows Terminal / VS Code / iTerm / etc. detected via env vars.
+    - Otherwise fall back to isatty().
+    """
+    env = os.environ
+    if env.get("NO_COLOR") or env.get("CLAUDE_ANYTEAM_NO_COLOR"):
         return False
-    if os.environ.get("FORCE_COLOR"):
+    # Strongest positive signals — any one wins.
+    if env.get("CLAUDE_ANYTEAM_FORCE_COLOR") or env.get("FORCE_COLOR"):
+        _enable_windows_vt()
+        return True
+    if env.get("CLAUDE_ANYTEAM_NPM_PARENT") == "1":
+        # Spawned by the npm wrapper, which already verified the user has a
+        # real terminal. Trust that and color regardless of isatty().
+        _enable_windows_vt()
+        return True
+    # Per-terminal env signals (modern Windows + popular emulators).
+    if env.get("WT_SESSION") or env.get("TERM_PROGRAM") or env.get("ConEmuANSI") == "ON" or env.get("ANSICON"):
+        _enable_windows_vt()
         return True
     target = stream if stream is not None else sys.stdout
     isatty = getattr(target, "isatty", lambda: False)()
-    if not isatty:
-        return False
-    if sys.platform == "win32":
-        # Modern Windows Terminal / VS Code terminal support ANSI;
-        # legacy cmd.exe needs an explicit enable. Try the SetConsoleMode call.
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.GetStdHandle(-11)
+    if isatty:
+        _enable_windows_vt()
+        return True
+    return False
+
+
+def _enable_windows_vt() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        for handle_id in (-11, -12):  # STDOUT, STDERR
+            handle = kernel32.GetStdHandle(handle_id)
             mode = ctypes.c_ulong()
             if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                 kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        except Exception:  # pragma: no cover - best-effort enable
-            pass
-        return bool(os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM") or os.environ.get("ConEmuANSI") == "ON" or os.environ.get("ANSICON")) or True
-    return True
+    except Exception:  # pragma: no cover - best-effort enable
+        pass
 
 
 def strip_ansi(value: str) -> str:

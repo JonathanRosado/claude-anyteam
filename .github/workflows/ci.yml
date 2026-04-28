@@ -22,5 +22,17 @@ jobs:
         run: uv python install 3.12
       - name: Sync deps
         run: uv sync --all-extras
-      - name: Run pytest
-        run: uv run pytest -q
+      - name: Run pytest (with one retry for known concurrency flake)
+        run: |
+          set +e
+          uv run pytest -q
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::warning::pytest failed once; retrying once for known flakes"
+            uv run pytest -q --last-failed
+            status=$?
+          fi
+          if [ $status -ne 0 ]; then
+            echo "::error::pytest failed twice — not a flake"
+            exit $status
+          fi

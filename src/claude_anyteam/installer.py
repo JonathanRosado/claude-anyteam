@@ -2964,7 +2964,7 @@ def _format_soft_diagnostic(diagnostic: InstallError) -> str:
         plain_lines.extend(f"  {line}" for line in diagnostic.details.splitlines())
 
     theme = get_theme()
-    if theme.color and sys.stderr.isatty():
+    if theme.color:
         body = [theme.muted(line) if line.startswith(("Severity:", "Raw details")) or line.startswith("  ")
                 else theme.heading(line) if line == diagnostic.explanation
                 else line
@@ -3040,10 +3040,12 @@ def format_install_message(result: InstallResult, *, include_provider_status: bo
     if not result.changed_anything:
         receipt_lines.insert(1, "The existing settings already matched this install.")
 
-    # Beautify at display time only when stdout is a real TTY. Tests capture
-    # plain output for substring assertions; users get the boxed/themed view.
+    # Beautify at display time when color is supported. theme.color is True
+    # whenever the npm wrapper, FORCE_COLOR, terminal env signals, OR isatty
+    # indicate a real terminal — see _theme._supports_color for the cascade.
+    # Tests capture without those signals so substring assertions still work.
     theme = get_theme()
-    if theme.color and sys.stdout.isatty():
+    if theme.color:
         themed_lines = []
         for line in receipt_lines:
             if line.startswith("Updated ") or line.startswith("Set ") or line.startswith("Removed "):

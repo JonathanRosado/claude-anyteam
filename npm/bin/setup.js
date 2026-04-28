@@ -371,6 +371,13 @@ function runPythonInstaller({ uvPath, settingsPath, stdio = 'inherit' }) {
         ...uvToolEnv(process.env),
         CLAUDE_ANYTEAM_NPM_PARENT: '1',
         CLAUDE_ANYTEAM_NPM_VERSION: INSTALLER_VERSION,
+        // Belt-and-suspenders: the Python child often loses TTY detection
+        // through the npx → uv tool run chain (especially on Windows).
+        // Set FORCE_COLOR + CLAUDE_ANYTEAM_FORCE_COLOR explicitly so the
+        // Python theme module's _supports_color() always says yes here,
+        // independent of whether sys.stdout.isatty() returns True.
+        FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
+        CLAUDE_ANYTEAM_FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
       },
       stdio,
     });

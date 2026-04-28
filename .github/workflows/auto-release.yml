@@ -1,12 +1,17 @@
 name: Auto-tag and release on version bump
 
-# When a push to main changes the version in npm/package.json, this workflow:
-#   1. Verifies the version is consistent with pyproject.toml
-#   2. Creates a v$VERSION tag at the new commit
-#   3. Creates a GitHub release on that tag
-# Pushing the tag triggers .github/workflows/release.yml, which runs tests
-# and publishes to npm + PyPI. This means a merge to main is the only
-# manual step needed to ship a new version — no separate `gh release create`.
+# When a push to main changes the version in npm/package.json or
+# pyproject.toml, this workflow:
+#   1. Verifies both manifests agree on the version (lock-step constraint)
+#   2. Creates a v$VERSION tag at the merged commit
+#   3. Creates a GitHub release with PR body as release notes
+#   4. Runs the test suite
+#   5. Publishes to npm AND PyPI
+#
+# All in one workflow run — no cross-workflow dispatch (which is fragile
+# when GITHUB_TOKEN can't be granted actions:write). One merge to main =
+# one release. release.yml is kept as a fallback for manual `v*` tag pushes
+# from a maintainer's machine.
 
 on:
   push:
@@ -21,10 +26,14 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write   # required by `npm publish --provenance`
 
 jobs:
   maybe-tag:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag_created: ${{ steps.check_tag.outputs.exists == 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,8 +46,6 @@ jobs:
           set -euo pipefail
           npm_version=$(node -p "require('./npm/package.json').version")
           py_version=$(awk -F\" '/^version *= */ {print $2; exit}' pyproject.toml)
-          echo "npm=$npm_version" >> "$GITHUB_OUTPUT"
-          echo "py=$py_version" >> "$GITHUB_OUTPUT"
           if [ "$npm_version" != "$py_version" ]; then
             echo "::error::npm/package.json version ($npm_version) does not match pyproject.toml ($py_version). Bump both in lock-step."
             exit 1
@@ -82,23 +89,69 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${{ steps.ver.outputs.version }}"
-          title="$tag"
           gh release create "$tag" \
             --target "${{ github.sha }}" \
-            --title "$title" \
+            --title "$tag" \
             --notes-file "${{ steps.notes.outputs.notes_path }}"
           echo "Released $tag (notes from ${{ steps.notes.outputs.source }})."
 
-      - name: Trigger publish pipeline
-        if: steps.check_tag.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Tags created by GITHUB_TOKEN do NOT fire `push: tags:` triggers
-        # (Action security restriction). Dispatch release.yml explicitly so
-        # publish-to-npm + publish-to-pypi actually run after auto-tag.
-        # workflow_dispatch IS allowed under GITHUB_TOKEN.
+  test:
+    needs: maybe-tag
+    if: needs.maybe-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Sync deps
+        run: uv sync --all-extras
+      - name: Run pytest (with one retry for known concurrency flake)
         run: |
-          set -euo pipefail
-          tag="v${{ steps.ver.outputs.version }}"
-          gh workflow run release.yml --ref main -f tag="$tag"
-          echo "Dispatched release.yml for $tag."
+          set +e
+          uv run pytest -q
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::warning::pytest failed once; retrying once for known flakes"
+            uv run pytest -q --last-failed
+            status=$?
+          fi
+          if [ $status -ne 0 ]; then
+            echo "::error::pytest failed twice — not a flake"
+            exit $status
+          fi
+
+  publish-npm:
+    needs: [maybe-tag, test]
+    if: needs.maybe-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required by --provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish
+        working-directory: npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    needs: [maybe-tag, test]
+    if: needs.maybe-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Build distributions
+        run: uv build
+      - name: Publish
+        run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}

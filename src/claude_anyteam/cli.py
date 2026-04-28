@@ -325,19 +325,18 @@ def _yes_default_prompt(question: str) -> bool | None:
     return answer.strip().lower() not in {"n", "no"}
 
 
-def _refresh_path_for_uv_tools() -> None:
-    """After `uv tool install`, the new binary lives in `uv tool dir --bin`.
+def _uv_tool_bin_dirs() -> list[str]:
+    """Return ALL uv tool bin candidates so post-install checks can find a
+    freshly-installed binary even when the calling shell's PATH is stale.
 
-    On Windows that's typically %APPDATA%\\Local\\uv\\tools\\bin, which may not
-    be on the calling shell's PATH. Without this refresh, subsequent
-    shutil.which() probes for the freshly-installed CLI return None and the
-    provider-status table reports it as missing — even though the install
-    succeeded. Prepend the uv tool bin dir to os.environ["PATH"] so checks
-    later in the same Python process can find the binary.
+    Belt-and-suspenders: query both `uv tool dir --bin` (current uv API) and
+    walk `uv tool dir`/<tool>/Scripts (where the venv-local binary lives on
+    Windows, since uv only writes the shim to the bin dir lazily).
     """
     uv = shutil.which("uv")
     if not uv:
-        return
+        return []
+    candidates: list[str] = []
     try:
         completed = subprocess.run(
             [uv, "tool", "dir", "--bin"],
@@ -346,16 +345,82 @@ def _refresh_path_for_uv_tools() -> None:
             timeout=10,
             check=False,
         )
+        if completed.returncode == 0 and completed.stdout:
+            for line in completed.stdout.splitlines():
+                line = line.strip()
+                if line and os.path.isdir(line):
+                    candidates.append(line)
     except (OSError, subprocess.SubprocessError):
-        return
-    bin_dir = (completed.stdout or "").strip().splitlines()[-1] if completed.stdout else ""
-    if not bin_dir or not os.path.isdir(bin_dir):
+        pass
+    try:
+        completed = subprocess.run(
+            [uv, "tool", "dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout:
+            for line in completed.stdout.splitlines():
+                root = line.strip()
+                if not root or not os.path.isdir(root):
+                    continue
+                # Scan tools/<name>/Scripts (Windows) and tools/<name>/bin (POSIX).
+                try:
+                    for entry in os.listdir(root):
+                        for sub in ("Scripts", "bin"):
+                            candidate = os.path.join(root, entry, sub)
+                            if os.path.isdir(candidate):
+                                candidates.append(candidate)
+                except OSError:
+                    continue
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _refresh_path_for_uv_tools() -> None:
+    """After `uv tool install`, the new binary lives in `uv tool dir --bin`
+    AND inside the per-tool Scripts/bin directory. On Windows the bin-dir
+    shim is sometimes written with a small delay; the per-tool path is the
+    most reliable. Prepend ALL discovered uv tool dirs to os.environ['PATH']
+    so subsequent shutil.which() probes succeed in the same Python process.
+    """
+    candidates = _uv_tool_bin_dirs()
+    if not candidates:
         return
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
-    if bin_dir in parts:
-        return
-    os.environ["PATH"] = bin_dir + os.pathsep + current
+    new_parts = [c for c in candidates if c not in parts]
+    if new_parts:
+        os.environ["PATH"] = os.pathsep + current if not current else os.pathsep.join([*new_parts, current])
+
+
+def _wait_for_binary(name: str, *, attempts: int = 6, delay_s: float = 0.25) -> str | None:
+    """Poll PATH (refreshed each attempt) for `name`. Used after `uv tool
+    install` because Windows file-system + uv shim writes can lag a moment.
+    """
+    import time
+    for _ in range(attempts):
+        path = shutil.which(name)
+        if path:
+            return path
+        # Also probe direct uv tool bin dirs in case PATH refresh missed them.
+        for bin_dir in _uv_tool_bin_dirs():
+            for ext in ("", ".exe", ".cmd", ".bat"):
+                cand = os.path.join(bin_dir, f"{name}{ext}")
+                if os.path.isfile(cand):
+                    return cand
+        time.sleep(delay_s)
+        _refresh_path_for_uv_tools()
+    return None
 
 
 def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool, str]:
@@ -528,7 +593,40 @@ def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> No
         display, argv = command
         print(f"{theme.symbols['arrow']} {theme.heading('Running:')} {theme.accent(display)}", file=stream)
         ok, output = _run_install_command(argv)
-        if ok:
+        binary_map = {
+            "codex": installer_mod.CODEX_CLI_BINARY,
+            "gemini": installer_mod.GEMINI_CLI_BINARY,
+            "kimi": installer_mod.KIMI_CLI_BINARY,
+        }
+        binary_name = binary_map.get(key)
+        binary_found_path = _wait_for_binary(binary_name) if (ok and binary_name) else None
+        if ok and binary_found_path:
+            print(
+                f"{theme.symbols['success']} {theme.success(f'Installed {label}.')} {theme.muted(f'Found at {binary_found_path}.')}",
+                file=stream,
+            )
+            print(
+                f"  {theme.muted('You may still need to sign in before teammates can use it.')}",
+                file=stream,
+            )
+        elif ok and binary_name and not binary_found_path:
+            # Install reported success but the binary still isn't on PATH after
+            # multiple retries + direct uv tool dir probes. Be honest about the
+            # ambiguity instead of celebrating a false positive.
+            warn_body = [
+                f"{theme.symbols['warn']} {theme.heading(f'{label} installer reported success, but I cannot find the {binary_name} binary on PATH.')}",
+                theme.muted("This often means uv installed the tool but its shim landed in a directory that's not on PATH for the calling shell."),
+                "",
+                theme.muted("Try this next:"),
+                f"  {theme.muted('1.')} Open a new terminal so PATH refreshes.",
+                f"  {theme.muted('2.')} Run {theme.accent(binary_name + ' --version')} to verify the install.",
+                f"  {theme.muted('3.')} Re-run {theme.accent('npx --yes claude-anyteam')} from the new terminal.",
+                "",
+                theme.muted("Raw installer output:"),
+                *(f"  {theme.muted(line)}" for line in (output.splitlines() or ["No output captured."])),
+            ]
+            print(render_box(theme.warn(f"{label} install ambiguous"), warn_body, "yellow", theme=theme), file=stream)
+        elif ok:
             print(
                 f"{theme.symbols['success']} {theme.success(f'Installed {label}.')} {theme.muted('You may still need to sign in before teammates can use it.')}",
                 file=stream,
