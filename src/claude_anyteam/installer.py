@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import urlencode
 
+from ._debug import log as _dlog, log_subprocess as _dlog_sub, log_which as _dlog_which
 from ._theme import get_theme, render_box
 
 TEAMMATE_COMMAND_KEY = "CLAUDE_CODE_TEAMMATE_COMMAND"
@@ -1167,31 +1168,37 @@ def _delete_state(path: Path) -> bool:
 
 def _platform_name() -> str:
     raw = sys.platform
-    if raw.startswith("linux"):
-        return "linux"
-    if raw == "darwin":
-        return "darwin"
-    if raw in ("win32", "cygwin"):
-        return "windows"
-    return raw
+    name = "linux" if raw.startswith("linux") else "darwin" if raw == "darwin" else "windows" if raw in ("win32", "cygwin") else raw
+    _dlog(f"_platform_name: sys.platform={raw!r} -> {name!r}")
+    return name
 
 
 def _check_terminal_multiplexer() -> PrereqCheck:
-    """Checks PATH for tmux on Linux/macOS.
+    """Checks PATH for tmux on Linux/macOS, psmux on Windows.
 
-    Windows has no equivalent multiplexer requirement in the Python installer:
-    the install proceeds and Claude Code/plugin behavior decides how to spawn
-    panes there. This keeps Windows users from being blocked by a Unix-only
-    prerequisite.
+    On Windows we PROBE for psmux but don't BLOCK if it's missing — the
+    installer proceeds with single-terminal mode as a fallback. The
+    `_offer_multiplexer_install` prompt in cli.py invites the user to install
+    psmux for proper pane-based teammate visibility.
     """
     platform = _platform_name()
 
     if platform == "windows":
+        for name in ("psmux", "psmux.exe"):
+            found_path = shutil.which(name)
+            _dlog_which(name, found_path)
+            if found_path:
+                _dlog(f"multiplexer (psmux) found at {found_path}")
+                return PrereqCheck(found=True, binary="psmux", path=Path(found_path).resolve(), platform=platform)
+        # Windows is non-blocking: single-terminal mode works without a multiplexer.
+        _dlog("multiplexer (psmux) not found on Windows; reporting found=True (single-terminal mode)")
         return PrereqCheck(found=True, binary=None, path=None, platform=platform)
 
     for name in ("tmux",):
         found_path = shutil.which(name)
+        _dlog_which(name, found_path)
         if found_path:
+            _dlog(f"multiplexer (tmux) found at {found_path}")
             return PrereqCheck(
                 found=True,
                 binary=name,
@@ -1199,6 +1206,7 @@ def _check_terminal_multiplexer() -> PrereqCheck:
                 platform=platform,
             )
 
+    _dlog("multiplexer (tmux) NOT found; will block install on POSIX")
     return PrereqCheck(found=False, binary=None, path=None, platform=platform)
 
 
@@ -1288,7 +1296,9 @@ def _codex_meets_minimum(check: CodexCliCheck) -> bool | None:
 
 
 def _check_codex_cli() -> CodexCliCheck:
+    _dlog(f"_check_codex_cli: probing for {CODEX_CLI_BINARY!r}")
     found_path = shutil.which(CODEX_CLI_BINARY)
+    _dlog_which(CODEX_CLI_BINARY, found_path)
     if not found_path:
         return CodexCliCheck(
             found=False,
@@ -1596,7 +1606,9 @@ def _gemini_capabilities_from_help(help_text: str) -> dict[str, bool]:
 
 
 def _check_gemini_cli() -> GeminiCliCheck:
+    _dlog(f"_check_gemini_cli: probing for {GEMINI_CLI_BINARY!r}")
     found_path = shutil.which(GEMINI_CLI_BINARY)
+    _dlog_which(GEMINI_CLI_BINARY, found_path)
     if not found_path:
         return GeminiCliCheck(
             found=False,
@@ -1682,7 +1694,9 @@ def _resolve_kimi_binary() -> str | None:
 
 
 def _check_kimi_cli() -> KimiCliCheck:
+    _dlog(f"_check_kimi_cli: resolving via alias-aware probe (kimi, kimi-cli)")
     found_path = _resolve_kimi_binary()
+    _dlog(f"_check_kimi_cli resolved to: {found_path!r}")
     if not found_path:
         return KimiCliCheck(
             found=False,
@@ -1929,19 +1943,24 @@ def _collect_soft_diagnostics(
 
 
 def _register_claude_plugin() -> InstallError | None:
+    _dlog(f"_register_claude_plugin: probing for {CLAUDE_PLUGIN_BINARY!r}")
     claude = shutil.which(CLAUDE_PLUGIN_BINARY)
+    _dlog_which(CLAUDE_PLUGIN_BINARY, claude)
     if not claude:
         return _plugin_registration_error("`claude` was not found on PATH.")
 
+    argv = [claude, "plugin", "install", "JonathanRosado/claude-anyteam"]
     try:
         completed = subprocess.run(
-            [claude, "plugin", "install", "JonathanRosado/claude-anyteam"],
+            argv,
             capture_output=True,
             text=True,
             timeout=CLAUDE_PLUGIN_INSTALL_TIMEOUT_S,
             check=False,
         )
+        _dlog_sub(argv, completed, label="plugin-install")
     except (OSError, subprocess.SubprocessError) as exc:
+        _dlog(f"plugin install exception: {type(exc).__name__}: {exc}")
         return _plugin_registration_error(f"{type(exc).__name__}: {exc}")
 
     if completed.returncode == 0:

@@ -48,11 +48,44 @@ const CLAUDE_PLUGIN_ALREADY_INSTALLED = /\balready installed\b/i;
 const PACKAGE_JSON = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const INSTALLER_VERSION = PACKAGE_JSON.version || 'unknown';
 
+const DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes(String(process.env.CLAUDE_ANYTEAM_DEBUG || '').toLowerCase());
+
+function debugLog(...parts) {
+  if (!DEBUG_ENABLED) return;
+  const ts = new Date().toISOString().slice(11, 19);
+  const prefix = process.stderr.isTTY ? '\x1b[35m[debug]\x1b[39m ' : '[debug] ';
+  console.error(prefix + ts + ' ' + parts.map((p) => (typeof p === 'string' ? p : JSON.stringify(p))).join(' '));
+}
+
+function debugEnvSnapshot(label) {
+  if (!DEBUG_ENABLED) return;
+  debugLog(`--- ${label} (selected env) ---`);
+  for (const k of [
+    'CLAUDE_ANYTEAM_DEBUG', 'CLAUDE_ANYTEAM_NPM_PARENT', 'CLAUDE_ANYTEAM_NPM_VERSION',
+    'CLAUDE_ANYTEAM_FORCE_COLOR', 'FORCE_COLOR', 'NO_COLOR',
+    'PATHEXT', 'PYTHONUTF8', 'PYTHONIOENCODING',
+    'WT_SESSION', 'TERM_PROGRAM', 'ConEmuANSI',
+    'LC_ALL', 'LANG', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
+  ]) {
+    const v = process.env[k];
+    if (v !== undefined) debugLog(`  ${k}=${v}`);
+  }
+  const path = process.env.PATH || '';
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const parts = path ? path.split(sep) : [];
+  debugLog(`  PATH (${parts.length} entries; first 5):`);
+  for (const p of parts.slice(0, 5)) debugLog(`    ${p}`);
+  if (parts.length > 8) debugLog(`    ... (${parts.length - 8} more) ...`);
+  for (const p of parts.slice(-3)) debugLog(`    ${p}`);
+  debugLog(`  process.platform=${process.platform} arch=${process.arch} node=${process.version}`);
+  debugLog(`  stdin.isTTY=${!!process.stdin.isTTY} stdout.isTTY=${!!process.stdout.isTTY} stderr.isTTY=${!!process.stderr.isTTY}`);
+}
+
 let detectedPythonVersion = 'not checked';
 let detectedUvVersion = 'not checked';
 
 function parseArgs(argv) {
-  const args = { postinstall: false, settingsPath: undefined, help: false };
+  const args = { postinstall: false, settingsPath: undefined, help: false, debug: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--postinstall') {
@@ -65,6 +98,8 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === '--help' || arg === '-h') {
       args.help = true;
+    } else if (arg === '--debug') {
+      args.debug = true;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -203,7 +238,7 @@ function printWarning(title, lines, options = {}) {
 }
 
 function printVersionBanner() {
-  console.log(theme.muted(`claude-anyteam installer v${INSTALLER_VERSION}`));
+  console.log(theme.muted(`claude-anyteam installer v${INSTALLER_VERSION}${DEBUG_ENABLED ? ' (debug mode)' : ''}`));
 }
 
 function printSection(title, detail) {
@@ -366,19 +401,25 @@ function runPythonInstaller({ uvPath, settingsPath, stdio = 'inherit' }) {
     args.push('--settings-path', settingsPath);
   }
   return new Promise((resolve, reject) => {
+    const childEnv = {
+      ...uvToolEnv(process.env),
+      CLAUDE_ANYTEAM_NPM_PARENT: '1',
+      CLAUDE_ANYTEAM_NPM_VERSION: INSTALLER_VERSION,
+      // Belt-and-suspenders: the Python child often loses TTY detection
+      // through the npx → uv tool run chain (especially on Windows).
+      // Set FORCE_COLOR + CLAUDE_ANYTEAM_FORCE_COLOR explicitly so the
+      // Python theme module's _supports_color() always says yes here,
+      // independent of whether sys.stdout.isatty() returns True.
+      FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
+      CLAUDE_ANYTEAM_FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
+    };
+    if (DEBUG_ENABLED) {
+      childEnv.CLAUDE_ANYTEAM_DEBUG = '1';
+    }
+    debugLog(`spawning Python installer: ${uvPath} ${args.map((a) => JSON.stringify(a)).join(' ')}`);
+    debugLog(`  child env adds: CLAUDE_ANYTEAM_NPM_PARENT=1 CLAUDE_ANYTEAM_NPM_VERSION=${INSTALLER_VERSION} FORCE_COLOR=${childEnv.FORCE_COLOR} CLAUDE_ANYTEAM_DEBUG=${childEnv.CLAUDE_ANYTEAM_DEBUG || '<unset>'}`);
     const child = spawn(uvPath, args, {
-      env: {
-        ...uvToolEnv(process.env),
-        CLAUDE_ANYTEAM_NPM_PARENT: '1',
-        CLAUDE_ANYTEAM_NPM_VERSION: INSTALLER_VERSION,
-        // Belt-and-suspenders: the Python child often loses TTY detection
-        // through the npx → uv tool run chain (especially on Windows).
-        // Set FORCE_COLOR + CLAUDE_ANYTEAM_FORCE_COLOR explicitly so the
-        // Python theme module's _supports_color() always says yes here,
-        // independent of whether sys.stdout.isatty() returns True.
-        FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
-        CLAUDE_ANYTEAM_FORCE_COLOR: process.env.NO_COLOR ? '0' : '1',
-      },
+      env: childEnv,
       stdio,
     });
     child.on('error', reject);
@@ -437,11 +478,17 @@ async function main() {
     console.log(usage());
     return 0;
   }
+  if (args.debug) {
+    process.env.CLAUDE_ANYTEAM_DEBUG = '1';
+  }
 
   const postinstall = args.postinstall || process.env.npm_lifecycle_event === 'postinstall';
   const interactive = isInteractive();
   const silent = postinstall;
   const nodeMajor = Number.parseInt(process.versions.node.split('.', 1)[0] || '0', 10);
+  debugLog(`--- npm wrapper start (v${INSTALLER_VERSION}) ---`);
+  debugLog(`postinstall=${postinstall} interactive=${interactive} silent=${silent} nodeMajor=${nodeMajor}`);
+  debugEnvSnapshot('npm-wrapper-start');
 
   if (!silent) {
     console.log(renderBanner());

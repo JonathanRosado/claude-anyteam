@@ -19,6 +19,14 @@ from typing import TextIO
 from urllib.parse import urlencode
 
 from . import logger
+from ._debug import (
+    debug_enabled,
+    force_enable as _debug_force_enable,
+    log as _dlog,
+    log_env_snapshot as _dlog_env,
+    log_subprocess as _dlog_sub,
+    log_which as _dlog_which,
+)
 from ._theme import get_theme, render_box
 from .config import from_env
 from claude_anyteam import installer as installer_mod
@@ -266,6 +274,11 @@ def _build_install_parser() -> argparse.ArgumentParser:
         help="skip writing recommended permission allowlist entries",
     )
     p.add_argument(
+        "--debug",
+        action="store_true",
+        help="verbose logging to stderr (also: env CLAUDE_ANYTEAM_DEBUG=1)",
+    )
+    p.add_argument(
         "--self-heal",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -358,6 +371,7 @@ def _uv_tool_bin_dirs() -> list[str]:
     Windows, since uv only writes the shim to the bin dir lazily).
     """
     uv = shutil.which("uv")
+    _dlog_which("uv", uv)
     if not uv:
         return []
     candidates: list[str] = []
@@ -369,13 +383,14 @@ def _uv_tool_bin_dirs() -> list[str]:
             timeout=10,
             check=False,
         )
+        _dlog_sub([uv, "tool", "dir", "--bin"], completed, label="uv-tool-dir-bin")
         if completed.returncode == 0 and completed.stdout:
             for line in completed.stdout.splitlines():
                 line = line.strip()
                 if line and os.path.isdir(line):
                     candidates.append(line)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        _dlog(f"uv tool dir --bin failed: {type(exc).__name__}: {exc}")
     try:
         completed = subprocess.run(
             [uv, "tool", "dir"],
@@ -384,6 +399,7 @@ def _uv_tool_bin_dirs() -> list[str]:
             timeout=10,
             check=False,
         )
+        _dlog_sub([uv, "tool", "dir"], completed, label="uv-tool-dir")
         if completed.returncode == 0 and completed.stdout:
             for line in completed.stdout.splitlines():
                 root = line.strip()
@@ -396,10 +412,11 @@ def _uv_tool_bin_dirs() -> list[str]:
                             candidate = os.path.join(root, entry, sub)
                             if os.path.isdir(candidate):
                                 candidates.append(candidate)
-                except OSError:
+                except OSError as exc:
+                    _dlog(f"listdir({root!r}) failed: {exc}")
                     continue
-    except (OSError, subprocess.SubprocessError):
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        _dlog(f"uv tool dir failed: {type(exc).__name__}: {exc}")
     # De-duplicate while preserving order.
     seen: set[str] = set()
     out: list[str] = []
@@ -407,6 +424,7 @@ def _uv_tool_bin_dirs() -> list[str]:
         if c not in seen:
             seen.add(c)
             out.append(c)
+    _dlog(f"_uv_tool_bin_dirs() -> {out}")
     return out
 
 
@@ -449,6 +467,7 @@ def _resolve_binary(
     uv_tool_name: str | None = None,
     update_path: bool = True,
 ) -> str | None:
+    _dlog(f"_resolve_binary names={names!r} uv_tool_name={uv_tool_name!r}")
     """Single shared resolver used by BOTH post-install success checks AND
     provider-status checks so they cannot disagree about whether a binary
     exists.
@@ -478,6 +497,7 @@ def _resolve_binary(
 
     for alias in names:
         hit = shutil.which(alias)
+        _dlog_which(alias, hit)
         if hit:
             _record_path(os.path.dirname(hit))
             return hit
@@ -503,13 +523,17 @@ def _resolve_binary(
             except (OSError, subprocess.SubprocessError):
                 pass
 
+    _dlog(f"  scanning {len(bin_dirs)} bin dirs with extensions={extensions!r}")
     for bin_dir in bin_dirs:
         for alias in names:
             for ext in extensions:
                 cand = os.path.join(bin_dir, f"{alias}{ext}")
-                if os.path.isfile(cand):
+                exists = os.path.isfile(cand)
+                _dlog(f"    probe: {cand} -> isfile={exists}")
+                if exists:
                     _record_path(bin_dir)
                     return cand
+    _dlog(f"_resolve_binary({names!r}) -> None (exhausted all probes)")
     return None
 
 
@@ -535,6 +559,7 @@ def _wait_for_binary(
 
 
 def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool, str]:
+    _dlog(f"install command starting: {args!r}")
     try:
         completed = subprocess.run(
             args,
@@ -543,7 +568,9 @@ def _run_install_command(args: list[str], *, timeout_s: int = 300) -> tuple[bool
             timeout=timeout_s,
             check=False,
         )
+        _dlog_sub(args, completed, label="install-command")
     except (OSError, subprocess.SubprocessError) as exc:
+        _dlog(f"install command exception: {type(exc).__name__}: {exc}")
         return False, f"{type(exc).__name__}: {exc}"
     output = "\n".join(
         part for part in ((completed.stdout or "").strip(), (completed.stderr or "").strip()) if part
@@ -599,9 +626,29 @@ def _manual_provider_steps(provider_key: str) -> list[str]:
     ]
 
 
+def _multiplexer_binary_for_platform() -> str:
+    """Linux/macOS use tmux; Windows uses psmux (winget/scoop/choco)."""
+    return "psmux" if sys.platform == "win32" else "tmux"
+
+
 def _multiplexer_install_command() -> tuple[str, list[str]] | None:
+    _dlog(f"_multiplexer_install_command for sys.platform={sys.platform!r}")
+    if sys.platform == "win32":
+        # Windows multiplexer story: psmux from winget (preferred), scoop, or choco.
+        # Falls back to manual instructions if no package manager is present.
+        for pm, args in (
+            ("winget", ["winget", "install", "--id", "psmux.psmux", "-e", "--accept-package-agreements", "--accept-source-agreements"]),
+            ("scoop", ["scoop", "install", "psmux"]),
+            ("choco", ["choco", "install", "psmux", "-y"]),
+        ):
+            pm_path = shutil.which(pm)
+            _dlog_which(pm, pm_path)
+            if pm_path:
+                return " ".join(args), args
+        return None
     if sys.platform == "darwin":
         brew = shutil.which("brew")
+        _dlog_which("brew", brew)
         if brew:
             return "brew install tmux", [brew, "install", "tmux"]
         return None
@@ -612,37 +659,69 @@ def _multiplexer_install_command() -> tuple[str, list[str]] | None:
             ("pacman", ["sudo", "pacman", "-S", "--noconfirm", "tmux"]),
             ("apk", ["sudo", "apk", "add", "tmux"]),
         ):
-            if shutil.which(pm):
+            pm_path = shutil.which(pm)
+            _dlog_which(pm, pm_path)
+            if pm_path:
                 return " ".join(install_args), install_args
     return None
 
 
 def _offer_multiplexer_install(*, no_input: bool, stream: TextIO) -> None:
-    """Prompt the user to install tmux when missing on Linux/macOS.
+    """Prompt the user to install the platform's terminal multiplexer when
+    missing. tmux on Linux/macOS, psmux on Windows.
 
     Runs before install_settings()'s prereq check so a successful auto-install
-    means the subsequent check finds tmux on PATH and the install proceeds
-    without raising. Failure or decline falls through to the existing
-    InstallError, which already prints platform-aware manual instructions.
+    means the subsequent check finds the multiplexer on PATH and the install
+    proceeds. Failure or decline falls through to the existing InstallError
+    (Linux/macOS) or manual instructions (Windows).
     """
-    check = installer_mod._check_terminal_multiplexer()
-    if check.found:
-        return
+    multiplexer = _multiplexer_binary_for_platform()
+    _dlog(f"_offer_multiplexer_install: platform={sys.platform!r} multiplexer={multiplexer!r}")
+    if sys.platform == "win32":
+        # Windows-specific: probe for psmux directly. The Python installer's
+        # _check_terminal_multiplexer returns found=True on Windows (single-
+        # terminal mode is the documented fallback), but psmux unlocks proper
+        # pane-based teammate visibility, so OFFER it.
+        existing = shutil.which("psmux") or shutil.which("psmux.exe")
+        _dlog_which("psmux", existing)
+        if existing:
+            _dlog(f"psmux already installed at {existing}")
+            return
+    else:
+        check = installer_mod._check_terminal_multiplexer()
+        _dlog(f"_check_terminal_multiplexer() -> found={check.found} binary={check.binary} platform={check.platform}")
+        if check.found:
+            return
     if no_input or not (sys.stdin.isatty() and sys.stdout.isatty()):
-        # Stay silent here; the InstallError later will print full instructions.
+        _dlog(f"skipping multiplexer prompt: no_input={no_input} stdin.isatty={sys.stdin.isatty()} stdout.isatty={sys.stdout.isatty()}")
+        # Stay silent here; the InstallError later will print full instructions
+        # on POSIX. Windows continues silently — single-terminal mode works.
         return
-    answer = _yes_default_prompt(
-        "We need tmux (a terminal multiplexer that lets teammates appear in their own panes). "
-        "Want me to try installing it for you?"
-    )
+    if sys.platform == "win32":
+        question = (
+            "We can install psmux (a terminal multiplexer that lets teammates appear in their own panes). "
+            "Without it, claude-anyteam still works but uses single-terminal mode. "
+            "Want me to try installing psmux for you?"
+        )
+    else:
+        question = (
+            "We need tmux (a terminal multiplexer that lets teammates appear in their own panes). "
+            "Want me to try installing it for you?"
+        )
+    answer = _yes_default_prompt(question)
     theme = get_theme()
+    multiplexer = _multiplexer_binary_for_platform()
     if answer is None or not answer:
         if answer is False:
-            print(f"{theme.symbols['info']} {theme.muted('Okay — skipping tmux auto-install. Manual steps will be shown below.')}", file=stream)
+            print(f"{theme.symbols['info']} {theme.muted(f'Okay — skipping {multiplexer} auto-install.')}", file=stream)
         return
     command = _multiplexer_install_command()
     if command is None:
-        print(f"{theme.symbols['warn']} {theme.warn('No package manager found')} {theme.muted('(brew / apt-get / dnf / pacman / apk) to install tmux automatically.')}", file=stream)
+        if sys.platform == "win32":
+            msg = "No package manager found (winget / scoop / choco) to install psmux automatically."
+        else:
+            msg = "No package manager found (brew / apt-get / dnf / pacman / apk) to install tmux automatically."
+        print(f"{theme.symbols['warn']} {theme.warn(msg)}", file=stream)
         return
     display, argv = command
     print(f"{theme.symbols['arrow']} {theme.heading('Running:')} {theme.accent(display)}", file=stream)
@@ -650,16 +729,16 @@ def _offer_multiplexer_install(*, no_input: bool, stream: TextIO) -> None:
         print(f"{theme.symbols['info']} {theme.muted('You may be prompted for your sudo password.')}", file=stream)
     ok, output = _run_install_command(argv)
     if ok:
-        print(f"{theme.symbols['success']} {theme.success('Installed tmux.')} {theme.muted('Continuing with claude-anyteam setup.')}", file=stream)
+        print(f"{theme.symbols['success']} {theme.success(f'Installed {multiplexer}.')} {theme.muted('Continuing with claude-anyteam setup.')}", file=stream)
         return
     body = [
-        f"{theme.symbols['error']} {theme.heading('I tried to install tmux, but it failed.')}",
+        f"{theme.symbols['error']} {theme.heading(f'I tried to install {multiplexer}, but it failed.')}",
         theme.muted("Raw installer output:"),
         *(f"  {theme.muted(line)}" for line in (output.splitlines() or ["No output captured."])),
         "",
         theme.muted("Falling through to manual instructions below."),
     ]
-    print(render_box(theme.danger("tmux auto-install failed"), body, "red", theme=theme), file=stream)
+    print(render_box(theme.danger(f"{multiplexer} auto-install failed"), body, "red", theme=theme), file=stream)
 
 
 def _offer_provider_dependency_installs(*, no_input: bool, stream: TextIO) -> None:
@@ -783,6 +862,12 @@ def _install_command(
     stream = out or sys.stdout
     if os.environ.get("CLAUDE_ANYTEAM_NPM_PARENT") != "1":
         print(_version_banner(), file=stream)
+    if debug_enabled():
+        _dlog(f"--- claude-anyteam install start ---")
+        _dlog(f"  npm-wrapper version (CLAUDE_ANYTEAM_NPM_VERSION): {os.environ.get('CLAUDE_ANYTEAM_NPM_VERSION', '<unset>')!r}")
+        _dlog(f"  python-tool version (importlib.metadata): {_python_tool_version()!r}")
+        _dlog(f"  argv: {sys.argv!r}")
+        _dlog_env(label="install-start")
     # Loud diagnostic when wrapper claims a newer version than the Python
     # tool actually installed — this used to silently mask v0.7.5 bug-fixes
     # because PyPI's index lagged npm publish and uv resolved an older wheel.
@@ -881,6 +966,9 @@ def main(argv: list[str] | None = None) -> int:
         command = argv[0]
         if command == "install":
             args = _parse_install_args(argv[1:])
+            if args.debug:
+                _debug_force_enable()
+                _dlog("--debug flag passed; CLAUDE_ANYTEAM_DEBUG=1 set in env")
             kwargs: dict[str, object] = {
                 "assume_yes": args.assume_yes,
                 "force_empty": args.force_empty,
