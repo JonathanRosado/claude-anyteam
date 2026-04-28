@@ -492,7 +492,7 @@ export async function findInstalledTool({ uvPath }) {
   return null;
 }
 
-export async function installTool({ uvPath, pythonPath, refresh = false }) {
+export async function installTool({ uvPath, pythonPath, refresh = false, version = null }) {
   if (!refresh) {
     const existing = await findInstalledTool({ uvPath }).catch(() => null);
     if (existing) {
@@ -517,7 +517,15 @@ export async function installTool({ uvPath, pythonPath, refresh = false }) {
   if (pythonPath) {
     args.push('--python', pythonPath);
   }
-  const installTarget = await resolveInstallTarget();
+  let installTarget = await resolveInstallTarget();
+  // Pin the Python tool to the npm wrapper's version. PyPI's index can lag
+  // npm publish by minutes; without a pin, uv may resolve to a stale older
+  // version even though our wrapper is new. Result: wrapper bug-fixes don't
+  // run because the Python tool is older. Skip pinning when installing
+  // from a local checkout (resolveInstallTarget returns a path).
+  if (version && installTarget === TOOL_NAME) {
+    installTarget = `${TOOL_NAME}==${version}`;
+  }
   args.push(installTarget);
   const result = await runCommand(uvPath, args, { env, cwd: toolWorkingDir() });
   if (result.code !== 0) {

@@ -641,9 +641,9 @@ async function main() {
   // never sees handholding/prompt logic shipped in later releases.
   const installLabel = existingTool ? 'Refreshing' : 'Installing';
   try {
-    tool = await withSpinner(`${installLabel} ${TOOL_NAME} with uv tool install`, !silent, () => installTool({ uvPath: uv.path, pythonPath: python.path, refresh: true }));
+    tool = await withSpinner(`${installLabel} ${TOOL_NAME} v${INSTALLER_VERSION} with uv tool install`, !silent, () => installTool({ uvPath: uv.path, pythonPath: python.path, refresh: true, version: INSTALLER_VERSION }));
     if (!silent) {
-      const status = tool.installMode === 'refreshed' ? 'refreshed to latest' : 'installed';
+      const status = tool.installMode === 'refreshed' ? `refreshed to v${INSTALLER_VERSION}` : `installed v${INSTALLER_VERSION}`;
       console.log(`${theme.symbols.success} ${theme.heading(`claude-anyteam tool ${status}`)} ${theme.accent(formatDisplayPath(tool.binaryPath))}`);
     }
   } catch (error) {

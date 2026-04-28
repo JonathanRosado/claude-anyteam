@@ -62,10 +62,9 @@ def _render_box(title: str, lines: list[str]) -> str:
     )
 
 
-def _installer_version() -> str:
-    env_version = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
-    if env_version:
-        return env_version
+def _python_tool_version() -> str:
+    """The actually-installed Python package version (NOT the npm wrapper's
+    claim). Used for version-mismatch diagnostics."""
     try:
         return importlib.metadata.version("claude-anyteam")
     except importlib.metadata.PackageNotFoundError:
@@ -79,8 +78,33 @@ def _installer_version() -> str:
     return "unknown"
 
 
+def _installer_version() -> str:
+    env_version = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
+    if env_version:
+        return env_version
+    return _python_tool_version()
+
+
 def _version_banner() -> str:
     return f"claude-anyteam installer v{_installer_version()}"
+
+
+def _detect_version_mismatch() -> str | None:
+    """If the npm wrapper's reported version differs from the installed Python
+    tool's version, return a warning string. Caller prints it loudly so the
+    user knows the wrapper bug-fixes won't actually run.
+    """
+    npm_claim = os.environ.get("CLAUDE_ANYTEAM_NPM_VERSION")
+    if not npm_claim:
+        return None
+    actual = _python_tool_version()
+    if actual == "unknown" or actual == npm_claim:
+        return None
+    return (
+        f"npm wrapper is v{npm_claim} but the installed Python tool is v{actual}. "
+        f"Wrapper-version bug fixes won't run until the Python tool refreshes. "
+        f"Try: uv tool install --force --prerelease=allow claude-anyteam=={npm_claim}"
+    )
 
 
 def _command_version(command: str) -> str:
@@ -675,6 +699,17 @@ def _install_command(
     stream = out or sys.stdout
     if os.environ.get("CLAUDE_ANYTEAM_NPM_PARENT") != "1":
         print(_version_banner(), file=stream)
+    # Loud diagnostic when wrapper claims a newer version than the Python
+    # tool actually installed — this used to silently mask v0.7.5 bug-fixes
+    # because PyPI's index lagged npm publish and uv resolved an older wheel.
+    mismatch = _detect_version_mismatch()
+    if mismatch:
+        from ._theme import get_theme as _get_theme
+        _t = _get_theme()
+        print(
+            f"{_t.symbols['warn']} {_t.warn('Version mismatch:')} {_t.muted(mismatch)}",
+            file=sys.stderr,
+        )
     if assume_yes:
         prompt_fn = lambda _current: True
     elif no_input or self_heal:
