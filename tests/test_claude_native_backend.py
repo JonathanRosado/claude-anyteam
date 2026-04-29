@@ -1,0 +1,402 @@
+"""Integration-style coverage for the native Claude headless backend.
+
+The claude_native backend was added to route stress teammates through the
+native Claude Code CLI in detached/headless runs.  These tests avoid requiring a
+real authenticated ``claude`` binary while locking the spawn/argv shape and the
+MCP wrapper config wiring that the S6n stress fix depends on.
+"""
+from __future__ import annotations
+
+import json
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from claude_anyteam.backends.claude_native import cli, config, invoke, loop
+from claude_anyteam.backends.claude_native.config import ClaudeNativeSettings
+from tools.stress import run_scenario
+
+
+def _settings(tmp_path: Path, **overrides: Any) -> ClaudeNativeSettings:
+    values: dict[str, Any] = {
+        "team_name": "native-team",
+        "agent_name": "claude-a",
+        "cwd": tmp_path,
+        "poll_interval_s": 0.01,
+        "color": "cyan",
+        "plan_mode_required": False,
+        "claude_binary": "claude",
+        "model": "sonnet",
+        "effort": None,
+        "turn_timeout_s": 900.0,
+    }
+    values.update(overrides)
+    return ClaudeNativeSettings(**values)
+
+
+def test_config_from_env_reads_native_claude_knobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_ANYTEAM_TEAM", "env-team")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NAME", "env-claude")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_CWD", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_ANYTEAM_POLL_S", "2.25")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_COLOR", "magenta")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_PLAN_MODE", "yes")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_MODEL", "opus")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_CLAUDE_EFFORT", "xhigh")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S", "1234.5")
+    monkeypatch.setenv("CLAUDE_ANYTEAM_NATIVE_CLAUDE", "/opt/bin/claude")
+
+    settings = config.from_env()
+
+    assert settings.team_name == "env-team"
+    assert settings.agent_name == "env-claude"
+    assert settings.cwd == tmp_path.resolve()
+    assert settings.poll_interval_s == 2.25
+    assert settings.color == "magenta"
+    assert settings.plan_mode_required is True
+    assert settings.model == "opus"
+    assert settings.effort == "xhigh"
+    assert settings.turn_timeout_s == 1234.5
+    assert settings.claude_binary == "/opt/bin/claude"
+
+
+def test_config_rejects_unknown_effort(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Claude effort must be one of"):
+        config.from_env(
+            {
+                "team_name": "t",
+                "agent_name": "a",
+                "cwd": str(tmp_path),
+                "effort": "turbo",
+            }
+        )
+
+
+def test_cli_main_parses_args_and_calls_loop_with_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, ClaudeNativeSettings] = {}
+
+    def fake_run(settings: ClaudeNativeSettings) -> int:
+        captured["settings"] = settings
+        return 17
+
+    monkeypatch.setattr(cli, "run", fake_run)
+
+    rc = cli.main(
+        [
+            "--team",
+            "cli-team",
+            "--name",
+            "claude-cli",
+            "--cwd",
+            str(tmp_path),
+            "--poll-s",
+            "0.5",
+            "--color",
+            "blue",
+            "--plan-mode",
+            "--claude-binary",
+            "/usr/local/bin/claude",
+            "--model",
+            "sonnet-4.5",
+            "--effort",
+            "high",
+            "--turn-timeout-s",
+            "321",
+        ]
+    )
+
+    assert rc == 17
+    settings = captured["settings"]
+    assert settings.team_name == "cli-team"
+    assert settings.agent_name == "claude-cli"
+    assert settings.cwd == tmp_path.resolve()
+    assert settings.poll_interval_s == 0.5
+    assert settings.color == "blue"
+    assert settings.plan_mode_required is True
+    assert settings.claude_binary == "/usr/local/bin/claude"
+    assert settings.model == "sonnet-4.5"
+    assert settings.effort == "high"
+    assert settings.turn_timeout_s == 321.0
+
+
+def test_wrapper_command_args_prefers_absolute_binary_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wrapper = tmp_path / "bin" / "claude-anyteam-wrapper"
+    wrapper.parent.mkdir()
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(invoke.shutil, "which", lambda name: str(wrapper) if name == "claude-anyteam-wrapper" else None)
+
+    command, prefix_args = invoke._wrapper_command_args()
+
+    assert command == str(wrapper.resolve())
+    assert Path(command).is_absolute()
+    assert prefix_args == []
+
+
+def test_write_mcp_config_falls_back_to_module_wrapper_and_identity_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(invoke.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PYTHONPATH", "/repo/src")
+
+    config_path = invoke.write_mcp_config(
+        tmp_path / "state-root",
+        team="fallback-team",
+        agent_name="claude-fallback",
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert set(data) == {"mcpServers"}
+    assert set(data["mcpServers"]) == {"anyteam"}
+    server = data["mcpServers"]["anyteam"]
+    assert server["command"] == sys.executable
+    assert server["args"] == [
+        "-m",
+        "claude_anyteam.wrapper_server",
+        "--team",
+        "fallback-team",
+        "--name",
+        "claude-fallback",
+    ]
+    assert server["env"]["HOME"] == str(tmp_path / "home")
+    assert server["env"]["PYTHONPATH"] == "/repo/src"
+    assert server["env"]["CLAUDE_ANYTEAM_TEAM"] == "fallback-team"
+    assert server["env"]["CLAUDE_ANYTEAM_NAME"] == "claude-fallback"
+    assert server["env"]["CODEX_TEAMMATE_TEAM"] == "fallback-team"
+    assert server["env"]["CODEX_TEAMMATE_NAME"] == "claude-fallback"
+
+
+def test_invoke_run_builds_claude_print_stream_json_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    mcp_config = tmp_path / "anyteam-mcp.json"
+    mcp_config.write_text("{}", encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def fake_write_mcp_config(root: Path, **kwargs: Any) -> Path:
+        captured["mcp_root"] = root
+        captured["mcp_kwargs"] = kwargs
+        return mcp_config
+
+    def fake_subprocess_run(args: list[str], **run_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured["run_kwargs"] = run_kwargs
+        stdout = json.dumps(
+            {
+                "type": "assistant",
+                "session_id": "claude-session-1",
+                "message": {"content": [{"type": "text", "text": "CLAUDE_OK"}]},
+            }
+        )
+        return subprocess.CompletedProcess(args, 0, stdout=stdout + "\n", stderr="")
+
+    monkeypatch.setattr(invoke, "write_mcp_config", fake_write_mcp_config)
+    monkeypatch.setattr(invoke.subprocess, "run", fake_subprocess_run)
+    emitted = []
+
+    result = invoke.run(
+        "hello from tests",
+        cwd=work,
+        claude_binary="/bin/claude",
+        timeout_s=42.0,
+        wrapper_identity=("team-x", "claude-x"),
+        resume_session_id="resume-123",
+        model="sonnet-4.5",
+        effort="xhigh",
+        task_id="9",
+        event_sink=emitted.append,
+    )
+
+    assert result.exit_code == 0
+    assert result.last_message == "CLAUDE_OK"
+    assert result.session_id == "claude-session-1"
+    argv = captured["args"]
+    assert argv[:2] == ["/bin/claude", "--print"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert argv[argv.index("--mcp-config") + 1] == str(mcp_config)
+    assert "--verbose" in argv
+    assert "--strict-mcp-config" in argv
+    assert "--dangerously-skip-permissions" in argv
+    assert argv[argv.index("--add-dir") + 1] == str(work)
+    assert argv[argv.index("--model") + 1] == "sonnet-4.5"
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+    assert argv[argv.index("--resume") + 1] == "resume-123"
+    assert argv[-2:] == ["-p", "hello from tests"]
+    assert argv.index("--strict-mcp-config") < argv.index("-p")
+    assert argv.index("--model") < argv.index("-p")
+
+    run_kwargs = captured["run_kwargs"]
+    assert run_kwargs["cwd"] == str(work)
+    assert run_kwargs["timeout"] == 42.0
+    assert run_kwargs["stdin"] is subprocess.DEVNULL
+    assert run_kwargs["env"]["CLAUDE_ANYTEAM_TEAM"] == "team-x"
+    assert run_kwargs["env"]["CLAUDE_ANYTEAM_NAME"] == "claude-x"
+    assert run_kwargs["env"]["CODEX_TEAMMATE_TEAM"] == "team-x"
+    assert run_kwargs["env"]["CODEX_TEAMMATE_NAME"] == "claude-x"
+    assert run_kwargs["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert captured["mcp_kwargs"] == {"team": "team-x", "agent_name": "claude-x"}
+    assert [event.kind for event in emitted] == ["turn_started", "turn_completed"]
+    assert emitted[0].backend == "claude_native"
+    assert emitted[0].payload["timeout_s"] == 42.0
+    assert emitted[-1].payload["session_id"] == "claude-session-1"
+
+
+def test_parse_stdout_synthesizes_anyteam_mcp_tool_events() -> None:
+    stdout = json.dumps(
+        {
+            "type": "assistant",
+            "session_id": "session-with-tool",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "mcp__anyteam__send_message",
+                        "input": {"to": "team-lead", "kind": "informational", "body": "done"},
+                    },
+                    {"type": "text", "text": "Delivered via MCP."},
+                ]
+            },
+        }
+    )
+
+    events, last_message, tool_calls, session_id = invoke._parse_stdout(stdout)
+
+    assert last_message == "Delivered via MCP."
+    assert tool_calls == 1
+    assert session_id == "session-with-tool"
+    synthetic = next(event for event in events if event.get("source") == "claude_native_mcp")
+    assert synthetic["type"] == "tool_use"
+    assert synthetic["name"] == "send_message"
+    assert synthetic["raw_tool_name"] == "mcp__anyteam__send_message"
+    assert synthetic["recipient"] == "team-lead"
+    assert synthetic["target"] == "to='team-lead'"
+    assert synthetic["kind"] == "informational"
+    assert synthetic["input"]["body"] == "done"
+
+
+def test_loop_run_initializes_registration_manifest_cache_and_deregisters_on_approved_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path, model="opus", effort="high", claude_binary="/bin/claude")
+    calls: dict[str, Any] = {"signals": []}
+
+    class FakeCapabilityManifestCache:
+        def __init__(self, team_name: str, *, self_name: str) -> None:
+            calls["cache_init"] = (team_name, self_name)
+            self.loaded = False
+
+        def load_startup(self) -> None:
+            calls["cache_loaded"] = True
+            self.loaded = True
+
+    def fake_register(reg_settings: ClaudeNativeSettings, metadata: Any) -> None:
+        calls["register_settings"] = reg_settings
+        calls["metadata"] = metadata
+
+    def fake_signal(signum: signal.Signals, handler: Any) -> None:
+        calls["signals"].append((signum, handler))
+
+    def fake_main_loop(state: loop.ClaudeNativeLoopState) -> None:
+        calls["main_state"] = state
+        assert state.self_capability_manifest == {"agent_name": "claude-a"}
+        assert isinstance(state.peer_manifest_cache, FakeCapabilityManifestCache)
+        state.approved_shutdown = True
+
+    monkeypatch.setattr(loop.invoke, "feature_test", lambda binary: calls.setdefault("feature_test", binary))
+    monkeypatch.setattr(loop, "register", fake_register)
+    monkeypatch.setattr(loop.pio, "read_agent_manifest", lambda team, name: {"agent_name": name})
+    monkeypatch.setattr(loop, "CapabilityManifestCache", FakeCapabilityManifestCache)
+    monkeypatch.setattr(loop.signal, "signal", fake_signal)
+    monkeypatch.setattr(loop, "_main_loop", fake_main_loop)
+    monkeypatch.setattr(loop, "deregister", lambda reg_settings: calls.setdefault("deregister", reg_settings))
+
+    rc = loop.run(settings)
+
+    assert rc == 0
+    assert calls["feature_test"] == "/bin/claude"
+    assert calls["register_settings"] is settings
+    metadata = calls["metadata"]
+    assert metadata.agent_type == "claude"
+    assert metadata.model == "opus"
+    assert metadata.backend_type == "claude_native"
+    assert metadata.transport == "claude-native-headless"
+    assert metadata.host_tool_surface == "claude-code+mcp_anyteam"
+    assert metadata.coupling_regime == "loose"
+    assert "headless_invocation" in metadata.capabilities
+    assert "structured_output" in metadata.capabilities
+    assert metadata.capability_manifest is not None
+    assert calls["cache_init"] == ("native-team", "claude-a")
+    assert calls["cache_loaded"] is True
+    assert [item[0] for item in calls["signals"]] == [signal.SIGINT, signal.SIGTERM]
+    assert calls["main_state"].approved_shutdown is True
+    assert calls["deregister"] is settings
+
+
+def test_main_loop_polls_inbox_then_executes_claimed_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = loop.ClaudeNativeLoopState(settings=_settings(tmp_path))
+    claimed_task = SimpleNamespace(id="11", subject="claimed task")
+    calls: dict[str, Any] = {"inbox": 0, "closed": False, "executed": []}
+
+    class FakeWatchInbox:
+        @classmethod
+        def for_team(cls, team_name: str, agent_name: str, fallback_timeout_s: float) -> "FakeWatchInbox":
+            calls["watch_args"] = (team_name, agent_name, fallback_timeout_s)
+            return cls()
+
+        def wait_for_change(self, _timeout_s: float) -> None:
+            raise AssertionError("claimed work should execute immediately without idle waiting")
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    def fake_execute_task(exec_state: loop.ClaudeNativeLoopState, task: Any) -> None:
+        calls["executed"].append((exec_state, task))
+        exec_state.approved_shutdown = True
+
+    monkeypatch.setattr(loop, "WatchInbox", FakeWatchInbox)
+    monkeypatch.setattr(loop.pio, "read_own_inbox", lambda *args: calls.__setitem__("inbox", calls["inbox"] + 1) or [])
+    monkeypatch.setattr(loop, "_find_and_claim", lambda claim_state: claimed_task)
+    monkeypatch.setattr(loop, "_execute_task", fake_execute_task)
+
+    loop._main_loop(state)
+
+    assert calls["watch_args"] == ("native-team", "claude-a", 0.01)
+    assert calls["inbox"] == 1
+    assert calls["executed"] == [(state, claimed_task)]
+    assert calls["closed"] is True
+
+
+def test_stress_spawn_command_routes_claude_members_to_native_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(run_scenario, "_resolve_backend_binary", lambda name: f"/usr/bin/{name}")
+
+    cmd = run_scenario._command_for_member(
+        {
+            "name": "claude-pair-a",
+            "agent_type": "claude",
+            "model": "sonnet",
+            "effort": "xhigh",
+            "turn_timeout_s": 777,
+        },
+        "stress-S6n-test",
+        tmp_path,
+    )
+
+    assert cmd is not None
+    assert cmd[:3] == [sys.executable, "-m", "claude_anyteam.backends.claude_native.cli"]
+    assert cmd[cmd.index("--team") + 1] == "stress-S6n-test"
+    assert cmd[cmd.index("--name") + 1] == "claude-pair-a"
+    assert cmd[cmd.index("--cwd") + 1] == str(tmp_path / "repo")
+    assert cmd[cmd.index("--claude-binary") + 1] == "/usr/bin/claude"
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+    assert cmd[cmd.index("--turn-timeout-s") + 1] == "777"
+    assert "--agent-id" not in cmd
+    assert "--agent-name" not in cmd
+    assert "--team-name" not in cmd
+    assert "--print" not in cmd
