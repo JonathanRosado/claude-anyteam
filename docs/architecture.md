@@ -168,6 +168,8 @@ The same architecture supports any CLI-native model. Each new adapter is:
 2. A model-specific invocation path (e.g. headless `gemini --prompt ...`, `kimi --print --output-format stream-json ...`)
 3. One entry in the spawn shim's routing table (e.g. `gemini-*` → gemini adapter)
 
+For a step-by-step contributor checklist, see [Adding a backend](adding-a-backend.md).
+
 The protocol layer doesn't care which model is backing a teammate. The shim routes by name prefix. Each adapter gets its own binary but shares the same team-protocol semantics.
 
 ## Design principle: protocol-first, lossy backend mappings are acceptable
