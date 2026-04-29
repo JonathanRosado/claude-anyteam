@@ -967,6 +967,39 @@ def test_peer_steer_allowed_for_prose_body_when_recipient_accepts(
     assert _wrapper_refusals() == []
 
 
+def test_send_message_visibility_events_include_recipient_aliases(
+    identity,
+    monkeypatch,
+):
+    mcp = _seeded_wrapper(identity, monkeypatch)
+
+    result = _call_existing_tool(
+        mcp,
+        "send_message",
+        {
+            "to": "peer-a",
+            "body": "Answer: telemetry regression probe.",
+            "summary": "Answer: telemetry probe",
+        },
+    )
+
+    assert result == {"delivered_to": "peer-a", "sender": "contract-test"}
+    send_events = [
+        event
+        for event in pio.read_visibility_events("claude-anyteam", "contract-test")
+        if event.kind == "tool_event"
+        and event.payload.get("tool_name") == "send_message"
+    ]
+    assert {event.payload.get("phase") for event in send_events} == {
+        "started",
+        "completed",
+    }
+    for event in send_events:
+        assert event.payload["recipient"] == "peer-a"
+        assert event.payload["to"] == "peer-a"
+        assert event.payload["target"] == "to='peer-a'"
+
+
 def test_peer_steer_refused_for_unknown_recipient_capability(
     identity,
     monkeypatch,

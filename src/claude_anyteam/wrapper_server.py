@@ -599,6 +599,15 @@ def _tool_target(tool_name: str, bound_args: dict[str, Any]) -> str | None:
     return None
 
 
+def _send_message_recipient_from_args(bound_args: dict[str, Any] | None) -> str | None:
+    if not bound_args:
+        return None
+    value = bound_args.get("to")
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
 def _bind_tool_arguments(
     signature: inspect.Signature,
     args: tuple[Any, ...],
@@ -831,6 +840,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
         category: ToolCategory,
         phase: Literal["started", "completed", "failed"],
         target: str | None,
+        tool_args: dict[str, Any] | None = None,
         started_at: float | None = None,
         result: Any = None,
         exc: BaseException | None = None,
@@ -843,6 +853,12 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
         }
         if target:
             payload["target"] = target
+        if tool_name == "send_message":
+            recipient = _send_message_recipient_from_args(tool_args)
+            if recipient:
+                payload["recipient"] = recipient
+                payload["to"] = recipient
+                payload["target"] = f"to={recipient!r}"
         if started_at is not None:
             payload["duration_ms"] = max(0, int((time.monotonic() - started_at) * 1000))
         if phase == "started":
@@ -1038,6 +1054,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
                     category=category,
                     phase="started",
                     target=target,
+                    tool_args=bound_args,
                 )
                 try:
                     result = func(*args, **kwargs)
@@ -1047,6 +1064,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
                         category=category,
                         phase="failed",
                         target=target,
+                        tool_args=bound_args,
                         started_at=started_at,
                         exc=exc,
                     )
@@ -1076,6 +1094,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
                         category=category,
                         phase="failed",
                         target=target,
+                        tool_args=bound_args,
                         started_at=started_at,
                         result=result,
                     )
@@ -1109,6 +1128,7 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
                     category=category,
                     phase="completed",
                     target=target,
+                    tool_args=bound_args,
                     started_at=started_at,
                     result=result,
                 )

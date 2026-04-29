@@ -846,6 +846,71 @@ def _item_target(item: dict[str, Any]) -> str | None:
     return str(value)
 
 
+def _jsonish_dict(value: Any) -> dict[str, Any] | None:
+    """Return a dict from native or JSON-encoded tool-call fields."""
+
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _app_server_tool_arguments(item: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort argument map for Codex App Server tool-call items.
+
+    App Server mcpToolCall records have used a native ``arguments`` object in
+    recent runs, but older/backend-adapter shapes may surface JSON-encoded
+    arguments under ``args``/``input`` or under nested call/function objects.
+    Keep the extraction observational: malformed fields simply mean "unknown"
+    instead of causing visibility emission to fail.
+    """
+
+    for key in ("arguments", "args", "input", "parameters", "tool_input"):
+        parsed = _jsonish_dict(item.get(key))
+        if parsed is not None:
+            return parsed
+
+    for container_key in ("call", "function", "tool_call", "toolCall"):
+        container = _jsonish_dict(item.get(container_key))
+        if container is None:
+            continue
+        for key in ("arguments", "args", "input", "parameters", "tool_input"):
+            parsed = _jsonish_dict(container.get(key))
+            if parsed is not None:
+                return parsed
+    return {}
+
+
+def _app_server_structured_result(item: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort structured result payload for App Server tool-call items."""
+
+    result = _jsonish_dict(item.get("result"))
+    if result is None:
+        return {}
+    for key in ("structuredContent", "structured_content"):
+        structured = _jsonish_dict(result.get(key))
+        if structured is not None:
+            return structured
+    return result
+
+
+def _send_message_recipient_from_app_server_item(item: dict[str, Any]) -> str | None:
+    """Extract the recipient from an App Server send_message tool-call item."""
+
+    for source in (_app_server_tool_arguments(item), _app_server_structured_result(item)):
+        for key in ("recipient", "to", "delivered_to"):
+            value = source.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return None
+
+
 def _item_exit_code(item: dict[str, Any]) -> int | None:
     value = _first_present(item, "exit_code", "exitCode", "returncode", "returnCode")
     if value is None:
@@ -1046,6 +1111,12 @@ def _visibility_for_app_server_item(
         "raw_backend_type": raw_type,
         "raw_event_preview": raw_preview,
     }
+    if tool_name == "send_message":
+        recipient = _send_message_recipient_from_app_server_item(item)
+        if recipient:
+            payload["recipient"] = recipient
+            payload["to"] = recipient
+            payload["target"] = f"to={recipient!r}"
     payload = {k: v for k, v in payload.items() if v is not None}
     target = payload.get("target")
     summary = f"{raw_type}: {target}" if target else raw_type
