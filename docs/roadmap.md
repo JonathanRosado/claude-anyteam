@@ -20,6 +20,44 @@ Shipped/partial: multi-backend routing now supports Codex (`codex-*`), Gemini CL
 
 ## Coming next
 
+### Post-v0.8.0 follow-ups (canonical tracker)
+
+Consolidated work items surfaced during the v0.8.0 protocol-revision session and the overnight pre-merge verification ladder. Each item is empirically motivated — file paths, run-ids, and failure modes are cited so the rationale survives the next refactor.
+
+**Capability layer**
+
+- **Capability versioning negotiation handshake.** Each capability carries a `capability_version` field, but there's no formal "I support v2, peer supports v1, fall back to common subset" mechanism. Mismatch handling is currently per-backend prose. Needs a versioned contract before a 5th-party backend (`glm-*`, `qwen-*`, `deepseek-*`) lands and starts versioning capabilities independently. (Surfaced in v0.8.0 capability-layer review.)
+- **`kind_v1` classifier mapping breadth.** v0.8.0 extended `score_collab` from `prefix_v1` to `kind_v1`. Rescore on S6 lifted `M11a_classification_coverage` from 0.0 → 0.367; the remaining 0.633 are codex envelopes whose `kind` value isn't in the mapping (not in `informational`/`fyi`/`question`/`ask`/`inquiry`/`answer`/`response`/`handoff`/`delegate`). Future enhancement: surface unrecognized `kind` values for triage and broaden the mapping. Doc: `references/external-claude-code-re/proto-rev-execution-log/d1-validation-final.md`.
+
+**Visibility and metrics**
+
+- **"DMs received by live loop" metric.** v0.8.0's `M3_peer_dm_received` reflects DMs *addressed* to an agent name, not DMs *drained by a live recipient loop*. The kimi peer-DM investigation showed this matters: in S8 v2 kimi-pair was credited with 60 received DMs even though it crashed at auth_preflight before its loop could read inbox. Either rename the metric or pair it with a recipient-active signal (e.g. `M3_peer_dm_processed`). Doc: `references/external-claude-code-re/proto-rev-execution-log/kimi-peer-dm-investigation.md`.
+- **Scenario validity gate for auth-preflight failures.** When a routed backend emits `visibility_degraded` during `adapter_spawn_auth_preflight` and never registers, the run should mark that agent as backend-unavailable rather than reporting peer-efficiency outcomes for it. v0.8.0 has the auth classifier; this is the consumer-side gate. Same investigation doc.
+- **Wrapper read_config doc accuracy.** `read_config().protocol_tools` exposes shadow tools (`mcp_anyteam_shell`, `mcp_anyteam_write_file`, `mcp_anyteam_edit_file`); current docs may call these "non-destructive" but they're not. Update wording to be accurate. Surfaced by the pre-merge review at `references/external-claude-code-re/proto-rev-execution-log/pr27-pre-merge-review.md`.
+
+**Operational / runner**
+
+- **`--require-auth` runner flag.** Before launching long stress runs, validate each backend credential outside the stress window. Today an expired kimi key only surfaces 9 seconds into the run. The flag should fail fast with a clear error before sandbox creation.
+- **Auto-retry-with-backoff for quota/auth.** Today the auth classifier correctly identifies `quota_exhausted` (`(?<!\d)429(?!\d)`) and `invalid_authentication` (`(?<!\d)401(?!\d)`), but the runner doesn't auto-retry — agents that hit gemini RESOURCE_EXHAUSTED or kimi 401 simply burn the budget. Add a retry policy parameterized per error class. (Run S3 documented this at d1-validation-final.md "S3 / S4 homogeneous backend runs — external service state".)
+
+**Native Claude backend**
+
+- **Granular turn-lifecycle integration test.** v0.8.0 ships `tests/test_claude_native_backend.py` (33 tests covering config, MCP wiring, spawn cmd shape, loop init, _execute_task, _handle_shutdown, _handle_prose, terminal visibility, feature_test). Still missing: a single integration test that exercises the full happy-path turn lifecycle (claim → invoke → tool_event stream → task_complete) end-to-end with a recorded stream-JSON fixture. Caught by the pre-merge review.
+- **Schema-recovery strictness comment vs behavior.** `_embedded_json_object_candidates()` docstring says arbitrary trailing prose still fails, but `_parse_and_validate_final_message()` accepts any embedded valid object including with trailing prose. Decide whether to tighten to preamble-only recovery or update the comment to match. Pre-merge review LOW item.
+
+**Coverage gaps (verification harness)**
+
+- **Long-running stability.** Longest stress run to date: S5+W10 at 89.8 min wall (30/30). 8h+ / multi-day stability behavior is unknown. Plan a 6h+ S5+W10 run with periodic checkpointing.
+- **Within-backend model variance.** v0.8.0 verified `gpt-5.5/codex`, `sonnet/claude`, `gemini-2.5-pro`, kimi default. Other models in each backend (gpt-5.4, opus, gemini-3-pro-preview, kimi-thinking) untested.
+- **Workload coverage beyond W7 + W10.** Verified: W7 (pair-program-tool) and W10 (rendezvous-coordination). Other workload shapes (long-running tasks, deep dependency chains, large-context handoffs) need stress runs against the v0.8.0 substrate.
+- **Multi-team concurrent scenarios.** No cross-team interaction or resource contention testing. Two anyteam runners on the same host today share `/tmp/stress-sandbox-*` cleanup logic; verify isolation under contention.
+
+**Investigation follow-ups**
+
+- **Kimi v1 send_message rate under W7 (post-auth-fix monitoring).** S8 v2 had kimi-pair sent=0; investigation showed 100% explained by auth failure. S8 rerun (post-auth-fix) had kimi-pair sent=23/codex-pair sent=88. Continue monitoring on multi-run averages to confirm the 23/88 ratio is steady-state, not run-of-the-mill. Doc: kimi-peer-dm-investigation.md.
+
+These items are not v0.8.0 ship-blockers — substrate failure metrics tied at zero across all six successful stress scenarios, and 1075-test regression coverage locks the empirical fixes in place. They're the next-iteration improvements the verification ladder surfaced.
+
 ### v0.7.0 — backend-neutral progress watchdog and event envelope
 
 The v0.6.0 soft non-progress watchdog ships only for the Codex App Server path (`codex.py:app_server_invoke`). The trip condition uses App Server-specific signals (agentMessage byte deltas + tool_call_event count) that Gemini ACP and Kimi don't emit the same way. v0.7.0 generalizes this into a backend-neutral primitive grounded in the event-envelope design from `bug-triage/B9-visibility-parity-investigation.md` §6. Two concrete asks:
