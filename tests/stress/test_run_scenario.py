@@ -761,3 +761,26 @@ def test_workload_manifest_w10_cross_backend() -> None:
     assert manifest["workload_id"] == "W10"
     assert "RENDEZVOUS_AGREEMENT.txt" in manifest["success_check"]["args"]["must_include"]
     assert manifest["success_check"]["args"]["agreement_marker_required"] is True
+
+
+def test_load_scorers_adds_project_root_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: detached `setsid nohup python tools/stress/run_scenario.py`
+    invocations don't put the project root on sys.path, so `from tools.stress
+    import score_*` fails with ModuleNotFoundError. _load_scorers() must be
+    self-sufficient and add the project root if missing.
+    """
+    project_root = str(Path(run_scenario.__file__).resolve().parents[2])
+
+    saved_path = list(sys.path)
+    monkeypatch.setattr(sys, "path", [p for p in saved_path if p != project_root])
+    for mod in ("tools", "tools.stress"):
+        sys.modules.pop(mod, None)
+
+    assert project_root not in sys.path
+
+    throughput, collab, quality = run_scenario._load_scorers()
+
+    assert throughput.__name__ == "tools.stress.score_throughput"
+    assert collab.__name__ == "tools.stress.score_collab"
+    assert quality.__name__ == "tools.stress.score_quality"
+    assert project_root in sys.path

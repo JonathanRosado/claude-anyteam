@@ -1025,6 +1025,9 @@ def _visibility_event(
 
 
 def _load_scorers() -> tuple[ModuleType, ModuleType, ModuleType]:
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     try:
         from tools.stress import score_collab, score_quality, score_throughput
     except ImportError as exc:
