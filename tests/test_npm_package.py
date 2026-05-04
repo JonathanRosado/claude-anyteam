@@ -12,7 +12,13 @@ def test_npm_package_metadata_matches_installer_contract() -> None:
     package = json.loads((NPM_DIR / 'package.json').read_text(encoding='utf-8'))
 
     assert package['name'] == 'claude-anyteam'
-    assert package['version'] == '0.8.0'
+    # The version field is asserted by `tests/test_manifest_versions_locked.py`
+    # (four-way lock-step across npm + pyproject + .claude-plugin/plugin.json
+    # + .claude-plugin/marketplace.json) and `test_pyproject_version_matches_npm_version`
+    # below (pyproject ↔ npm). A hardcoded literal here was redundant and
+    # silently broke v0.8.1 release CI when the bump landed without manually
+    # editing this assertion. Single source of truth lives in the lock-step
+    # tests; this contract test now covers only npm-specific fields.
     assert package['bin']['claude-anyteam-setup'] == 'bin/setup.js'
     assert package['bin']['claude-anyteam'] == 'bin/setup.js'
     assert package['scripts']['postinstall'] == 'node bin/setup.js --postinstall'
