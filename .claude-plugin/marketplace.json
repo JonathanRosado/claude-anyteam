@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Self-hosted marketplace for the claude-anyteam Claude Code plugin.",
-    "version": "0.8.2"
+    "version": "0.8.3"
   },
   "plugins": [
     {
       "name": "claude-anyteam",
       "source": "./",
       "description": "Auto-configures Claude Code to route codex-*, gemini-*, and kimi-* teammates through the claude-anyteam spawn shim.",
-      "version": "0.8.2",
+      "version": "0.8.3",
       "author": {
         "name": "friction-research"
       },

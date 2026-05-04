@@ -256,3 +256,104 @@ def test_team_roster_json_includes_diagnostic_enrichments(fake_home, capsys):
     assert rows["codex-a"]["capability_version"] == "2"
     assert rows["codex-a"]["adapter_pid"] == 123
     assert rows["codex-a"]["adapter_pid_source"] == "wrapper-mcp-tools.jsonl"
+
+
+def test_diagnose_bundle_wraps_report_and_sanitizes_home(fake_home, monkeypatch):
+    """`--bundle` produces a markdown envelope with versions + sanitized paths.
+
+    Locks the operational invariants the bundle is meant to support: the
+    `## Versions` section is present, the user's home directory is replaced
+    with `~/` in the embedded report (preventing accidental username leak when
+    the bundle is pasted into a public GitHub issue), the inner report sits
+    inside a four-backtick fence (so any nested triple-fence content survives
+    GitHub's renderer), and the bundle docstring tells the user to scrub team
+    or agent names manually if sensitive.
+
+    Stubbing `_collect_versions_and_env` keeps the test deterministic against
+    hosts that may or may not have codex / gemini / kimi installed.
+    """
+    _seed_team(fake_home)
+
+    monkeypatch.setattr(
+        diagnose_cli,
+        "_collect_versions_and_env",
+        lambda: {
+            "claude_anyteam": "0.8.3",
+            "codex": "0.124.0",
+            "gemini": None,  # not installed → "(not installed)"
+            "kimi": "1.40.0",
+            "python": "3.12.3",
+            "os_system": "Linux",
+            "os_release": "6.6.87.2-microsoft-standard-WSL2",
+            "wsl": True,
+        },
+    )
+
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = diagnose_cli.main(["--team", "build", "--bundle"], stdout=out, stderr=err)
+
+    assert rc == 0
+    assert err.getvalue() == ""
+    body = out.getvalue()
+
+    # Markdown envelope
+    assert body.startswith("# claude-anyteam diagnose bundle\n")
+    assert "## Versions" in body
+    assert "## Scope" in body
+    assert "## Report" in body
+    assert "## Suggested next steps" in body
+
+    # Versions
+    assert "- claude-anyteam: 0.8.3" in body
+    assert "- codex CLI: 0.124.0" in body
+    assert "- gemini CLI: (not installed)" in body
+    assert "- kimi CLI: 1.40.0" in body
+    assert "- Python: 3.12.3" in body
+    assert "- OS: Linux 6.6.87.2-microsoft-standard-WSL2 (WSL detected)" in body
+
+    # Inner report — four-backtick fence (so triple-fences inside the rendered
+    # human report do not break GitHub's nested-fence rendering).
+    assert "\n````\n" in body
+    assert body.count("````") >= 2  # opening + closing
+
+    # Path sanitization — user's home dir is replaced with `~/` in the
+    # embedded report. The seeded team's `team_dir` is `<fake_home>/.claude/...`
+    # so that exact prefix should not appear in the bundle.
+    assert str(fake_home) not in body, (
+        "user home directory leaked into bundle output despite sanitize step"
+    )
+    assert "team_dir=~/.claude/teams/build" in body
+
+    # Footer guidance the bundle docstring promises — keeps the user informed
+    # about manual scrubs and instrumentation follow-up.
+    assert "scrub team/agent names" in body
+    assert "events/<agent>.jsonl" in body
+    assert "--instrument-spawn" in body
+
+
+def test_diagnose_bundle_rejects_combined_with_json(fake_home):
+    """`--bundle` and `--json` are mutually exclusive (different output shapes)."""
+    _seed_team(fake_home)
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = diagnose_cli.main(["--team", "build", "--bundle", "--json"], stdout=out, stderr=err)
+    assert rc == 2
+    assert "cannot be combined with --json" in err.getvalue()
+    assert out.getvalue() == ""
+
+
+def test_diagnose_bundle_rejects_combined_with_incident_modes(fake_home):
+    """`--bundle` is meant for the substrate report, not the legacy incident path."""
+    _seed_team(fake_home)
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = diagnose_cli.main(["--bundle", "--incidents"], stdout=out, stderr=err)
+    assert rc == 2
+    assert "cannot be combined with incident mode" in err.getvalue()
+    assert out.getvalue() == ""
+
+
+def test_diagnose_probe_cli_version_returns_none_for_missing_binary():
+    """The version-probe helper is defensive: missing binary → None, no exception."""
+    assert diagnose_cli._probe_cli_version("definitely-not-a-real-binary-xyz") is None

@@ -13,9 +13,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -203,6 +208,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "MUTATING: write env.CLAUDE_ANYTEAM_WRAPPER_MCP_DIAGNOSTICS=1 "
             "to ~/.claude/settings.json so the next teammate spawn captures "
             "wrapper MCP tool-discovery diagnostics."
+        ),
+    )
+    p.add_argument(
+        "--bundle",
+        action="store_true",
+        help=(
+            "Wrap the report in a markdown-formatted bundle suitable for "
+            "GitHub issue submission. Includes versions (claude-anyteam, "
+            "codex/gemini/kimi CLIs, Python, OS) and sanitizes the user's "
+            "home directory in paths to '~'. Review and scrub team/agent "
+            "names manually if sensitive before posting."
         ),
     )
     p.add_argument("--settings-path", help=argparse.SUPPRESS)
@@ -878,6 +894,161 @@ def _render_report(report: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Bundle mode (--bundle): wrap the human-readable report in a markdown
+# envelope suitable for GitHub issue submission. Adds versions + environment
+# sections and sanitizes the user's home directory in paths.
+# --------------------------------------------------------------------------- #
+
+
+def _probe_cli_version(binary: str, *, args: tuple[str, ...] = ("--version",)) -> str | None:
+    """Return the first version-shaped token from ``<binary> --version``, or None.
+
+    Resolution mirrors the installer's `_parse_cli_version` heuristic but stays
+    self-contained: missing binary → None, non-zero exit → None,
+    no version-shaped token in output → None. Bounded subprocess timeout so a
+    hung CLI cannot stall ``diagnose --bundle``.
+    """
+    if not shutil.which(binary):
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, *args],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 and not proc.stdout:
+        return None
+    blob = (proc.stdout or "") + (proc.stderr or "")
+    match = re.search(r"\b\d+\.\d+(?:\.\d+)?(?:[A-Za-z0-9.+-]*)?\b", blob)
+    return match.group(0) if match else None
+
+
+def _own_package_version() -> str:
+    """Resolve ``claude-anyteam``'s installed version, falling back to 'unknown'.
+
+    Defensive against editable-install or zip-import oddities where
+    ``importlib.metadata.version`` raises.
+    """
+    try:
+        return _pkg_version("claude-anyteam")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _detect_wsl() -> bool:
+    """True iff /proc/version names microsoft (WSL/WSL2 marker)."""
+    try:
+        with open("/proc/version", encoding="utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+def _collect_versions_and_env() -> dict[str, Any]:
+    return {
+        "claude_anyteam": _own_package_version(),
+        "codex": _probe_cli_version("codex"),
+        "gemini": _probe_cli_version("gemini"),
+        "kimi": _probe_cli_version("kimi"),
+        "python": platform.python_version(),
+        "os_system": platform.system(),
+        "os_release": platform.release(),
+        "wsl": _detect_wsl(),
+    }
+
+
+def _sanitize_home(text: str) -> str:
+    """Replace the user's home directory in paths with '~' for issue safety.
+
+    Operates on the rendered text once, after the report is fully composed.
+    Idempotent if no occurrences are present. Does NOT touch team or agent
+    names — the bundle docstring tells the user to review those manually.
+    """
+    home = os.path.expanduser("~")
+    if not home or home == "/":
+        return text
+    return text.replace(home, "~")
+
+
+def _render_bundle(report: dict[str, Any], inner: str, args: argparse.Namespace) -> str:
+    """Wrap the human-readable report in a markdown envelope for GitHub issues."""
+    versions = _collect_versions_and_env()
+
+    def _line(label: str, value: Any) -> str:
+        if value is None:
+            return f"- {label}: (not installed)"
+        return f"- {label}: {value}"
+
+    parts: list[str] = []
+    parts.append("# claude-anyteam diagnose bundle")
+    parts.append("")
+    parts.append(
+        "> Generated for issue submission. The user's home directory has been "
+        "replaced with `~/` in paths. Review and scrub team/agent names "
+        "manually if they encode sensitive identifiers before posting publicly."
+    )
+    parts.append("")
+
+    parts.append("## Versions")
+    parts.append("")
+    parts.append(_line("claude-anyteam", versions["claude_anyteam"]))
+    parts.append(_line("codex CLI", versions["codex"]))
+    parts.append(_line("gemini CLI", versions["gemini"]))
+    parts.append(_line("kimi CLI", versions["kimi"]))
+    parts.append(_line("Python", versions["python"]))
+    os_label = f"{versions['os_system']} {versions['os_release']}"
+    if versions["wsl"]:
+        os_label += " (WSL detected)"
+    parts.append(_line("OS", os_label))
+    parts.append("")
+
+    scope_bits = []
+    if report.get("team"):
+        scope_bits.append(f"team={report['team']}")
+    if report.get("agent"):
+        scope_bits.append(f"agent={report['agent']}")
+    if report.get("since"):
+        scope_bits.append(f"since={report['since']}")
+    if args.limit != 10:
+        scope_bits.append(f"limit={args.limit}")
+    parts.append("## Scope")
+    parts.append("")
+    parts.append("- " + (", ".join(scope_bits) if scope_bits else "(default scope: all members, no since filter, default limit)"))
+    parts.append("")
+
+    parts.append("## Report")
+    parts.append("")
+    # Use FOUR-backtick fence so any inner triple-fence content (e.g.
+    # GitHub-rendered code from the human report) survives nested rendering.
+    parts.append("````")
+    parts.append(_sanitize_home(inner).rstrip("\n"))
+    parts.append("````")
+    parts.append("")
+
+    parts.append("## Suggested next steps")
+    parts.append("")
+    parts.append(
+        "- Attach the relevant `~/.claude/teams/<team>/events/<agent>.jsonl` "
+        "lines from around the failure window for the maintainer to inspect "
+        "raw typed-event payloads."
+    )
+    parts.append(
+        "- If the failure is reproducible, re-run with `--since <iso-time>` "
+        "to scope this report to the exact failure window."
+    )
+    parts.append(
+        "- Re-run with `--instrument-spawn` BEFORE the next reproduction if "
+        "the bug touches MCP tool discovery or wrapper-side registration."
+    )
+    parts.append("")
+    return "\n".join(parts)
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -896,7 +1067,14 @@ def main(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None
         if args.instrument_spawn:
             err.write("error: --instrument-spawn cannot be combined with incident mode\n")
             return 2
+        if args.bundle:
+            err.write("error: --bundle cannot be combined with incident mode\n")
+            return 2
         return _incident_command(args, stdout=out, stderr=err)
+
+    if args.bundle and args.json:
+        err.write("error: --bundle cannot be combined with --json (bundle is markdown-shaped for issue submission)\n")
+        return 2
 
     try:
         since = _parse_iso(args.since)
@@ -912,6 +1090,8 @@ def main(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None
         return code
     if args.json:
         out.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    elif args.bundle:
+        out.write(_render_bundle(report, _render_report(report), args))
     else:
         out.write(_render_report(report))
     return code
