@@ -68,6 +68,82 @@ def test_help_skill_exists_and_teaches_claude_about_cli_teammates() -> None:
     assert "disable-model-invocation: true" not in content
 
 
+def test_help_skill_teaches_native_host_tools_via_manifest_lookup() -> None:
+    """Issue #33 regression guard.
+
+    The codex-app-server-native tools (`imagegeneration`, `imageview`,
+    `websearch`, `filechange`) live outside the wrapper-MCP surface and the
+    event classifier already knows about them, but leads have no way to
+    discover them unless the help skill teaches the lookup pattern. Per
+    north-star §1 (`feedback_capability_decl_vs_flatten`) the canonical
+    enumeration lives in each teammate's capability manifest under
+    `live_tool_events.native_host_tools`, NOT in skill text — the skill
+    must teach the lookup, not flatten the inventory across backends.
+    """
+    content = HELP_SKILL.read_text(encoding="utf-8")
+    # The skill must teach manifest lookup, not enumerate.
+    assert "mcp_anyteam_capability_manifest" in content, (
+        "help skill must teach the manifest-lookup pattern for native host tools"
+    )
+    assert "native_host_tools" in content, (
+        "help skill must reference the canonical native_host_tools manifest field"
+    )
+    assert "live_tool_events" in content, (
+        "help skill must name the live_tool_events capability that carries the inventory"
+    )
+    # Codex App Server's native tools are still the worked example so leads
+    # have at least one concrete tool name to recognize in telemetry.
+    for tool in ("imagegeneration", "websearch"):
+        assert tool in content, f"help skill must mention codex-native tool `{tool}` as worked example"
+    # The section must explicitly state these are NOT exposed by the wrapper MCP
+    # so leads don't conflate them with mcp_anyteam_* tools.
+    assert "wrapper-MCP" in content or "wrapper MCP" in content
+
+
+def test_help_skill_disambiguates_against_codex_jr() -> None:
+    """Issue #35 regression guard.
+
+    When both claude-anyteam and codex-jr are installed, the lead's natural
+    landing place is whichever surface is more discoverable. The help skill
+    is the canonical disambiguation surface — it must explain that
+    `codex-jr:codex-rescue` is a one-shot subagent, not a teammate, and
+    that team-shaped intent should route through claude-anyteam.
+    """
+    content = HELP_SKILL.read_text(encoding="utf-8")
+    assert "codex-jr" in content, "help skill must mention codex-jr for disambiguation"
+    assert "codex-rescue" in content, "help skill must name codex-jr:codex-rescue explicitly"
+    assert "one-shot" in content, "help skill must explain codex-jr is one-shot, not teammate"
+
+
+def test_help_skill_promotes_runtime_observability_surface() -> None:
+    """Issue #38 regression guard.
+
+    Leads should not have to discover observability the hard way — i.e.
+    after a failure forces them to grep for it. The help skill must promote
+    `claude-anyteam status`, `claude-anyteam diagnose`, and
+    `claude-anyteam visibility-tail` so a lead asking "is the team healthy?"
+    finds a protocol-supported answer instead of dropping to file-system probes.
+    """
+    content = HELP_SKILL.read_text(encoding="utf-8")
+    for cmd in (
+        "claude-anyteam status",
+        "claude-anyteam diagnose",
+        "claude-anyteam visibility-tail",
+    ):
+        assert cmd in content, f"help skill must promote `{cmd}` for run-time observability"
+    # The when_to_use must trigger on observation-shaped phrasing, not only
+    # on spawn-shaped intent (#38 root cause: observation intent didn't
+    # auto-load the help skill).
+    assert "is the team healthy" in content
+    # The #36 follow-up folds in here: a one-glance "is my team healthy?"
+    # checklist must point leads at the canonical registration invariants
+    # (registration_status, agent_type=claude-anyteam, capability_version="2",
+    # backend_type=in-process) and at the diagnose surface for the deep dive.
+    assert "registration_status" in content
+    assert 'capability_version' in content
+    assert 'agent_type' in content
+
+
 def test_status_skill_has_required_name_frontmatter() -> None:
     content = STATUS_SKILL.read_text(encoding="utf-8")
 

@@ -188,6 +188,13 @@
         "host_tool_surface": {
           "type": "string",
           "minLength": 1
+        },
+        "native_host_tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     }

@@ -140,6 +140,19 @@ def _backend_metadata(settings: Settings) -> BackendMetadata:
                 expiry_semantics="live_only",
                 steer_authorization="lead_only",
                 host_tool_surface="codex-native",
+                # §1: declare codex-app-server's native host-tool inventory
+                # so peers and leads can introspect via
+                # mcp_anyteam_capability_manifest('<name>', 'live_tool_events')
+                # instead of relying on hardcoded skill-text enumeration.
+                # Keep this list in sync with the App Server tool-event
+                # substring matchers in `claude_anyteam.codex` — those drive
+                # visibility classification, this drives discovery.
+                native_host_tools=[
+                    "imagegeneration",
+                    "imageview",
+                    "websearch",
+                    "filechange",
+                ],
             ),
             transport="codex-app-server",
             host_tool_surface="codex-native",

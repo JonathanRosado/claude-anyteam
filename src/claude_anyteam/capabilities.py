@@ -706,6 +706,19 @@ def validate_capability_manifest_entries(entries: dict[str, Any]) -> dict[str, d
                     "capability 'turn_steer' requires authorization "
                     "'lead_only' or 'any_peer'"
                 )
+        if name == "live_tool_events":
+            native_tools = raw_entry.get("native_host_tools")
+            if native_tools is not None:
+                if (
+                    not isinstance(native_tools, list)
+                    or not all(
+                        isinstance(item, str) and item.strip() for item in native_tools
+                    )
+                ):
+                    raise ValueError(
+                        "capability 'live_tool_events' field 'native_host_tools' "
+                        "must be a list of non-empty strings"
+                    )
         validated[name] = raw_entry
     return validated
 
@@ -797,12 +810,21 @@ def rich_capability_manifest(
     expiry_semantics: str | None = None,
     steer_authorization: str | None = None,
     host_tool_surface: str | None = None,
+    native_host_tools: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return R12 rich entries for the supplied R11 cheap capability list.
 
     The keys intentionally align one-for-one with ``CAPABILITY_NAMES`` and the
     per-backend ``*_CAPABILITIES`` constants so 09 R12 never invents a second
     naming layer on top of codex-impl-cap's R11 surface.
+
+    ``native_host_tools`` enumerates the routed harness's native tool names
+    that live OUTSIDE the wrapper-MCP surface (e.g. Codex App Server's
+    ``imagegeneration`` / ``imageview`` / ``websearch`` / ``filechange``).
+    Surfacing them on the ``live_tool_events`` entry is the §1-correct shape:
+    each backend declares its own native inventory natively; peers and leads
+    discover the inventory by querying the manifest, not by reading hardcoded
+    lists in skill text.
     """
     assert_known_capabilities(capabilities)
     result: dict[str, dict[str, Any]] = {}
@@ -816,8 +838,14 @@ def rich_capability_manifest(
                 entry["expiry_semantics"] = expiry_semantics
             entry["authorization"] = steer_authorization
             entry["callable_from_peers"] = steer_authorization == "any_peer"
-        if name == "live_tool_events" and host_tool_surface:
-            entry["host_tool_surface"] = host_tool_surface
+        if name == "live_tool_events":
+            if host_tool_surface:
+                entry["host_tool_surface"] = host_tool_surface
+            if native_host_tools:
+                # Preserve per-backend declaration order; peers and leads read
+                # this list as the canonical inventory of harness-native tools
+                # (i.e. tools NOT exposed via the wrapper MCP).
+                entry["native_host_tools"] = [str(t) for t in native_host_tools]
         result[name] = entry
     return validate_capability_manifest_entries(result)
 

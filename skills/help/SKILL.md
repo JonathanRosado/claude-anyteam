@@ -1,10 +1,35 @@
 ---
 name: help
-description: Use proactively when the user wants help creating or managing Agent Teams teammates with claude-anyteam CLI backends. Includes the typed `claude-anyteam team-agent`, `team-patch`, and `team-roster` subcommands — prefer these over ad-hoc Write/Edit/Bash against `~/.claude/teams/`.
-when_to_use: User asks to create, route, configure, or troubleshoot codex-*, gemini-*, or kimi-* Agent Teams teammates, OR the lead is about to write per-teammate model/effort config files or patch agentType after spawn.
+description: Use proactively when the user wants help creating, observing, or managing Agent Teams teammates with claude-anyteam CLI backends. Covers spawn (`team-agent`, `team-patch`, `team-roster`), observability (`status`, `diagnose`, `visibility-tail`), and the codex-app-server native tool surface (imagegeneration, websearch, imageview, filechange) that lives outside the wrapper-MCP layer. Prefer this skill over ad-hoc Write/Edit/Bash against `~/.claude/teams/` and over reaching for `codex-jr:codex-rescue` when the user wants a real teammate.
+when_to_use: User asks to create, route, configure, or troubleshoot codex-*, gemini-*, or kimi-* Agent Teams teammates; OR the lead is about to write per-teammate model/effort config files or patch agentType after spawn; OR the user says "spin up codex teammates", "spawn codex team", "team of codex/gemini/kimi", or any phrase that implies multiple monitorable / pingable teammates rather than a one-shot subagent; OR the user asks "is the team healthy", "how is teammate X doing", "what is the team working on", "check on the team", "any progress from <name>", or otherwise wants to observe a running team; OR the user wants codex to generate images, do model-side web search, view an image, or use any other codex-app-server-native tool; OR a lead is about to reach for `Agent(subagent_type="codex-jr:codex-rescue")` for what is actually team-shaped work.
 ---
 
 claude-anyteam lets Claude Code route selected Agent Teams teammates to external CLI agents through the installed spawn shim.
+
+## Commands at a glance
+
+The plugin ships three kinds of CLI surface; reach for the one that matches the intent.
+
+| Surface         | Command                                  | Use when                                                                  |
+|-----------------|------------------------------------------|---------------------------------------------------------------------------|
+| Spawn / config  | `claude-anyteam team-agent <name> ...`   | Set per-teammate model/effort BEFORE `Agent(...)` (writes the agent file) |
+| Spawn / config  | `claude-anyteam team-patch ...`          | Patch `agentType` on routed members AFTER `Agent(...)` calls land         |
+| Spawn / config  | `claude-anyteam team-roster --team T`    | Inspect roster (members, backends, effort, capability versions)           |
+| Observe         | `claude-anyteam status [--team T]`       | One-screen team snapshot — roster, overrides, incidents, last activity    |
+| Observe         | `claude-anyteam diagnose --team T`       | Deeper substrate inspection: manifests, visibility-degraded, MCP probe    |
+| Observe         | `claude-anyteam visibility-tail --team T`| Follow the live `VisibilityEvent` JSONL stream as work happens            |
+| Lifecycle       | `claude-anyteam install`                 | Re-install the spawn shim / repair `settings.json` drift                  |
+
+When the user asks "is the team healthy?" or "what's teammate X doing right now?", the answer is *not* file-system probing — it's `claude-anyteam status` first, then `claude-anyteam diagnose --team <team>`, then `claude-anyteam visibility-tail` to follow live activity. See the `claude-anyteam:diagnose` skill for the deep-inspection flow.
+
+## Disambiguation: claude-anyteam vs codex-jr
+
+If both `claude-anyteam` and `codex-jr` are installed, the choice is intent-based, not name-based:
+
+- **claude-anyteam** is for *teammates*: multi-task, monitorable, pingable, persistent in `TaskList` and the presence line, addressable by name via `SendMessage`, mid-turn-steerable. Reach for it when the user says "team", "teammates", "spawn N codex/gemini/kimi", "implementer + tester + reviewer", or implies any orchestrated multi-agent flow.
+- **codex-jr (`Agent(subagent_type="codex-jr:codex-rescue")`)** is a one-shot rescue subagent — fire-and-forget, no `TaskList` entry, no persistent presence, no peer messaging. Reach for it only for genuine one-shot rescue passes (its own description says: "should hand a substantial coding task to Codex through the shared runtime").
+
+Failure mode: if the lead reaches for `codex-jr:codex-rescue` when the user wanted a team, the spawned agents have no entry in `TaskList`, no `SendMessage`-able names, and no presence-line visibility — i.e. *the resulting "team" isn't a team at all*. The rescue agent also runs outside claude-anyteam's codex-app-server adapter, so subsequent codex-app-server-native tool requests like `imagegeneration` / `websearch` may fail because codex-jr's one-shot runtime does not expose the App Server tool surface — the exact error depends on the codex-jr version but commonly surfaces as auth (e.g. `OPENAI_API_KEY` missing) or unsupported-tool errors. The user's #35 report observed a curl-direct-to-`api.openai.com` fallback path producing a missing-`OPENAI_API_KEY` error in 2026-04. Trust whatever error the codex-jr runtime emits; the structural property is "App Server-native tools are unreachable from the rescue path," not the specific error string.
 
 ## Routing conventions
 
@@ -27,6 +52,45 @@ claude-anyteam lets Claude Code route selected Agent Teams teammates to external
 - **Strong fit for `gemini-*`**: single-turn analysis, document review, code review with a written rubric, second-opinion passes — anything where the teammate produces one self-contained deliverable per turn.
 - **Weak fit for `gemini-*` on older models (`gemini-2.5-*`)**: stateful executor roles like tester or implementer where the teammate must wait, observe, then act. Older Gemini drifts (re-runs finished work, ignores "stay parked", loses track of state). Prefer `gemini-3-pro-preview` for these — it's substantially better at orchestration. If forced to use 2.5, give it short, complete, self-contained dispatches and explicit disk-state checks.
 - **Strong fit for `codex-*`**: stateful executor roles (implementer, tester) — the app-server backend handles tool loops well.
+
+## Native (harness-side) tools beyond the wrapper-MCP surface
+
+Routed teammates may carry harness-native tools that live OUTSIDE the wrapper-MCP layer — Codex App Server tools like `imagegeneration` / `imageview` / `websearch` / `filechange` are the most consequential example. The model decides when to invoke them based on prompt content; no `agentType` patch or extra config is required. They are NOT exposed by the wrapper MCP, so they do **not** appear in any `mcp_anyteam_*` tool listing — but they DO appear in event-log telemetry, `visibility-tail`, and `diagnose`.
+
+### Discover what's available — query the manifest
+
+**The canonical inventory of native host tools is the per-teammate capability manifest at runtime, not any list in this skill.** Per north-star §1 (capability declarations flow per-backend, not flattened), each backend declares its own native inventory natively, peers and leads discover it by querying the manifest, and any prose enumeration here is at best a v0.8.0 snapshot that will go stale as backends evolve.
+
+Ask the peer's manifest:
+
+```text
+mcp_anyteam_capability_manifest('<routed-teammate>', 'live_tool_events')
+```
+
+The response carries:
+
+- `host_tool_surface` — a label string (e.g. `"codex-native"`) identifying the harness's native tool surface.
+- `native_host_tools` — the authoritative array of harness-native tool names available beyond the wrapper MCP. Read THIS as the source of truth. As a v0.8.0 illustrative snapshot, a `codex-*` teammate on the App Server backend currently declares `["imagegeneration", "imageview", "websearch", "filechange"]` — but treat that as a hint, not a contract; trust whatever the live manifest reports for the specific teammate you are about to invoke.
+
+If a teammate's manifest is missing the field, treat it as "no native host tools advertised" — fall back to wrapper-MCP equivalents (`mcp_anyteam_web_fetch`, `mcp_anyteam_write_file`, etc.). Do not assume the inventory; always query.
+
+Other backend adapters (`kimi-*`, `gemini-*`, native-Claude stress teammates) declare their own surfaces (`kimi-native`, `mcp_anyteam`, `claude-code-native(...)+mcp_anyteam`) and may or may not populate `native_host_tools` in v0.8.0. The same lookup pattern applies — query the manifest, don't assume.
+
+### Prompting a teammate to use a native tool
+
+Once the manifest confirms a tool is available, prompt the teammate naturally — the harness's model decides when to invoke. For codex-app-server `imagegeneration` (authenticated via the existing `codex login` ChatGPT session, **no `OPENAI_API_KEY` required**):
+
+> Use `imagegeneration` to produce a 1024×768 PNG of [concept]; save to `<path>` and reference it as `![caption](<path>)` in `<chapter file>`.
+
+For `websearch` (model-side fresh web search, distinct from `mcp_anyteam_web_fetch` which fetches a known URL):
+
+> Use `websearch` to find the current state of [topic], then summarize the top three findings with citations.
+
+### When to reach for native tools vs wrapper-MCP equivalents
+
+- For **binary/image output**, use the codex-app-server `imagegeneration` tool — the wrapper has no image-generation surface, and there's no host CLI fallback that beats codex-native here.
+- For **fresh model-side web search**, prefer the harness's native `websearch`; for a known URL fetch, prefer wrapper-MCP `mcp_anyteam_web_fetch`.
+- For **most file writes inside the lead's project tree**, prefer wrapper-MCP `mcp_anyteam_write_file` — it goes through the audited shadow-tool path. Reach for `filechange` only when you specifically want App-Server-native semantics.
 
 ## Setting model and effort per teammate
 
@@ -77,6 +141,30 @@ claude-anyteam team-roster --team build-team           # human-readable
 claude-anyteam team-roster --team build-team --json    # JSON array for scripted callers
 ```
 
+## Observing a running team (run-time surface)
+
+When the user asks "is the team healthy?", "what's the team working on?", "how is teammate X doing?", or "any progress from <name>?" — the answer comes from the run-time surface, not from `team-roster` (which is a static snapshot) or from OS-level process inspection. Reach for, in order:
+
+1. **`claude-anyteam status [--team <team>]`** — one-screen team snapshot: roster + adapter overrides + recent incidents + last-activity per member. Best first poke.
+2. **`claude-anyteam diagnose --team <team>`** — substrate inspection: capability-manifest cache freshness, recent `visibility_degraded` events, wrapper-MCP tool-discovery diagnostics, substrate-health checklist. Use when `status` shows yellow/red. The `claude-anyteam:diagnose` skill walks through the report.
+3. **`claude-anyteam visibility-tail --team <team> [--agent <name>]`** — follow the live `VisibilityEvent` JSONL stream as work happens. Useful for "what is teammate X doing right now?" and for catching tool calls / errors as they fire.
+
+`visibility-tail` is a follower by default — it streams future events. For a one-shot "what's happened recently?" probe, prefer `status` or `diagnose --since=<iso-time>`. Wrapping `visibility-tail` in a `timeout` works, but understand it may capture zero events in a short window if no tool fires in that interval.
+
+The surface is intentionally projector-style over the canonical `events/*.jsonl` substrate — read-only by default. The one mutating flag is `claude-anyteam diagnose --instrument-spawn`, which writes `env.CLAUDE_ANYTEAM_WRAPPER_MCP_DIAGNOSTICS=1` to `~/.claude/settings.json` so the next teammate spawn captures wrapper-MCP tool-discovery diagnostics. Use it only when explicitly asked.
+
+### Healthy-team checklist (one-glance)
+
+`claude-anyteam diagnose` is the canonical "is my team healthy?" answer; the dedicated `claude-anyteam:diagnose` skill walks through its report. As a quick reference for what *should* be true of every routed (`codex-*` / `gemini-*` / `kimi-*`) teammate, look in `claude-anyteam team-roster --team <team> --json` for these registration fields:
+
+- `registration_status: "upgraded"` — the adapter took over from the placeholder spawn.
+- `agent_type: "claude-anyteam"` — `team-patch` was run after spawn.
+- `backend_type: "in-process"` — the routed adapter is registered.
+- `capability_version: "2"` — current rich-manifest revision.
+- `adapter_model`, `adapter_effort`, `adapter_turn_timeout_s` — per-teammate overrides flowed through.
+
+And `live_tool_events` (when present) plus the typed-capability set Codex App Server advertises — `turn_steer`, `thread_fork`, `live_tool_events`, `structured_output`, `plan_mode`, `soft_non_progress_watchdog` — should appear in the cheap roster `capabilities` list. Any deviation (e.g. `agent_type: "general-purpose"`, missing capabilities, stale `capability_version`) is a signal to re-run `team-patch` or to dig deeper with `claude-anyteam diagnose`.
+
 ## Example
 
 Mixed-backend team where every member runs at top effort:
@@ -101,9 +189,17 @@ claude-anyteam team-patch --team build-team --all-external
 
 # 4. (Optional) Confirm the roster looks right.
 claude-anyteam team-roster --team build-team
+
+# 5. Dispatch a codex-native image-generation pass on a codex-* teammate.
+Agent(team_name="build-team", name="codex-illustrator",
+      prompt="Use imagegeneration to produce a 1024x768 PNG of the FSDP collective topology; save to ./_images/fsdp.png; embed `![FSDP topology](_images/fsdp.png)` in chapters/04-fsdp.md replacing any existing diagram.")
+
+# 6. Observe the team while work is in flight.
+claude-anyteam status --team build-team
+claude-anyteam visibility-tail --team build-team   # follow live tool events
 ```
 
-If the user asks why a teammate did not route through claude-anyteam, check the prefix first: `codex-`, `gemini-`, and `kimi-` are the default routing regexes.
+If the user asks why a teammate did not route through claude-anyteam, check the prefix first: `codex-`, `gemini-`, and `kimi-` are the default routing regexes. If the user reached for `Agent(subagent_type="codex-jr:codex-rescue")` and ended up without a real team (no `TaskList` entries, no `SendMessage`-able names), see the "Disambiguation: claude-anyteam vs codex-jr" section above and re-spawn through the claude-anyteam flow.
 
 ## Why the CLI exists
 

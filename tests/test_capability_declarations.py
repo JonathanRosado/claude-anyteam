@@ -55,6 +55,40 @@ def test_codex_app_server_backend_metadata_declares_expected_capabilities(tmp_pa
     assert watchdog["schema"]["properties"]["non_progress_warn_s"]["default"] == 300
 
 
+def test_codex_app_server_metadata_advertises_native_host_tools_inventory(tmp_path: Path):
+    """Issue #33 regression guard.
+
+    Codex App Server has codex-native tools (`imagegeneration`, `imageview`,
+    `websearch`, `filechange`) that live OUTSIDE the wrapper-MCP surface.
+    Per north-star §1 (`feedback_capability_decl_vs_flatten`), the canonical
+    discovery surface is the capability manifest, NOT a hardcoded list in
+    skill text. The `live_tool_events` entry must declare them in
+    `native_host_tools` so peers can introspect via
+    `mcp_anyteam_capability_manifest('<codex-name>', 'live_tool_events')`.
+    """
+    metadata = codex_loop._backend_metadata(_codex_settings(tmp_path, app_server=True))
+
+    live_tool_events = metadata.capability_manifest["live_tool_events"]
+    assert live_tool_events.get("host_tool_surface") == "codex-native"
+    native_tools = live_tool_events.get("native_host_tools")
+    assert isinstance(native_tools, list)
+    assert set(native_tools) >= {
+        "imagegeneration",
+        "imageview",
+        "websearch",
+        "filechange",
+    }, f"missing canonical Codex App Server native tools: {native_tools}"
+
+
+def test_codex_exec_metadata_omits_native_host_tools_inventory(tmp_path: Path):
+    """Codex exec mode does not run on App Server, so it must not advertise
+    App-Server-only native tools. The `live_tool_events` capability is also
+    absent from `CODEX_EXEC_CAPABILITIES`, so the entry simply isn't there.
+    """
+    metadata = codex_loop._backend_metadata(_codex_settings(tmp_path, app_server=False))
+    assert "live_tool_events" not in metadata.capability_manifest
+
+
 def test_codex_exec_backend_metadata_declares_headless_capabilities(tmp_path: Path):
     metadata = codex_loop._backend_metadata(_codex_settings(tmp_path, app_server=False))
 
