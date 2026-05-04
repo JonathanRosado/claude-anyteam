@@ -2,6 +2,24 @@
 
 All notable changes to claude-anyteam are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] — 2026-05-04
+
+Patch release shipping the v0.8.1 plugin-manifest lock-step work plus a release-CI fix-forward. v0.8.1's auto-release tagged at the merge commit but the `test` job failed on a hardcoded `assert package['version'] == '0.8.0'` literal in `tests/test_npm_package.py` that the v0.8.1 PR didn't touch (the literal was redundant with two existing lock-step tests, and was missed by my version-string grep because the test file used single-quoted Python literals while the grep regex only covered double-quoted JSON literals). The v0.8.1 tag and GitHub release were deleted; v0.8.2 replays the manifest bumps cleanly with the test fix included.
+
+### Fixed
+
+- **`tests/test_npm_package.py:15`** — removed the hardcoded `assert package['version'] == '0.8.0'`. Version is already locked in step by `tests/test_manifest_versions_locked.py` (four-way) and `test_pyproject_version_matches_npm_version` (two-way) in the same file. The hardcoded literal forced a manual edit on every release and was the proximate cause of the v0.8.1 test failure. Single source of truth for version equality lives in the lock-step tests; this contract test now covers only npm-specific fields (name, bin, scripts, engines, dependencies).
+
+### Carried over from the never-published v0.8.1
+
+- **All four user-facing manifests in lock-step at `0.8.2`** (`npm/package.json`, `pyproject.toml`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`).
+- **Four-way manifest version lock-step in CI** — `.github/workflows/auto-release.yml` now triggers on changes to any of the four manifests and fails the build if any disagree.
+- **`tests/test_manifest_versions_locked.py`** — pytest-time lock-step assertion (defense-in-depth alongside the CI gate).
+
+### Net effect for users
+
+After v0.8.2 ships to npm + PyPI, the marketplace tree at `~/.claude/plugins/marketplaces/claude-anyteam/` will pull manifests advertising 0.8.2. The next `/plugin update claude-anyteam@claude-anyteam` will repin from `cache/.../0.5.0/` to a new `cache/.../0.8.2/` directory containing all 3 skills (including `diagnose`), the manifest-driven `help` skill from PR #41, and every other change shipped between v0.5.0 and now.
+
 ## [0.8.1] — 2026-05-04
 
 Patch release fixing a quiet plugin-marketplace version-drift bug that pinned every user on the marketplace install path to the v0.5.0 skill set. No code-behavior changes; this is pure release-process hardening.
