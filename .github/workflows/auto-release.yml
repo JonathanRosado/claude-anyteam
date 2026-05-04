@@ -1,8 +1,9 @@
 name: Auto-tag and release on version bump
 
-# When a push to main changes the version in npm/package.json or
-# pyproject.toml, this workflow:
-#   1. Verifies both manifests agree on the version (lock-step constraint)
+# When a push to main changes the version in any of the four user-facing
+# manifests (npm/package.json, pyproject.toml, .claude-plugin/plugin.json,
+# .claude-plugin/marketplace.json), this workflow:
+#   1. Verifies all four manifests agree on the version (lock-step constraint)
 #   2. Creates a v$VERSION tag at the merged commit
 #   3. Creates a GitHub release with PR body as release notes
 #   4. Runs the test suite
@@ -12,6 +13,13 @@ name: Auto-tag and release on version bump
 # when GITHUB_TOKEN can't be granted actions:write). One merge to main =
 # one release. release.yml is kept as a fallback for manual `v*` tag pushes
 # from a maintainer's machine.
+#
+# Why all four manifests in lock-step: pre-v0.8.1 the lock-step only covered
+# npm + pyproject. Plugin manifests drifted to 0.5.0 / 0.1.0 across v0.6-v0.8
+# because their changes never fired this workflow. Result: Claude Code's
+# plugin marketplace never advertised an upgrade and users stayed pinned to
+# v0.5.0's skill set in their plugin cache. Four-way lock-step makes that
+# class of drift impossible.
 
 on:
   push:
@@ -19,6 +27,8 @@ on:
     paths:
       - 'npm/package.json'
       - 'pyproject.toml'
+      - '.claude-plugin/plugin.json'
+      - '.claude-plugin/marketplace.json'
 
 concurrency:
   group: auto-release
@@ -46,12 +56,24 @@ jobs:
           set -euo pipefail
           npm_version=$(node -p "require('./npm/package.json').version")
           py_version=$(awk -F\" '/^version *= */ {print $2; exit}' pyproject.toml)
-          if [ "$npm_version" != "$py_version" ]; then
-            echo "::error::npm/package.json version ($npm_version) does not match pyproject.toml ($py_version). Bump both in lock-step."
+          plugin_version=$(node -p "require('./.claude-plugin/plugin.json').version")
+          marketplace_meta_version=$(node -p "require('./.claude-plugin/marketplace.json').metadata.version")
+          marketplace_plugin_version=$(node -p "require('./.claude-plugin/marketplace.json').plugins[0].version")
+          # Four-way lock-step: all user-facing manifests must agree.
+          if [ "$npm_version" != "$py_version" ] \
+             || [ "$npm_version" != "$plugin_version" ] \
+             || [ "$npm_version" != "$marketplace_meta_version" ] \
+             || [ "$npm_version" != "$marketplace_plugin_version" ]; then
+            echo "::error::Manifest version drift detected — all four must match in lock-step."
+            echo "  npm/package.json:                                   $npm_version"
+            echo "  pyproject.toml:                                     $py_version"
+            echo "  .claude-plugin/plugin.json:                         $plugin_version"
+            echo "  .claude-plugin/marketplace.json (metadata.version): $marketplace_meta_version"
+            echo "  .claude-plugin/marketplace.json (plugins[0].version): $marketplace_plugin_version"
             exit 1
           fi
           echo "version=$npm_version" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: $npm_version"
+          echo "Resolved version: $npm_version (npm + pyproject + plugin.json + marketplace.json all in lock-step)"
 
       - name: Skip if v$VERSION tag already exists
         id: check_tag

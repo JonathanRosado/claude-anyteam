@@ -2,6 +2,23 @@
 
 All notable changes to claude-anyteam are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-04
+
+Patch release fixing a quiet plugin-marketplace version-drift bug that pinned every user on the marketplace install path to the v0.5.0 skill set. No code-behavior changes; this is pure release-process hardening.
+
+### Fixed
+
+- **`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` were drifted to v0.5.0 / v0.1.0** while `pyproject.toml` and `npm/package.json` had been bumped through v0.6 → v0.7 → v0.8 in lock-step. Claude Code's plugin marketplace keys upgrade decisions off the manifests it reads (`marketplace.json`'s advertised version + the per-plugin `version`), so it never advertised v0.6 / v0.7 / v0.8 to users. Result: every user on the marketplace install path remained pinned to the v0.5.0 plugin cache directory (`~/.claude/plugins/cache/claude-anyteam/claude-anyteam/0.5.0/`), missing every skill change since — including the `diagnose` skill (added in v0.8.0), the manifest-driven `help` skill reshape (#41), and the prompt updates for `codex-jr` disambiguation. Both manifests are now bumped to **0.8.1** in lock-step with the python and npm package versions.
+
+### Added
+
+- **Four-way manifest version lock-step in CI** (`.github/workflows/auto-release.yml`). Pre-v0.8.1 the workflow only checked `npm/package.json` against `pyproject.toml` and only fired on changes to those two files. The two `.claude-plugin/` manifests were ignored entirely — no trigger path, no version comparison. Now all four (`npm/package.json`, `pyproject.toml`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`) are in the workflow's `paths:` filter and the `Read manifest versions` step fails the build if any disagree. Workflow comment explains the historical motivation so future contributors understand why the four-way check exists.
+- **`tests/test_manifest_versions_locked.py`** — pytest-time lock-step assertion that catches the same drift in the developer loop, before any push reaches `auto-release.yml`. Defense-in-depth: CI is the gate, this test is the rapid-feedback layer. Asserts all five version fields (the four manifests, with `marketplace.json`'s `metadata.version` and `plugins[0].version` checked independently) are identical, plus a PEP-440 shape sanity check.
+
+### Why this matters in operational terms
+
+Users on the marketplace install path who upgraded the python tool via `uv tool install --reinstall claude-anyteam` (or `pipx upgrade`, etc.) saw new behavior in the CLI but kept the v0.5.0 skill set in their Claude Code session. The skill content discovery (per `feedback_capability_decl_vs_flatten` and the v0.8.0 manifest-driven discovery work) only manifests if Claude Code reads the new SKILL.md files, which it can't until the plugin cache repins. Lock-step CI plus the pytest-time check make this class of drift impossible going forward; one bumps all four or the build fails before merge.
+
 ## [0.8.0] — 2026-04-29
 
 The protocol-revision drop. Substrate hardening across the three north stars (`CLAUDE.md` §1 harness preservation, §2 visibility parity, §3 peer efficiency), measured against the S6/S7/S8/S5 cross-backend stress harness and validated head-to-head against a native-Claude pair (S6n). Bumped to **0.8.0** because main shipped 0.7.2-0.7.11 (installer hardening, CTA polish) while this proto-rev branch was open; the protocol-revision is a major-style change relative to the 0.7.x patch series.
