@@ -2,6 +2,15 @@
 
 All notable changes to claude-anyteam are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] — 2026-05-04
+
+### Added
+
+- **`claude-anyteam diagnose --bundle`** — wraps the substrate report in a markdown envelope tuned for GitHub-issue submission. Adds a `## Versions` section (auto-detects `claude-anyteam`, `codex`, `gemini`, `kimi` CLIs via subprocess `--version` probe + Python + OS + WSL marker), a `## Scope` summary line, and a `## Suggested next steps` footer pointing the user at `events/<agent>.jsonl` excerpts and `--instrument-spawn` follow-up. The embedded report sits inside a four-backtick fence (so any inner triple-fence content survives GitHub's nested-fence renderer), and the user's home directory is replaced with `~/` in paths to prevent accidental username leak when posting publicly.
+  - Mutually exclusive with `--json` (different output shapes) and incident modes (different scope).
+  - The version-probe helper bounds subprocess timeouts at 5s and returns `None` on missing binary, non-zero exit, or unparseable output — so a hung CLI cannot stall the bundle.
+  - Regression tests at `tests/test_diagnose_cli.py::test_diagnose_bundle_*`.
+
 ## [0.8.2] — 2026-05-04
 
 Patch release shipping the v0.8.1 plugin-manifest lock-step work plus a release-CI fix-forward. v0.8.1's auto-release tagged at the merge commit but the `test` job failed on a hardcoded `assert package['version'] == '0.8.0'` literal in `tests/test_npm_package.py` that the v0.8.1 PR didn't touch (the literal was redundant with two existing lock-step tests, and was missed by my version-string grep because the test file used single-quoted Python literals while the grep regex only covered double-quoted JSON literals). The v0.8.1 tag and GitHub release were deleted; v0.8.2 replays the manifest bumps cleanly with the test fix included.
