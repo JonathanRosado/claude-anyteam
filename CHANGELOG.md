@@ -2,6 +2,50 @@
 
 All notable changes to claude-anyteam are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.4] — 2026-05-05
+
+**Cross-backend access to Claude Code skills.** Routed teammates (codex-*, gemini-*, kimi-*) can now seamlessly discover and follow Claude Code skills at `skills/<name>/SKILL.md` without any special instruction in the user's task. The first non-Claude backend that meets the user's request — "write me a cold email," "audit my SEO," "rewrite my hero copy" — fetches the relevant skill body via the wrapper-MCP and follows the prose verbatim. Empirically validated across 4 diverse domain tasks (marketing-ideas, cold-email, seo, copywriting) with codex-app-server backend; 4/4 hit rate.
+
+### Added
+
+- **`mcp_anyteam_list_skills`** and **`mcp_anyteam_invoke_skill`** wrapper-MCP tools (`src/claude_anyteam/wrapper_server.py`) backed by a shared discovery cache. `list_skills` returns metadata only; `invoke_skill(name)` returns the SKILL.md body verbatim in a typed envelope (`{skill_name, body, source_path}`) or `{error: "skill_not_found", skill_name}` on miss. The wrapper does not interpret or rewrite skill prose — backends interpret natively (§1 harness preservation).
+- **Shared `skill_discovery` module** (`src/claude_anyteam/skill_discovery.py`) — single source of truth for scanning in-repo `skills/` plus installed marketplace skills at `~/.claude/plugins/marketplaces/<marketplace>/skills/<name>/SKILL.md`. Frontmatter parsing via simple YAML-ish scalar reader (no YAML dependency). Duplicates handled deterministically (first-write wins; in-repo skills win over marketplace copies of same name).
+- **Skills prompt fragment** (`src/claude_anyteam/skills_fragment.py`) — composes a named `## Available Claude Code skills` block into routed-backend prompts at task-dispatch and prose-turn time. Token-overlap heuristic with stopword filter scores skill relevance to the task text; top 3 matches at score ≥ 2 are inlined as metadata + an explicit `mcp_anyteam_invoke_skill('<name>')` instruction. **No SKILL.md bodies inlined** — bodies fetched only on explicit tool call (§1-safe).
+- Wired the prompt fragment into all routed backend loops (`src/claude_anyteam/loop.py`, `backends/gemini/loop.py`, `backends/kimi/loop.py`) on both task-dispatch AND prose-turn paths so the fragment fires whether the work arrives via task ownership OR inbox prose. Toggleable via `CLAUDE_ANYTEAM_DISABLE_SKILLS_PROMPT_FRAGMENTS=1` for ablation.
+
+### Why both A (MCP tool) and C (prompt fragment) are required
+
+A 5-teammate empirical test (`marketing-skill-test` team) confirmed that **neither A nor C alone is sufficient**:
+
+- **A alone** (C hard-disabled): codex did NOT naturally explore the wrapper's tool surface to discover skills. The teammate produced a generic AI-style cold email with `{{FirstName}}`/`{{Company}}` placeholder template + 15-minute meeting ask — exactly the patterns the cold-email SKILL.md explicitly lists under "What to Avoid." Tool surface alone is invisible to the LLM unless something in the prompt invites discovery.
+- **C alone** (theoretical): C's fragment includes the explicit instruction `call mcp_anyteam_invoke_skill('<name>')`. Without A, that call fails — the teammate sees metadata they can't act on.
+- **A + C together**: 4/4 hit rate across diverse domain tasks. Each codex teammate received the prompt fragment naming the relevant skill, called `mcp_anyteam_invoke_skill('<name>')` with the right name, fetched the body, and produced output that demonstrably followed the SKILL.md.
+
+This empirical evidence overrides the earlier synthesis recommendation that framed A as "core" and C as "optional UX." The honest architecture is: **A and C are two halves of one cohesive cross-backend skill primitive.** Both ship in v1; neither is droppable. PoC B (capability-manifest entry) was empirically never used by either backend in the live test and remains droppable.
+
+### Empirical evidence (live integration test)
+
+5 codex teammates spawned with bare domain tasks on the A+C wrapper. Each teammate's `mcp_anyteam_invoke_skill` calls (extracted from `~/.claude/teams/marketing-skill-test/events/<agent>.jsonl`):
+
+| Teammate | Task | Skill invoked | Match |
+|---|---|---|---|
+| codex-marketer-3 | "What marketing ideas should I try?" | `marketing-ideas` | ✓ |
+| codex-test-cold | "Write a cold outreach email for…" | `cold-email` | ✓ |
+| codex-test-seo | "My SaaS product page isn't ranking on Google…" | `seo` | ✓ |
+| codex-test-copy | "I need help writing the hero section copy…" | `copywriting` | ✓ |
+| codex-test-a-only (C hard-disabled control) | "Write a cold outreach email for…" | (none — A alone insufficient) | ✗ (control) |
+
+### Notes on the discovery flow
+
+When a routed teammate is dispatched a task or receives a prose message, the wrapper:
+
+1. Calls `discover_skills()` (cached at startup; 66 skills discovered on a host with the typical claude-anyteam + marketing-skills + SEO marketplaces installed).
+2. Scores each skill against the task text via token overlap + name-mention boost.
+3. If any skill scores ≥ 2, composes a `## Available Claude Code skills` fragment with up to 3 top matches: name, description, when_to_use, source_path, and the explicit `mcp_anyteam_invoke_skill('<name>')` call.
+4. Prepends the fragment to the existing peer-prompt-fragments before the routed backend invokes its model.
+
+The teammate's LLM sees the fragment, identifies the right skill, calls the MCP tool, and follows the SKILL.md body. End-to-end discovery + use, no manual instruction needed.
+
 ## [0.8.3] — 2026-05-04
 
 ### Added

@@ -63,6 +63,8 @@ from .messages import (
     is_token_shaped_reason,
     parse_protocol_text,
 )
+from .skill_discovery import decode_bytes as _decode_bytes
+from .skill_discovery import discover_skills as _discover_skills
 from . import protocol_io
 from .wrapper_mcp_diagnostics import append_wrapper_mcp_diagnostic
 from claude_teams import messaging as _cs_messaging  # type: ignore[import-untyped]
@@ -148,6 +150,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "task_list",
     "read_config",
     "mcp_anyteam_capability_manifest",
+    "mcp_anyteam_list_skills",
+    "mcp_anyteam_invoke_skill",
     "mcp_anyteam_shell",
     "mcp_anyteam_read_file",
     "mcp_anyteam_write_file",
@@ -307,6 +311,8 @@ TEAM_TOOLS: frozenset[str] = frozenset(
         "task_list",
         "read_config",
         "mcp_anyteam_capability_manifest",
+        "mcp_anyteam_list_skills",
+        "mcp_anyteam_invoke_skill",
     }
 )
 
@@ -428,7 +434,6 @@ def _cwd_scope(argv: list[str] | None = None) -> Path:
     return Path(str(raw)).expanduser().resolve()
 
 
-
 def _registered_tool_names(mcp: FastMCP) -> list[str]:
     """Best-effort snapshot of FastMCP's local registered tool names."""
 
@@ -460,18 +465,6 @@ def _tool_snapshot_payload(tools: list[str] | tuple[str, ...]) -> dict[str, Any]
         "task_update_registered": "task_update" in observed,
         "read_config_registered": "read_config" in observed,
     }
-
-
-
-def _decode_bytes(data: bytes) -> tuple[str, str]:
-    """Decode arbitrary file/HTTP bytes without raising on bad text."""
-    for encoding in ("utf-8", "utf-16"):
-        try:
-            return data.decode(encoding), encoding
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace"), "utf-8-replacement"
-
 
 def _entry_for(path: Path, *, base: Path | None = None) -> dict[str, Any]:
     try:
@@ -608,6 +601,8 @@ def _tool_target(tool_name: str, bound_args: dict[str, Any]) -> str | None:
         if bound_args.get("capability") is not None:
             target += f" capability={bound_args.get('capability')!r}"
         return target
+    if tool_name == "mcp_anyteam_invoke_skill":
+        return f"skill_name={bound_args.get('skill_name')!r}"
     if tool_name == "mcp_anyteam_shell":
         return _preview(bound_args.get("command"), limit=240)
     if tool_name in {
@@ -669,7 +664,16 @@ def _result_indicates_failure(tool_name: str, result: Any) -> bool:
     # backend to inspect instead of raising on non-zero exit. R18 still treats
     # that as a failed wrapper-tool invocation for lead visibility.
     exit_code = _result_exit_code(result)
-    return tool_name == "mcp_anyteam_shell" and exit_code not in (None, 0)
+    if tool_name == "mcp_anyteam_shell" and exit_code not in (None, 0):
+        return True
+    # mcp_anyteam_invoke_skill returns ``{"error": "skill_not_found", ...}`` on
+    # miss instead of raising — surface that as a typed event-level failure so
+    # peer/lead visibility reflects it (§2 visibility parity).
+    if tool_name == "mcp_anyteam_invoke_skill" and isinstance(result, dict):
+        err = result.get("error")
+        if isinstance(err, str) and err:
+            return True
+    return False
 
 
 def _tool_result_payload(result: Any) -> dict[str, Any]:
@@ -687,6 +691,7 @@ def _tool_result_payload(result: Any) -> dict[str, Any]:
             ("chars_written", "chars_written"),
             ("replacements", "replacements"),
             ("status", "http_status"),
+            ("error", "error"),
         ):
             value = result.get(source_key)
             if value not in (None, ""):
@@ -799,6 +804,14 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
         root=_cs_teams.TEAMS_DIR,
     )
     manifest_cache.load_startup()
+    skill_cache = _discover_skills()
+    _log_mcp_diag(
+        "skills_discovered",
+        {
+            "skill_count": len(skill_cache),
+            "skills": sorted(skill_cache),
+        },
+    )
 
     visibility_seq = 0
     wrapper_turn_id = f"wrapper-{os.getpid()}"
@@ -892,6 +905,12 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
                 payload["recipient"] = recipient
                 payload["to"] = recipient
                 payload["target"] = f"to={recipient!r}"
+        if tool_name == "mcp_anyteam_invoke_skill":
+            # Typed event field so peer/lead audit can pivot on skill_name
+            # without parsing the formatted ``target`` string (§2).
+            skill_name_arg = (tool_args or {}).get("skill_name")
+            if skill_name_arg not in (None, ""):
+                payload["skill_name"] = str(skill_name_arg)
         if started_at is not None:
             payload["duration_ms"] = max(0, int((time.monotonic() - started_at) * 1000))
         if phase == "started":
@@ -1250,6 +1269,76 @@ def build_server(argv: list[str] | None = None) -> FastMCP:
             )
         _record_manifest_query(agent_name)
         return entry
+
+    @register_mcp_tool
+    @instrumented_tool(category="team_tool")
+    def mcp_anyteam_list_skills() -> list[dict[str, Any]]:
+        """List every Claude Code skill installed on this host that this teammate can follow.
+
+        **Call this when**: the user asks for a deliverable that domain expertise
+        could help with (marketing copy, SEO, cold email, design review, code
+        review, observability diagnosis, etc.) AND you don't already see a
+        ``## Available Claude Code skills`` section in your context describing a
+        specific match. The host keeps a curated set of skills (often dozens) —
+        marketing, growth, SEO, copywriting, sales enablement, product research,
+        etc. — that encode opinionated playbooks. Listing them is cheap; the
+        result is a small array of metadata, not skill bodies.
+
+        Each entry is ``{name, description, when_to_use, source_path}``. To
+        actually follow a skill, call ``mcp_anyteam_invoke_skill('<name>')``
+        with the name from this list to fetch its full markdown body, then
+        follow the instructions in the returned text. Skill bodies are NOT
+        included here to keep the discovery call cheap.
+        """
+
+        return [
+            {
+                "name": record["name"],
+                "description": record.get("description"),
+                "when_to_use": record.get("when_to_use"),
+                "source_path": record["source_path"],
+            }
+            for record in sorted(
+                skill_cache.values(),
+                key=lambda item: str(item.get("name", "")),
+            )
+        ]
+
+    @register_mcp_tool
+    @instrumented_tool(category="team_tool")
+    def mcp_anyteam_invoke_skill(
+        skill_name: str,
+        request_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one Claude Code skill's full markdown body for you to follow.
+
+        **Call this when**: ``mcp_anyteam_list_skills`` (or a ``## Available
+        Claude Code skills`` fragment in your prompt) named a skill that fits
+        the user's task. The skill body contains opinionated, vetted
+        instructions written by humans — read it carefully and follow it,
+        treating the prose as your operating instructions for this task.
+
+        Returns ``{skill_name, body, source_path}`` on success, or
+        ``{error: "skill_not_found", skill_name}`` if the name does not match a
+        discovered skill. The wrapper returns the markdown verbatim and does
+        not translate, flatten, or rewrite the body — your model interprets it
+        natively. ``request_body`` is accepted for future templating
+        experiments and is currently inert.
+        """
+
+        _ = request_body
+        requested = skill_name.strip()
+        record = skill_cache.get(requested)
+        if record is None:
+            return {
+                "error": "skill_not_found",
+                "skill_name": requested,
+            }
+        return {
+            "skill_name": record["name"],
+            "body": record["body"],
+            "source_path": record["source_path"],
+        }
 
     @register_mcp_tool
     @instrumented_tool(category="team_tool")

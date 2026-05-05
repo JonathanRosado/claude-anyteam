@@ -25,6 +25,10 @@ from claude_anyteam.capabilities import (
 from claude_anyteam.messages import CapabilityManifestUpdatedIn, PlanApprovalRequestIn, ShutdownRequestIn, SteerIn, parse_protocol_text
 from claude_anyteam.registration import BackendMetadata, deregister, register
 from claude_anyteam.schema_validation import inline_schema_prompt_fragment, load_schema
+from claude_anyteam.skills_fragment import (
+    compose_project_skills_fragment,
+    task_text_for_skill_match,
+)
 from claude_anyteam.watch_inbox import WatchInbox, adaptive_wait_s
 
 from . import invoke as headless_invoke, prompts
@@ -413,6 +417,22 @@ def _peer_prompt_fragments(state: KimiLoopState) -> str:
     except Exception as e:
         logger.warn("kimi.capability_manifest.peer_prompt_fragments_fail", error=str(e))
         return ""
+
+
+def _task_prompt_fragments(state: KimiLoopState, task: Any) -> str:
+    parts = [_peer_prompt_fragments(state)]
+    if os.environ.get("CLAUDE_ANYTEAM_DISABLE_SKILLS_PROMPT_FRAGMENTS") != "1":
+        try:
+            skill_fragment = compose_project_skills_fragment(
+                task_text_for_skill_match(task),
+                cwd=state.settings.cwd,
+            )
+        except Exception as e:
+            logger.warn("kimi.skills_fragment.compose_fail", error=str(e))
+            skill_fragment = None
+        if skill_fragment:
+            parts.append(skill_fragment)
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
 
 MAX_STEER_PREFIX_CHARS = 8192
@@ -904,7 +924,7 @@ def _execute_task(state: KimiLoopState, task) -> None:
             task,
             agent_name=s.agent_name,
             team_name=s.team_name,
-            peer_prompt_fragments=_peer_prompt_fragments(state),
+            peer_prompt_fragments=_task_prompt_fragments(state, task),
         )
         steer_prefix = _steer_prefix_for_task(state, task) if attempt == 1 else ""
         if steer_prefix:

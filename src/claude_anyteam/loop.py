@@ -49,6 +49,10 @@ from .messages import (
     parse_protocol_text,
 )
 from .registration import BackendMetadata, deregister, register
+from .skills_fragment import (
+    compose_project_skills_fragment,
+    task_text_for_skill_match,
+)
 from .watch_inbox import WatchInbox, adaptive_wait_s
 
 
@@ -440,6 +444,38 @@ def _peer_prompt_fragments(state: LoopState) -> str:
         return ""
 
 
+def _task_prompt_fragments(state: LoopState, task: Any) -> str:
+    """Return all metadata prompt fragments for a task dispatch OR prose turn.
+
+    R14 peer-capability fragments describe peer harness capabilities. PoC C
+    layers Claude Code skill metadata into the same prompt-fragment channel for
+    non-Claude routed teammates: metadata only, body path only, no skill-body
+    flattening or wrapper-side interpretation.
+
+    Accepts either a task-shaped object (subject + description) OR a plain
+    string (the prose body or initial spawn prompt). The function extracts a
+    text blob via ``task_text_for_skill_match`` and uses it to score skill
+    relevance. This means inbox-prose and first-turn spawn prompts get the
+    skill fragment too — a non-Claude teammate seeing only their initial task
+    is informed about relevant skills the same way they would be on a
+    task-dispatch turn.
+    """
+
+    parts = [_peer_prompt_fragments(state)]
+    if os.environ.get("CLAUDE_ANYTEAM_DISABLE_SKILLS_PROMPT_FRAGMENTS") != "1":
+        try:
+            skill_fragment = compose_project_skills_fragment(
+                task_text_for_skill_match(task),
+                cwd=state.settings.cwd,
+            )
+        except Exception as e:
+            logger.warn("skills_fragment.compose_fail", error=str(e))
+            skill_fragment = None
+        if skill_fragment:
+            parts.append(skill_fragment)
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
 def _prose_visibility_event_sink(state: LoopState):
     """Build a §2-fix event sink for ephemeral prose-time Codex invocations.
 
@@ -780,7 +816,7 @@ def _handle_prose(state: LoopState, msg: Any) -> None:
         body=msg.text,
         agent_name=s.agent_name,
         team_name=s.team_name,
-        peer_prompt_fragments=_peer_prompt_fragments(state),
+        peer_prompt_fragments=_task_prompt_fragments(state, msg.text),
     )
 
     reply: str | None = None
@@ -911,7 +947,12 @@ def _handle_prose_batch(state: LoopState, messages: list[Any]) -> None:
     body_blocks = "\n\n".join(
         f"[from {getattr(m, 'from_', 'unknown')}]: {m.text}" for m in messages
     )
-    peer_section = _peer_prompt_fragments(state)
+    # Use the same task-prompt-fragment composer the task-dispatch path uses,
+    # passing the concatenated message bodies so skill relevance scoring sees
+    # the user-intent text (not just peer capability metadata). Without this,
+    # batched inbox prose-turns are deprived of the Claude Code skill fragment
+    # and the teammate has no signal that relevant skills exist.
+    peer_section = _task_prompt_fragments(state, body_blocks)
     peer_tail = f"{peer_section}\n\n" if peer_section else ""
     prompt = (
         f"You are {s.agent_name}, a Codex teammate on the {s.team_name} team. "
@@ -1444,7 +1485,7 @@ def _invoke_codex_for_task(state: LoopState, task):
             task,
             agent_name=s.agent_name,
             team_name=s.team_name,
-            peer_prompt_fragments=_peer_prompt_fragments(state),
+            peer_prompt_fragments=_task_prompt_fragments(state, task),
         )
         try:
             return _execute_task_app_server(state, task, prompt)
@@ -1462,7 +1503,7 @@ def _invoke_codex_for_task(state: LoopState, task):
                 task,
                 agent_name=s.agent_name,
                 team_name=s.team_name,
-                peer_prompt_fragments=_peer_prompt_fragments(state),
+                peer_prompt_fragments=_task_prompt_fragments(state, task),
             ) + "\n\n# Output contract (v7.2 resume)\n" + inline
             if attempt == 2:
                 prompt += (
@@ -1545,7 +1586,7 @@ def _invoke_codex_for_task(state: LoopState, task):
         task,
         agent_name=s.agent_name,
         team_name=s.team_name,
-        peer_prompt_fragments=_peer_prompt_fragments(state),
+        peer_prompt_fragments=_task_prompt_fragments(state, task),
     )
     try:
         return codex_mod.run(

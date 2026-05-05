@@ -256,8 +256,8 @@ def test_exposed_and_blocked_do_not_overlap():
 
 
 def test_exposed_count_includes_protocol_shadow_and_manifest_tools(identity):
-    """Canary: seventeen tools is intentional: checkpointing plus protocol/shadow tools."""
-    assert len(_advertised_tool_names()) == 17
+    """Canary: nineteen tools is intentional: checkpointing plus protocol/shadow/skill tools."""
+    assert len(_advertised_tool_names()) == 19
 
 
 def test_every_exposed_tool_has_visibility_category():
@@ -361,6 +361,8 @@ def test_exposed_tools_covers_cs50victor_safe_subset():
     assert "task_list" in EXPOSED_TOOLS
     assert "read_config" in EXPOSED_TOOLS
     assert "mcp_anyteam_capability_manifest" in EXPOSED_TOOLS
+    assert "mcp_anyteam_list_skills" in EXPOSED_TOOLS
+    assert "mcp_anyteam_invoke_skill" in EXPOSED_TOOLS
     assert "mcp_anyteam_shell" in EXPOSED_TOOLS
     assert "mcp_anyteam_read_file" in EXPOSED_TOOLS
     assert "mcp_anyteam_write_file" in EXPOSED_TOOLS
