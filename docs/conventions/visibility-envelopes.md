@@ -148,10 +148,18 @@ choices get flagged in review.
 
 ---
 
-## 4. Four-fold configuration surface (PR #51 §5.6 lock-step)
+## 4. Configuration surface — two knob classes, two checklists
 
-Every new tunable that governs a visibility envelope's behavior gets
-**four configuration surfaces in lock-step**:
+Not every tunable needs every surface. There are **two classes of
+config knob** in this codebase, and they have different requirements.
+Decide which class your tunable falls into before adding surfaces.
+
+### 4.a Per-teammate behavioral knobs (full four-fold surface)
+
+Tunables that can reasonably differ **per teammate** within a single
+team — turn budgets, non-progress thresholds, discriminator windows
+that the lead might want to set tighter for one routed teammate than
+another. These get the full four-fold surface in lock-step:
 
 | Surface | Example (from `wrapper_tool_failure_window_s`) |
 | --- | --- |
@@ -160,28 +168,78 @@ Every new tunable that governs a visibility envelope's behavior gets
 | **`agents/<name>.json` key** | `wrapper_tool_failure_window_s` |
 | **Capability-manifest field** (when backend-specific) | n/a for wrapper-side primitives; reuse existing fields like `working_on_compliance` for backend-declared variants |
 
-**Naming convention** (RFC §5.6):
+**Examples in this class:** `turn_timeout_s`, `non_progress_warn_s`,
+`non_progress_interrupt_s`, `wrapper_tool_failure_window_s`.
+Per-teammate overrides are the whole point — a `codex-implementer`
+running long Codex turns wants a different `turn_timeout_s` than a
+`codex-reviewer` doing quick reviews.
 
-- CLI flag is `--<knob-name>-s` (terminal `-s` indicates seconds; matches
-  `--turn-timeout-s`, `--non-progress-warn-s`).
+### 4.b Wrapper-process-wide mitigation knobs (env-var-only acceptable)
+
+Tunables that govern **wrapper-side mitigation policy** the operator
+sets globally for their installation — sqlite WAL thresholds,
+checkpoint enable/disable flags, app-server initialize budgets. These
+typically have one correct value per host (the operator's tolerance
+for bloat, the cold-start budget the operator's hardware supports);
+varying them per-teammate would be operator confusion, not flexibility.
+
+For this class, **env-var-only is acceptable** (with `env.py`
+registration still required). CLI flag and `agents/<name>.json` key
+are optional and should be skipped unless there's a concrete reason
+to vary per spawn.
+
+**Examples in this class:**
+- `CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_TIMEOUT_S` — env-only since
+  PR #42; matches the operator's tolerance for cold-start latency,
+  not a per-teammate tuning surface.
+- `CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_PROGRESS_INTERVAL_S` —
+  env-only; cadence of progress events is a host-wide observability
+  preference.
+- `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES`,
+  `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT`,
+  `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S` — env-only
+  since PR #65; the WAL bloat threshold and checkpoint policy belong
+  to the operator's Codex install, not a per-teammate decision.
+
+### Decide which class you're in — a one-question test
+
+Ask: **"Would a single team realistically want different values for
+this knob across two of its teammates?"**
+
+- **Yes** → class 4.a, full four-fold surface in lock-step.
+- **No** → class 4.b, env-var-only is acceptable; `env.py`
+  registration is still required either way.
+
+If unsure, default to 4.a — adding surfaces later is harder than
+trimming unused ones, and per-teammate overrides are forward-compatible
+even when no one is using them.
+
+### Naming convention (both classes — RFC §5.6)
+
+- CLI flag (class 4.a only) is `--<knob-name>-s` (terminal `-s`
+  indicates seconds; matches `--turn-timeout-s`,
+  `--non-progress-warn-s`).
 - Env var prefix is always `CLAUDE_ANYTEAM_*` (the rebrand preserves
   `CODEX_TEAMMATE_*` as a fallback for legacy installs — see
   `env.py` — but new vars do NOT need a legacy alias).
-- JSON key is the env var name minus the prefix, lowercased with
-  underscores.
-- Env var name is registered as a module-level constant in
-  `src/claude_anyteam/env.py`, not inline in the caller. **S3 from
-  PR-#54 review** caught the inverse: `codex_log_bloat.py` defined
-  three new env var names as local constants, which made them
-  invisible to anyone reading `env.py` for the catalog of tunables.
-  Move them all to `env.py`.
+- JSON key (class 4.a only) is the env var name minus the prefix,
+  lowercased with underscores.
+- Env var name **must** be registered as a module-level constant in
+  `src/claude_anyteam/env.py` (both classes), not inline in the
+  caller. **S3 from PR-#54 review** caught the inverse:
+  `codex_log_bloat.py` defined three new env var names as local
+  constants, which made them invisible to anyone reading `env.py`
+  for the catalog of tunables. Move them all to `env.py`. **PR #65
+  closed that gap** for the WAL-bloat env vars; the pattern is the
+  precedent for class 4.b.
 
-**Cross-reference:** when adding a new tunable, also add it to the
-RFC's existing-knobs table (`docs/design/timers-vs-visibility.md`
-§5.6) so the inventory stays current. If your tunable doesn't apply
-to a particular surface (e.g. a wrapper-side primitive with no
-backend declaration), put `n/a` in that cell rather than omitting it
-— absence is ambiguous, `n/a` is explicit.
+**Cross-reference:** when adding a class-4.a tunable, also add it to
+the RFC's existing-knobs table
+(`docs/design/timers-vs-visibility.md` §5.6) so the inventory stays
+current. Class-4.b tunables don't need to appear in §5.6 (the RFC's
+scope is per-teammate behavioral knobs), but they MUST be documented
+in the `CHANGELOG.md` `## [Unreleased]` entry with their default and
+range — operators read the changelog to learn what they can set.
 
 ---
 
@@ -315,10 +373,14 @@ confirm each line below applies (or has a one-line reason it doesn't):
       informational AND the downstream recovery is reliable. Every
       `mailbox=False` deserves a one-line code comment naming the
       downstream lead-facing surface.
-- [ ] **Four-fold config surface** — every new tunable has a CLI flag
-      + env var (registered in `env.py`, not inline in the caller) +
-      `agents/<name>.json` key + capability-manifest field where
-      applicable. Naming convention from RFC §5.6.
+- [ ] **Config surface — decide the knob class first.** Per-teammate
+      behavioral knobs (class 4.a) get the full four-fold surface
+      (CLI flag + env var + `agents/<name>.json` key +
+      capability-manifest field where applicable). Wrapper-process-wide
+      mitigation knobs (class 4.b — e.g. `APP_SERVER_INITIALIZE_TIMEOUT_ENV`,
+      WAL bloat thresholds) get env-var-only and that's fine. Either
+      way: env var name **must** live in `src/claude_anyteam/env.py`,
+      not inline in the caller.
 - [ ] **Range validation** — bilateral lower AND upper bounds,
       explicit `ValueError`, no `max(min(...))` clamping. Empirical
       or doctrinal grounding in the docstring / RFC.
@@ -366,6 +428,16 @@ context for *why* a convention exists, not just *what* it is:
   teardown-class envelopes diverge from turn-class envelopes (they
   often justify `mailbox=False` because the lead initiated the
   action).
+- **PR #65 / #54 follow-up** — empirically validated the §4 split
+  between class 4.a (per-teammate behavioral knobs, full four-fold
+  surface) and class 4.b (wrapper-process-wide mitigation knobs,
+  env-var-only acceptable). The three WAL-bloat env vars
+  (`*_WARN_THRESHOLD_BYTES`, `*_CHECKPOINT`,
+  `*_CHECKPOINT_TIMEOUT_S`) landed env-only with `env.py`
+  registration; the initial draft of this doc treated all four
+  surfaces as mandatory, but the `APP_SERVER_INITIALIZE_TIMEOUT_ENV`
+  precedent and PR #65's clean implementation made the distinction
+  explicit.
 
 ---
 
