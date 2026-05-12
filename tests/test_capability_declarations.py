@@ -47,6 +47,7 @@ def test_codex_app_server_backend_metadata_declares_expected_capabilities(tmp_pa
     assert "accepts_peer_steer" not in metadata.capabilities
     assert "plan_mode" in metadata.capabilities
     assert "soft_non_progress_watchdog" in metadata.capabilities
+    assert "wrapper_tool_failure_discriminator" in metadata.capabilities
     assert metadata.coupling_regime == "tight"
     assert metadata.capability_manifest["turn_steer"]["authorization"] == "lead_only"
     assert metadata.capability_manifest["turn_steer"]["callable_from_peers"] is False
@@ -56,6 +57,17 @@ def test_codex_app_server_backend_metadata_declares_expected_capabilities(tmp_pa
     # (default None) — see docs/design/timers-vs-visibility.md.
     assert watchdog["schema"]["properties"]["non_progress_warn_s"]["default"] is None
     assert watchdog["schema"]["properties"]["non_progress_warn_s"]["maximum"] == 1800
+    discriminator = metadata.capability_manifest[
+        "wrapper_tool_failure_discriminator"
+    ]
+    assert discriminator["callable_from_peers"] is False
+    assert (
+        discriminator["schema"]["properties"]["wrapper_tool_failure_window_s"][
+            "default"
+        ]
+        == 90
+    )
+    assert discriminator["schema"]["properties"]["debounce_key"]["const"] == "tool_name"
 
 
 def test_codex_app_server_metadata_advertises_native_host_tools_inventory(tmp_path: Path):
@@ -102,6 +114,7 @@ def test_codex_exec_backend_metadata_declares_headless_capabilities(tmp_path: Pa
     assert "structured_output" in metadata.capabilities
     assert "plan_mode" in metadata.capabilities
     assert "soft_non_progress_watchdog" not in metadata.capabilities
+    assert "wrapper_tool_failure_discriminator" not in metadata.capabilities
 
 
 def test_gemini_acp_backend_metadata_accepts_peer_steer(tmp_path: Path):

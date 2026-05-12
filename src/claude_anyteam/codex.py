@@ -56,6 +56,11 @@ from .codex_log_bloat import (
 from .headless_visibility import HeadlessTurnVisibility, coerce_stream_text
 from .messages import VisibilityEvent
 from .prompts import TEAM_MESSAGING_BLOCK
+from .wrapper_tool_failure import (
+    WRAPPER_TOOL_RECOVERY_EVENT_KINDS,
+    is_wrapper_tool_recovery_event_kind,
+    visibility_event_counts_as_wrapper_tool_recovery,
+)
 from .wrapper_mcp_diagnostics import append_wrapper_mcp_diagnostic
 
 # R1 (09 §3.1): schema files are versioned wire
@@ -141,11 +146,6 @@ _WRAPPER_EXPECTED_TOOL_NAMES = (
 # mcp_anyteam_read_file ENOENT) participate in the same recovery logic as
 # core team tools.
 _WRAPPER_TOOL_NAMES = frozenset(_WRAPPER_EXPECTED_TOOL_NAMES)
-
-_WRAPPER_TOOL_RECOVERY_EVENT_KINDS = frozenset(
-    {"turn_progress", "tool_event", "artifact_event"}
-)
-
 
 @dataclass
 class _PendingWrapperToolFailure:
@@ -1646,6 +1646,7 @@ def app_server_invoke(
     turn_started_at: float | None = None
     visibility_seq = 0
     pending_wrapper_tool_failures: list[_PendingWrapperToolFailure] = []
+    emitted_unrecovered_wrapper_tools: set[str] = set()
 
     def _emit_visibility_event(
         *,
@@ -1680,7 +1681,7 @@ def app_server_invoke(
                 "payload": payload,
             }
         )
-        if event.kind in _WRAPPER_TOOL_RECOVERY_EVENT_KINDS:
+        if visibility_event_counts_as_wrapper_tool_recovery(event):
             recovered_at = time.monotonic()
             for pending in pending_wrapper_tool_failures:
                 if (
@@ -1798,7 +1799,7 @@ def app_server_invoke(
                 payload=checkpoint_payload,
             )
 
-    def _record(ev: dict[str, Any]) -> None:
+    def _record(ev: dict[str, Any]) -> VisibilityEvent | None:
         nonlocal tool_call_events
         events.append(ev)
         method = str(ev.get("method", ""))
@@ -1825,7 +1826,7 @@ def app_server_invoke(
             )
             if _is_failed_wrapper_tool_event(visibility_event):
                 if visibility_event is None:
-                    return
+                    return None
                 pending_wrapper_tool_failures.append(
                     _PendingWrapperToolFailure(
                         failed_event_id=visibility_event.event_id,
@@ -1841,6 +1842,8 @@ def app_server_invoke(
                         turn_id=visibility_event.turn_id,
                     )
                 )
+            return visibility_event
+        return None
 
     # MCP config for the wrapper — same shape as the exec path, injected via
     # Codex's config override mechanism on thread start. App Server accepts
@@ -2052,14 +2055,41 @@ def app_server_invoke(
             """
 
             for pending in pending_wrapper_tool_failures:
+                if pending.tool_name in emitted_unrecovered_wrapper_tools:
+                    pending.emitted = True
+                    continue
+                later_same_tool = [
+                    candidate
+                    for candidate in pending_wrapper_tool_failures
+                    if (
+                        candidate.tool_name == pending.tool_name
+                        and candidate.failed_event_seq > pending.failed_event_seq
+                        and candidate.recovered_at_monotonic is None
+                        and not candidate.emitted
+                    )
+                ]
                 if (
                     pending.emitted
                     or pending.recovered_at_monotonic is not None
+                    or later_same_tool
                     or (now - pending.failed_at_monotonic)
                     < wrapper_tool_failure_window_s
                 ):
                     continue
+                suppressed_same_tool = [
+                    candidate
+                    for candidate in pending_wrapper_tool_failures
+                    if (
+                        candidate.tool_name == pending.tool_name
+                        and candidate.failed_event_seq < pending.failed_event_seq
+                        and candidate.recovered_at_monotonic is None
+                        and not candidate.emitted
+                    )
+                ]
+                for candidate in suppressed_same_tool:
+                    candidate.emitted = True
                 pending.emitted = True
+                emitted_unrecovered_wrapper_tools.add(pending.tool_name)
                 silence_window_ms = int(wrapper_tool_failure_window_s * 1000)
                 payload: dict[str, Any] = {
                     "tool_name": pending.tool_name,
@@ -2073,6 +2103,11 @@ def app_server_invoke(
                     ),
                     "silence_window_ms": silence_window_ms,
                     "recovery_hint_dispatched": False,
+                    "recovery_event_kinds": sorted(
+                        WRAPPER_TOOL_RECOVERY_EVENT_KINDS
+                    ),
+                    "debounced_by": "tool_name",
+                    "suppressed_same_tool_failures": len(suppressed_same_tool),
                 }
                 payload = {k: v for k, v in payload.items() if v is not None}
                 _emit_visibility_event(
@@ -2527,7 +2562,7 @@ def app_server_invoke(
                             done = True
                             break
                 continue
-            _record(notif)
+            visibility_event = _record(notif)
             method = str(notif.get("method", ""))
             params = notif.get("params", {}) if isinstance(notif.get("params"), dict) else {}
             item = params.get("item") if isinstance(params, dict) else None
@@ -2541,7 +2576,15 @@ def app_server_invoke(
 
             # Watchdog progress signal: any tool_call_event delta or any
             # agentMessage byte-length delta counts as observable progress.
-            if tool_call_events > last_tool_count or len(last_message) > last_message_len:
+            # Wrapper-tool failure recovery uses the same visibility-kind
+            # helper so future recovery kinds cannot drift from this
+            # predicate.
+            tool_call_delta = tool_call_events > last_tool_count
+            agent_message_delta = len(last_message) > last_message_len
+            visibility_kind_delta = is_wrapper_tool_recovery_event_kind(
+                visibility_event.kind if visibility_event is not None else None
+            )
+            if tool_call_delta or agent_message_delta or visibility_kind_delta:
                 last_progress_at = time.monotonic()
                 last_tool_count = tool_call_events
                 last_message_len = len(last_message)

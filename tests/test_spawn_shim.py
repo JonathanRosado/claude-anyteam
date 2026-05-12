@@ -509,6 +509,8 @@ def test_routed_prefix_without_agent_config_soft_refuses(monkeypatch, tmp_path, 
     assert log["override_env"] == "CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX"
 
 
+# Former ``test_agent_config_missing_file_is_noop`` coverage lives in the
+# soft-refuse + explicit-override pair: missing configs are no longer a no-op.
 def test_bare_prefix_override_allows_dispatch_without_config(monkeypatch, tmp_path, capsys):
     calls = _record_execv(monkeypatch)
     _clear_binary_env(monkeypatch)
@@ -542,7 +544,18 @@ def test_bare_prefix_override_allows_dispatch_without_config(monkeypatch, tmp_pa
             ["/usr/local/bin/claude-anyteam", "--name", "codex-ghost", "--team", "t"],
         )
     ]
-    assert json.loads(capsys.readouterr().err)["route"] == "codex"
+    stderr_lines = capsys.readouterr().err.strip().splitlines()
+    assert [json.loads(line)["event"] for line in stderr_lines] == [
+        "spawn_shim.bare_prefix_allowed_via_override",
+        "spawn_shim.dispatch",
+    ]
+    override = json.loads(stderr_lines[0])
+    assert override["route"] == "codex"
+    assert override["agent_name"] == "codex-ghost"
+    assert override["team_name"] == "t"
+    assert override["config_path"].endswith("/.claude/teams/t/agents/codex-ghost.json")
+    assert override["override_env"] == "CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX"
+    assert json.loads(stderr_lines[1])["route"] == "codex"
 
 
 def test_agent_config_malformed_json_is_tolerated(monkeypatch, tmp_path, capsys):

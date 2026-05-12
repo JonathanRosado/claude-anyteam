@@ -115,7 +115,8 @@
           "structured_output",
           "thread_fork",
           "trust_modes",
-          "turn_steer"
+          "turn_steer",
+          "wrapper_tool_failure_discriminator"
         ]
       },
       "additionalProperties": {

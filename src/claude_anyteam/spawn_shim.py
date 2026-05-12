@@ -184,10 +184,38 @@ def _refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int:
     return 2
 
 
+def _emit_bare_prefix_override_event(route: str, parsed: ParsedArgs) -> None:
+    config_path = (
+        _agent_config_path(parsed.team_name, parsed.agent_name)
+        if parsed.team_name and parsed.agent_name
+        else None
+    )
+    message = (
+        f"Allowing bare {route} routed teammate {parsed.agent_name!r} because "
+        f"{ALLOW_BARE_PREFIX_ENV}=1 is set and no per-teammate config file "
+        "was found"
+    )
+    if config_path:
+        message += f" at {config_path}"
+    record: dict[str, object] = {
+        "event": "spawn_shim.bare_prefix_allowed_via_override",
+        "route": route,
+        "agent_name": parsed.agent_name,
+        "team_name": parsed.team_name,
+        "config_path": config_path,
+        "override_env": ALLOW_BARE_PREFIX_ENV,
+        "message": message,
+        "issue": "#48",
+    }
+    sys.stderr.write(json.dumps(record, sort_keys=True) + "\n")
+    sys.stderr.flush()
+
+
 def _maybe_refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int | None:
-    if _env_flag_enabled(ALLOW_BARE_PREFIX_ENV):
-        return None
     if _agent_config_exists(parsed.team_name, parsed.agent_name):
+        return None
+    if _env_flag_enabled(ALLOW_BARE_PREFIX_ENV):
+        _emit_bare_prefix_override_event(route, parsed)
         return None
     return _refuse_bare_routed_prefix(route, parsed)
 

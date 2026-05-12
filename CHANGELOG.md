@@ -4,8 +4,13 @@ All notable changes to claude-anyteam are documented here. Format follows [Keep 
 
 ## [Unreleased]
 
+### Added
+
+- **`wrapper_tool_failure_unrecovered` visibility envelope** (issue #49 / PR #60) surfaces Codex App Server wrapper-MCP tool failures that are not followed by `turn_progress`, `tool_event`, or `artifact_event` recovery activity within the discriminator window. The window is configurable with `--wrapper-tool-failure-window-s`, `CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S`, and the per-teammate agents-file key `wrapper_tool_failure_window_s`.
+
 ### Changed
 
+- **Breaking #48 routed-prefix spawn guard:** spawning a `codex-*`, `gemini-*`, or `kimi-*` teammate without a matching per-teammate agents-file config now exits 2 with `spawn_shim.bare_prefix_refused` instead of silently proceeding to adapter defaults. Set `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1` only when you intentionally want the old bare-prefix default behavior; that override is now audited with `spawn_shim.bare_prefix_allowed_via_override`.
 - **`turn_timeout_s` default bumped 900 → 1800s** (task #5). The prior 900s cap interrupted legitimately long Codex turns (large test suites, multi-file refactors at `xhigh` effort) and was the dominant pain the visibility-driven RFC at `docs/design/timers-vs-visibility.md` (issue #50) was written to address. Cap remains 3600s — no single turn should run longer than an hour. Affects Codex App Server (`turn_timeout_s`), Codex Exec, and `claude-native` (`CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S`). Set `--turn-timeout-s 900` or `CLAUDE_ANYTEAM_TURN_TIMEOUT_S=900` to restore the prior default for any single teammate.
 - **`non_progress_warn_s` default flipped from 300s to None (opt-in)** (task #5 / RFC #50 Phase B). The soft non-progress watchdog now ships disabled by default. Lead reads typed visibility events instead — see `docs/design/timers-vs-visibility.md` for the migration plan and the new envelope taxonomy. Existing users who want the prior behavior set `--non-progress-warn-s 300` or `CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S=300`.
 - **`non_progress_warn_s` range upper bumped 900 → 1800s** so opt-in users can scale the watchdog proportionally to the new `turn_timeout_s` default. Range now `[60, 1800]` when explicitly set.

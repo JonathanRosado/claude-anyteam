@@ -777,6 +777,252 @@ def test_wrapper_tool_failure_recovered_by_later_tool_event_suppresses_signal(
     ]
 
 
+def test_wrapper_tool_failure_recovered_at_window_minus_one_suppresses_signal(
+    monkeypatch,
+):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    clock = Clock()
+    notifications = [
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "task_update",
+                    "status": "failed",
+                    "error": "bad task id",
+                }
+            },
+        },
+        {"__advance__": 89},
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "task_list",
+                    "status": "completed",
+                }
+            },
+        },
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="recover just before the window closes",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    assert not [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+
+
+def test_wrapper_tool_failure_multi_failure_series_emits_one_terminal_envelope(
+    monkeypatch,
+):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    clock = Clock()
+
+    def failed_read(path: str) -> dict:
+        return {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "mcp_anyteam_read_file",
+                    "status": "failed",
+                    "error": f"[Errno 2] No such file or directory: {path!r}",
+                }
+            },
+        }
+
+    notifications = [
+        failed_read("/missing-1"),
+        {"__advance__": 1},
+        failed_read("/missing-2"),
+        {"__advance__": 1},
+        failed_read("/missing-3"),
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="retry missing reads",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    unrecovered = [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+    assert len(unrecovered) == 1
+    failed_tool_events = [
+        e
+        for e in emitted
+        if e.kind == "tool_event" and e.severity == "error"
+    ]
+    assert len(failed_tool_events) == 3
+    assert unrecovered[0].payload["failed_event_seq"] == failed_tool_events[-1].seq
+    assert unrecovered[0].payload["tool_name"] == "mcp_anyteam_read_file"
+
+
+def test_wrapper_tool_failure_retry_loop_debounces_by_tool_name(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    clock = Clock()
+    failed_update = {
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "type": "mcpToolCall",
+                "server": "claude_anyteam_wrapper",
+                "tool": "task_update",
+                "status": "failed",
+                "error": "bad task id",
+            }
+        },
+    }
+    notifications = [
+        failed_update,
+        {"__advance__": 91},
+        failed_update,
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="retry bad task updates",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    unrecovered = [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+    assert len(unrecovered) == 1
+    assert unrecovered[0].payload["tool_name"] == "task_update"
+    assert unrecovered[0].payload["debounced_by"] == "tool_name"
+
+
 
 def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
     events_root: Path,

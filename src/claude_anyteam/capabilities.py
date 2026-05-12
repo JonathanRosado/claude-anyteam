@@ -29,6 +29,7 @@ CAPABILITY_NAMES = frozenset(
         "large_context",
         "accepts_peer_steer",
         "soft_non_progress_watchdog",
+        "wrapper_tool_failure_discriminator",
     }
 )
 
@@ -40,6 +41,7 @@ CODEX_APP_SERVER_CAPABILITIES = [
     "structured_output",
     "plan_mode",
     "soft_non_progress_watchdog",
+    "wrapper_tool_failure_discriminator",
     # Q4 (per opus-arch-impl): Codex App Server is deliberately lead-only
     # for peer steer until the handler and runtime behavior are re-reviewed.
 ]
@@ -106,6 +108,7 @@ _CAPABILITY_DISPLAY_NAMES = {
     "large_context": "large context (`large_context`)",
     "accepts_peer_steer": "peer steer acceptance (`accepts_peer_steer`)",
     "soft_non_progress_watchdog": "soft non-progress watchdog (`soft_non_progress_watchdog`)",
+    "wrapper_tool_failure_discriminator": "wrapper-tool failure discriminator (`wrapper_tool_failure_discriminator`)",
 }
 
 
@@ -302,6 +305,22 @@ CAPABILITY_HOOKS: dict[str, CapabilityRuntimeHook] = {
             "tests/test_app_server_default.py::test_non_progress_env_and_overrides_are_honored",
         ),
         note="Codex App Server turns emit non-progress warnings and optional interrupts.",
+    ),
+    "wrapper_tool_failure_discriminator": CapabilityRuntimeHook(
+        runtime_paths=(
+            "claude_anyteam.codex:app_server_invoke",
+            "claude_anyteam.wrapper_tool_failure:is_wrapper_tool_recovery_event_kind",
+            "claude_anyteam.config:Settings",
+        ),
+        test_paths=(
+            "tests/test_visibility_events.py::test_wrapper_tool_failure_unrecovered_emits_after_quiet_window",
+            "tests/test_visibility_events.py::test_wrapper_tool_failure_multi_failure_series_emits_one_terminal_envelope",
+            "tests/test_app_server_default.py::test_wrapper_tool_failure_window_env_and_overrides_are_honored",
+        ),
+        note=(
+            "Codex App Server emits wrapper_tool_failure_unrecovered after the "
+            "configured discriminator window and debounces same-tool retry loops."
+        ),
     ),
 }
 
@@ -615,6 +634,51 @@ _BASE_CAPABILITY_MANIFEST: dict[str, dict[str, Any]] = {
             "WATCHDOG_WARNING_SENT",
             "WATCHDOG_STEER_FAILED",
             "WATCHDOG_INTERRUPT_SENT",
+        ],
+        "callable_from_peers": False,
+    },
+    "wrapper_tool_failure_discriminator": {
+        "version": "1",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "wrapper_tool_failure_window_s": {
+                    "type": "number",
+                    "default": 90,
+                    "minimum": 60,
+                    "maximum": 300,
+                },
+                "recovery_event_kinds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["turn_progress", "tool_event", "artifact_event"],
+                },
+                "debounce_key": {
+                    "type": "string",
+                    "const": "tool_name",
+                },
+            },
+        },
+        "description": (
+            "Discriminate Codex App Server wrapper-MCP tool failures that are "
+            "not followed by recovery activity within the configured window, "
+            "then emit wrapper_tool_failure_unrecovered as a lead-actionable "
+            "visibility envelope."
+        ),
+        "when_to_use": (
+            "Prefer this teammate for long-running Codex App Server work where "
+            "wrapper MCP failures such as missing files or bad task ids should "
+            "be visible before turn completion."
+        ),
+        "when_not_to": (
+            "Not directly callable by peers. Do not declare it for Codex exec, "
+            "Gemini, or Kimi until those backends expose the same live wrapper "
+            "tool event stream and discriminator window."
+        ),
+        "failure_modes": [
+            "WRAPPER_TOOL_FAILURE_UNRECOVERED",
+            "WRAPPER_TOOL_FAILURE_RECOVERED_BY_PROGRESS",
+            "WRAPPER_TOOL_FAILURE_DEBOUNCED_BY_TOOL_NAME",
         ],
         "callable_from_peers": False,
     },
