@@ -2081,16 +2081,32 @@ def app_server_invoke(
                 if not _app_server_transport_alive(client):
                     _attempt_transport_recovery("notification_transport_closed")
                     continue
-                # No notification this iteration — check the soft watchdog.
-                # Triggers at most once per turn; doesn't kill, just warns
-                # the lead and nudges the model. The optional hard interrupt
-                # is checked separately below and is disabled by default.
+                # No notification this iteration — check the soft watchdog
+                # and (separately) the opt-in hard interrupt.
+                #
                 # Task #5 / RFC #50 Phase B: ``non_progress_warn_s`` is now
-                # opt-in (default None). When None the watchdog is skipped
-                # entirely; lead reads typed visibility events instead.
+                # opt-in (default None). When None the soft watchdog is
+                # skipped entirely; lead reads typed visibility events
+                # instead.
+                #
+                # PR #52 reviewer block: prior to this fix, the interrupt
+                # block required ``non_progress_warned=True``, which is
+                # only ever set inside the warn block — so when a user set
+                # ``non_progress_warn_s=None`` + an explicit
+                # ``non_progress_interrupt_s`` for overnight kills, the
+                # interrupt was silently dead and the teammate ran to the
+                # ``turn_timeout_s`` cap. The two paths are now decoupled:
+                # when warn is None, the interrupt fires when
+                # ``(now - last_progress_at) >= non_progress_interrupt_s``
+                # — i.e. "no observable progress for interrupt_s seconds,"
+                # which is the §7.1 overnight-kill semantic the user wants.
+                # When warn IS set, the original "warn-then-no-recovery"
+                # gate is preserved so users who set both keep the prior
+                # ordering semantics.
                 now = time.monotonic()
+                warn_active = non_progress_warn_s is not None
                 if (
-                    non_progress_warn_s is not None
+                    warn_active
                     and not non_progress_warned
                     and (now - last_progress_at) >= non_progress_warn_s
                 ):
@@ -2149,39 +2165,59 @@ def app_server_invoke(
                     non_progress_warned_at = now
                 elif (
                     non_progress_interrupt_s is not None
-                    and non_progress_warned
                     and not non_progress_interrupted
-                    and non_progress_warned_at is not None
-                    and last_progress_at <= non_progress_warned_at
-                    and (now - turn_started_at) >= non_progress_interrupt_s
                 ):
-                    elapsed_s = now - turn_started_at
-                    non_progress_interrupted = True
-                    logger.warn(
-                        "app_server.non_progress_interrupt",
-                        turn_id=current_turn_id,
-                        elapsed_s=int(elapsed_s),
-                        non_progress_interrupt_s=non_progress_interrupt_s,
-                    )
-                    try:
-                        client.turn_interrupt(
-                            thread_id=thread_id,
-                            turn_id=current_turn_id,
-                        )
-                    except AppServerError as e:
-                        logger.warn(
-                            "app_server.non_progress_interrupt_failed",
-                            turn_id=current_turn_id,
-                            error=str(e),
-                        )
+                    # Decoupled interrupt: two cases.
+                    #
+                    # (a) warn is active — preserve original semantics: the
+                    #     interrupt only fires AFTER the soft watchdog has
+                    #     warned and no later checkpoint was observed, and
+                    #     the total turn elapsed exceeds interrupt_s.
+                    # (b) warn is None — fire when no observable progress
+                    #     for at least interrupt_s seconds. This is the
+                    #     §7.1 overnight-kill semantic when warn=None.
+                    should_interrupt = False
+                    if warn_active:
+                        if (
+                            non_progress_warned
+                            and non_progress_warned_at is not None
+                            and last_progress_at <= non_progress_warned_at
+                            and (now - turn_started_at) >= non_progress_interrupt_s
+                        ):
+                            should_interrupt = True
                     else:
-                        error = (
-                            "app_server turn interrupted after "
-                            f"{int(elapsed_s)}s with no visible checkpoint"
+                        if (now - last_progress_at) >= non_progress_interrupt_s:
+                            should_interrupt = True
+
+                    if should_interrupt:
+                        elapsed_s = now - turn_started_at
+                        non_progress_interrupted = True
+                        logger.warn(
+                            "app_server.non_progress_interrupt",
+                            turn_id=current_turn_id,
+                            elapsed_s=int(elapsed_s),
+                            non_progress_interrupt_s=non_progress_interrupt_s,
+                            warn_active=warn_active,
                         )
-                        exit_code = 124
-                        done = True
-                        break
+                        try:
+                            client.turn_interrupt(
+                                thread_id=thread_id,
+                                turn_id=current_turn_id,
+                            )
+                        except AppServerError as e:
+                            logger.warn(
+                                "app_server.non_progress_interrupt_failed",
+                                turn_id=current_turn_id,
+                                error=str(e),
+                            )
+                        else:
+                            error = (
+                                "app_server turn interrupted after "
+                                f"{int(elapsed_s)}s with no visible checkpoint"
+                            )
+                            exit_code = 124
+                            done = True
+                            break
                 continue
             _record(notif)
             method = str(notif.get("method", ""))
