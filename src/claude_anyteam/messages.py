@@ -284,6 +284,12 @@ KNOWN_TASK_BLOCKED_REASONS: frozenset[str] = frozenset(
         # shutdown burning the budget vs a work-turn timeout uniformly
         # in their dashboard, but with separate filters.
         "app_server_shutdown_timeout",
+        # #49 / RFC §5.1: a wrapper MCP tool failed and no recovery
+        # activity appeared within the configured discriminator window.
+        # This is a lead-action token, not a diagnostics.ERROR_CLASSES entry:
+        # the envelope itself is an in-flight signal rather than a terminal
+        # turn failure.
+        "wrapper_tool_failure_unrecovered",
     }
 )
 
@@ -392,6 +398,11 @@ VisibilityEventKind = Literal[
     # silence; carries ``attempt``, ``elapsed_s``, ``last_observed_pid``,
     # and (Linux only, best-effort) ``last_observed_cpu_pct``.
     "app_server_initialize_progress",
+    # #49 / RFC §5.1: wrapper MCP tool failure followed by no observable
+    # turn_progress/tool_event/artifact_event/agentMessage_delta within W.
+    # This is a top-level signal, not ``visibility_degraded`` and not a
+    # diagnostics.ERROR_CLASSES terminal failure.
+    "wrapper_tool_failure_unrecovered",
 ]
 
 VisibilitySeverity = Literal["debug", "info", "warn", "error"]
@@ -502,6 +513,7 @@ def parse_protocol_text(text: str) -> _Base | None:
         "batch_summary",
         "app_server_initialize_completed",
         "app_server_initialize_progress",
+        "wrapper_tool_failure_unrecovered",
     }:
         return _safe_load(VisibilityEvent, raw)
     return None

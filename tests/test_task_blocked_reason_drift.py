@@ -259,13 +259,20 @@ def test_free_form_prose_reason_is_silent(identity: Path) -> None:
     )
 
 
-def test_registry_includes_both_phase_1_tokens() -> None:
+def test_registry_includes_visibility_action_tokens() -> None:
     """Pin: both #40 Phase 1 tokens are in the registry. If they were
     missing, every legitimate task_blocked emission from the codex loop
     would trigger a drift warn — defeating the §2 invariant.
     """
     assert "app_server_initialize_timeout" in KNOWN_TASK_BLOCKED_REASONS
     assert "app_server_shutdown_timeout" in KNOWN_TASK_BLOCKED_REASONS
+    assert "wrapper_tool_failure_unrecovered" in KNOWN_TASK_BLOCKED_REASONS
+
+
+def test_wrapper_tool_failure_signal_is_not_terminal_error_class() -> None:
+    from claude_anyteam.diagnostics import ERROR_CLASSES
+
+    assert "wrapper_tool_failure_unrecovered" not in ERROR_CLASSES
 
 
 def test_recipient_parses_typed_task_blocked_via_discriminator(

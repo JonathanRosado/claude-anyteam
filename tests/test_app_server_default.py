@@ -45,6 +45,7 @@ def test_default_app_server_is_on():
     assert s.turn_timeout_s == 1800.0
     assert s.non_progress_warn_s is None
     assert s.non_progress_interrupt_s is None
+    assert s.wrapper_tool_failure_window_s == 90.0
 
 
 def test_env_opt_out_honored():
@@ -218,3 +219,37 @@ def test_cli_parses_non_progress_flags():
     )
     assert ns.non_progress_warn_s == 180
     assert ns.non_progress_interrupt_s == 420
+
+
+def test_wrapper_tool_failure_window_env_and_overrides_are_honored():
+    os.environ["CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S"] = "120"
+    try:
+        s = from_env(overrides=_baseline_overrides())
+        assert s.wrapper_tool_failure_window_s == 120.0
+
+        overrides = _baseline_overrides() | {"wrapper_tool_failure_window_s": 240}
+        s = from_env(overrides=overrides)
+        assert s.wrapper_tool_failure_window_s == 240.0
+    finally:
+        del os.environ["CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S"]
+
+
+def test_wrapper_tool_failure_window_range_is_validated():
+    with pytest.raises(ValueError, match="wrapper_tool_failure_window_s"):
+        from_env(overrides=_baseline_overrides() | {"wrapper_tool_failure_window_s": 59})
+    with pytest.raises(ValueError, match="wrapper_tool_failure_window_s"):
+        from_env(overrides=_baseline_overrides() | {"wrapper_tool_failure_window_s": 301})
+
+
+def test_cli_parses_wrapper_tool_failure_window_flag():
+    ns = cli_mod._parse_args(
+        [
+            "--team",
+            "t",
+            "--name",
+            "a",
+            "--wrapper-tool-failure-window-s",
+            "120",
+        ]
+    )
+    assert ns.wrapper_tool_failure_window_s == 120

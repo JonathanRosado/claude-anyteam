@@ -45,6 +45,8 @@ LEGACY_NON_PROGRESS_WARN_ENV = "CODEX_TEAMMATE_NON_PROGRESS_WARN_S"
 NON_PROGRESS_INTERRUPT_ENV = "CLAUDE_ANYTEAM_NON_PROGRESS_INTERRUPT_S"
 LEGACY_NON_PROGRESS_INTERRUPT_ENV = "CODEX_TEAMMATE_NON_PROGRESS_INTERRUPT_S"
 
+WRAPPER_TOOL_FAILURE_WINDOW_ENV = "CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S"
+
 # Codex App Server JSON-RPC ``initialize`` budget (#40 Phase 1).
 # Default 90s — chosen because the only successful empirical sample we
 # have (codex-reviewer turn 1, parking-ack prompt, ~17s) is well under

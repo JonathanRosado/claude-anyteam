@@ -110,6 +110,7 @@ _AGENT_CONFIG_KEYS = (
     "turn_timeout_s",
     "non_progress_warn_s",
     "non_progress_interrupt_s",
+    "wrapper_tool_failure_window_s",
 )
 
 
@@ -358,6 +359,13 @@ def _adapter_argv(
     if include_watchdog and "non_progress_interrupt_s" in agent_config:
         argv.extend(
             ["--non-progress-interrupt-s", agent_config["non_progress_interrupt_s"]]
+        )
+    if include_watchdog and "wrapper_tool_failure_window_s" in agent_config:
+        argv.extend(
+            [
+                "--wrapper-tool-failure-window-s",
+                agent_config["wrapper_tool_failure_window_s"],
+            ]
         )
     return argv, agent_config
 

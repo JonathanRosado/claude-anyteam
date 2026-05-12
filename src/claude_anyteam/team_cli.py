@@ -53,6 +53,7 @@ AGENT_CONFIG_KEYS = (
     "turn_timeout_s",
     "non_progress_warn_s",
     "non_progress_interrupt_s",
+    "wrapper_tool_failure_window_s",
 )
 
 # Default post-spawn agentType for codex-/gemini-/kimi- teammates. The Agent
@@ -177,6 +178,15 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--wrapper-tool-failure-window-s",
+        type=float,
+        help=(
+            "Codex App Server wrapper-tool recovery discriminator window in "
+            "seconds. Range [60, 300], default 90. Forwarded to the adapter "
+            "as --wrapper-tool-failure-window-s."
+        ),
+    )
+    p.add_argument(
         "--remove",
         action="store_true",
         help="Delete the per-teammate config file instead of writing one",
@@ -215,11 +225,13 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         and args.turn_timeout_s is None
         and args.non_progress_warn_s is None
         and args.non_progress_interrupt_s is None
+        and args.wrapper_tool_failure_window_s is None
     ):
         err.write(
             "error: at least one of --model/--effort/--turn-timeout-s/"
-            "--non-progress-warn-s/--non-progress-interrupt-s must be provided "
-            "(or use --remove to delete)\n"
+            "--non-progress-warn-s/--non-progress-interrupt-s/"
+            "--wrapper-tool-failure-window-s must be provided (or use --remove "
+            "to delete)\n"
         )
         return 2
 
@@ -244,6 +256,14 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
             f"got {args.non_progress_interrupt_s}\n"
         )
         return 2
+    if args.wrapper_tool_failure_window_s is not None and not (
+        60.0 <= args.wrapper_tool_failure_window_s <= 300.0
+    ):
+        err.write(
+            "error: --wrapper-tool-failure-window-s must be in [60, 300] "
+            f"seconds, got {args.wrapper_tool_failure_window_s}\n"
+        )
+        return 2
 
     config = _existing_dict(path)
     config = {k: v for k, v in config.items() if k in AGENT_CONFIG_KEYS}
@@ -258,6 +278,10 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         config["non_progress_warn_s"] = args.non_progress_warn_s
     if args.non_progress_interrupt_s is not None:
         config["non_progress_interrupt_s"] = args.non_progress_interrupt_s
+    if args.wrapper_tool_failure_window_s is not None:
+        config["wrapper_tool_failure_window_s"] = (
+            args.wrapper_tool_failure_window_s
+        )
 
     _write_atomic_json(path, config)
 
@@ -412,6 +436,7 @@ class _RosterRow:
     adapter_turn_timeout_s: float | None = None
     adapter_non_progress_warn_s: float | None = None
     adapter_non_progress_interrupt_s: float | None = None
+    adapter_wrapper_tool_failure_window_s: float | None = None
     config_source: str | None = None
     # 09 R11 / 08 §6.3 cheap capability flags; rich Agent Card
     # manifests are intentionally not expanded in the roster table.
@@ -472,6 +497,7 @@ def _roster_rows(cfg: dict[str, object], *, team: str | None = None, resolve: bo
         adapter_turn_timeout_s: float | None = None
         adapter_non_progress_warn_s: float | None = None
         adapter_non_progress_interrupt_s: float | None = None
+        adapter_wrapper_tool_failure_window_s: float | None = None
         config_source: str | None = None
         if resolve and team is not None:
             agent_cfg, source = _read_agent_config(team, name)
@@ -495,6 +521,12 @@ def _roster_rows(cfg: dict[str, object], *, team: str | None = None, resolve: bo
                     adapter_non_progress_interrupt_s = float(npi)
                 except (TypeError, ValueError):
                     adapter_non_progress_interrupt_s = None
+            wtf = agent_cfg.get("wrapper_tool_failure_window_s")
+            if wtf is not None:
+                try:
+                    adapter_wrapper_tool_failure_window_s = float(wtf)
+                except (TypeError, ValueError):
+                    adapter_wrapper_tool_failure_window_s = None
             config_source = source
         capability_version = _manifest_version_for_agent(team, name) if resolve and team is not None else None
         adapter_pid = _latest_wrapper_diag_pid(team, name) if resolve and team is not None else None
@@ -517,6 +549,9 @@ def _roster_rows(cfg: dict[str, object], *, team: str | None = None, resolve: bo
                 adapter_turn_timeout_s=adapter_turn_timeout_s,
                 adapter_non_progress_warn_s=adapter_non_progress_warn_s,
                 adapter_non_progress_interrupt_s=adapter_non_progress_interrupt_s,
+                adapter_wrapper_tool_failure_window_s=(
+                    adapter_wrapper_tool_failure_window_s
+                ),
                 config_source=config_source,
                 capabilities=capabilities,
                 tmux_pane_id=str(m.get("tmuxPaneId", "")),
@@ -675,6 +710,7 @@ def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stder
             or r.adapter_turn_timeout_s is not None
             or r.adapter_non_progress_warn_s is not None
             or r.adapter_non_progress_interrupt_s is not None
+            or r.adapter_wrapper_tool_failure_window_s is not None
         ):
             parts = []
             if r.adapter_model:
@@ -691,6 +727,11 @@ def _team_roster_command(argv: list[str], *, stdout: TextIO | None = None, stder
                 parts.append(
                     "adapter_non_progress_interrupt_s="
                     f"{r.adapter_non_progress_interrupt_s}"
+                )
+            if r.adapter_wrapper_tool_failure_window_s is not None:
+                parts.append(
+                    "adapter_wrapper_tool_failure_window_s="
+                    f"{r.adapter_wrapper_tool_failure_window_s}"
                 )
             adapter_suffix = "  " + " ".join(parts)
         capabilities_suffix = f"  capabilities={_format_capabilities(r.capabilities)}"
@@ -815,6 +856,9 @@ def _team_config_command(argv: list[str], *, stdout: TextIO | None = None, stder
         "adapter_turn_timeout_s": agent_cfg.get("turn_timeout_s"),
         "adapter_non_progress_warn_s": agent_cfg.get("non_progress_warn_s"),
         "adapter_non_progress_interrupt_s": agent_cfg.get("non_progress_interrupt_s"),
+        "adapter_wrapper_tool_failure_window_s": agent_cfg.get(
+            "wrapper_tool_failure_window_s"
+        ),
         "config_source": source,
     }
 
@@ -835,7 +879,9 @@ def _team_config_command(argv: list[str], *, stdout: TextIO | None = None, stder
             f"turn_timeout_s={resolved['adapter_turn_timeout_s']!r} "
             f"non_progress_warn_s={resolved['adapter_non_progress_warn_s']!r} "
             "non_progress_interrupt_s="
-            f"{resolved['adapter_non_progress_interrupt_s']!r}\n"
+            f"{resolved['adapter_non_progress_interrupt_s']!r} "
+            "wrapper_tool_failure_window_s="
+            f"{resolved['adapter_wrapper_tool_failure_window_s']!r}\n"
         )
         out.write(f"source : {source}\n")
     return 0

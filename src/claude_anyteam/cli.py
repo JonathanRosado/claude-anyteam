@@ -267,6 +267,18 @@ def _build_run_parser() -> argparse.ArgumentParser:
             "`warn_active` field tells which path fired."
         ),
     )
+    p.add_argument(
+        "--wrapper-tool-failure-window-s",
+        type=float,
+        help=(
+            "Codex App Server wrapper-tool recovery discriminator window in "
+            "seconds. Range [60, 300], default 90. Overrides "
+            "CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S. If a wrapper MCP "
+            "tool fails and no turn_progress/tool_event/artifact_event/"
+            "agentMessage delta appears within this window, the adapter emits "
+            "wrapper_tool_failure_unrecovered as signal only."
+        ),
+    )
     return p
 
 
@@ -1126,6 +1138,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["non_progress_warn_s"] = args.non_progress_warn_s
     if args.non_progress_interrupt_s is not None:
         overrides["non_progress_interrupt_s"] = args.non_progress_interrupt_s
+    if args.wrapper_tool_failure_window_s is not None:
+        overrides["wrapper_tool_failure_window_s"] = args.wrapper_tool_failure_window_s
 
     try:
         settings = from_env(overrides=overrides)
@@ -1145,6 +1159,7 @@ def main(argv: list[str] | None = None) -> int:
         turn_timeout_s=settings.turn_timeout_s,
         non_progress_warn_s=settings.non_progress_warn_s,
         non_progress_interrupt_s=settings.non_progress_interrupt_s,
+        wrapper_tool_failure_window_s=settings.wrapper_tool_failure_window_s,
     )
     return run(settings)
 

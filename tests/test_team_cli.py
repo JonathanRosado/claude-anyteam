@@ -84,6 +84,23 @@ def test_team_agent_writes_non_progress_watchdog_keys(fake_home, capsys):
     assert "non_progress_interrupt_s=420.0" in out
 
 
+def test_team_agent_writes_wrapper_tool_failure_window(fake_home, capsys):
+    rc = cli_main(
+        [
+            "team-agent",
+            "codex-alice",
+            "--team",
+            "build",
+            "--wrapper-tool-failure-window-s",
+            "120",
+        ]
+    )
+    assert rc == 0
+    cfg = json.loads(_agent_path(fake_home, "build", "codex-alice").read_text())
+    assert cfg == {"wrapper_tool_failure_window_s": 120.0}
+    assert "wrapper_tool_failure_window_s=120.0" in capsys.readouterr().out
+
+
 def test_team_agent_neither_model_nor_effort_is_an_error(fake_home, capsys):
     rc = cli_main(["team-agent", "codex-alice", "--team", "build"])
     assert rc == 2
@@ -174,6 +191,19 @@ def test_team_agent_invalid_non_progress_values_are_rejected(fake_home, capsys):
     )
     assert rc == 2
     assert "--non-progress-interrupt-s" in capsys.readouterr().err
+
+    rc = cli_main(
+        [
+            "team-agent",
+            "codex-alice",
+            "--team",
+            "build",
+            "--wrapper-tool-failure-window-s",
+            "30",
+        ]
+    )
+    assert rc == 2
+    assert "--wrapper-tool-failure-window-s" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #

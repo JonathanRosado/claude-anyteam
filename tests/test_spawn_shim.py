@@ -429,7 +429,11 @@ def test_agent_config_forwards_non_progress_watchdog_flags(monkeypatch, tmp_path
         tmp_path,
         "build",
         "codex-alice",
-        {"non_progress_warn_s": 180, "non_progress_interrupt_s": 420},
+        {
+            "non_progress_warn_s": 180,
+            "non_progress_interrupt_s": 420,
+            "wrapper_tool_failure_window_s": 120,
+        },
     )
     calls, stderr = _codex_argv_for(monkeypatch, tmp_path, "build", "codex-alice", capsys)
 
@@ -444,11 +448,14 @@ def test_agent_config_forwards_non_progress_watchdog_flags(monkeypatch, tmp_path
         "180",
         "--non-progress-interrupt-s",
         "420",
+        "--wrapper-tool-failure-window-s",
+        "120",
     ]
     log = json.loads(stderr.strip())
     assert log["agent_config"] == {
         "non_progress_warn_s": "180",
         "non_progress_interrupt_s": "420",
+        "wrapper_tool_failure_window_s": "120",
     }
 
 
@@ -663,7 +670,11 @@ def test_gemini_dispatch_does_not_forward_codex_watchdog_flags(monkeypatch, tmp_
         tmp_path,
         "t",
         "gemini-pro",
-        {"non_progress_warn_s": 180, "non_progress_interrupt_s": 420},
+        {
+            "non_progress_warn_s": 180,
+            "non_progress_interrupt_s": 420,
+            "wrapper_tool_failure_window_s": 120,
+        },
     )
     calls = _record_execv(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -683,9 +694,11 @@ def test_gemini_dispatch_does_not_forward_codex_watchdog_flags(monkeypatch, tmp_
     _, argv = calls[0]
     assert "--non-progress-warn-s" not in argv
     assert "--non-progress-interrupt-s" not in argv
+    assert "--wrapper-tool-failure-window-s" not in argv
     assert json.loads(capsys.readouterr().err)["agent_config"] == {
         "non_progress_warn_s": "180",
         "non_progress_interrupt_s": "420",
+        "wrapper_tool_failure_window_s": "120",
     }
 
 

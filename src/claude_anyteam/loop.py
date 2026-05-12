@@ -563,6 +563,7 @@ def _invoke_codex_prose(
                 overall_timeout_s=s.turn_timeout_s,
                 non_progress_warn_s=s.non_progress_warn_s,
                 non_progress_interrupt_s=s.non_progress_interrupt_s,
+                wrapper_tool_failure_window_s=s.wrapper_tool_failure_window_s,
                 event_sink=event_sink,
                 # No resume_thread_id — ephemeral, not chained to task lineage.
             )
@@ -1831,6 +1832,7 @@ def _execute_task_app_server(state: LoopState, task, prompt: str):
         overall_timeout_s=s.turn_timeout_s,
         non_progress_warn_s=s.non_progress_warn_s,
         non_progress_interrupt_s=s.non_progress_interrupt_s,
+        wrapper_tool_failure_window_s=s.wrapper_tool_failure_window_s,
         resume_thread_id=state.app_server_last_thread_id,
         task_id=str(task.id),
         event_sink=_visibility_event_sink,

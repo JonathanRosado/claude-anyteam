@@ -36,6 +36,7 @@ from .env import (
     PLAN_MODE_ENV,
     TEAM_ENV,
     TURN_TIMEOUT_ENV,
+    WRAPPER_TOOL_FAILURE_WINDOW_ENV,
     env_first,
 )
 
@@ -97,6 +98,12 @@ class Settings:
     # turn_timeout_s cap. When set, R20 only uses it after the soft watchdog
     # has fired and no later checkpoint is observed.
     non_progress_interrupt_s: float | None = None
+    # #49 / RFC §5.1: after a wrapper MCP tool error, emit
+    # wrapper_tool_failure_unrecovered only if no turn_progress/tool_event/
+    # artifact_event/agentMessage_delta appears within this window. Signal
+    # only: the adapter does not steer, interrupt, or kill because of it.
+    # Range [60, 300].
+    wrapper_tool_failure_window_s: float = 90.0
 
 
 def from_env(overrides: dict[str, object] | None = None) -> Settings:
@@ -227,6 +234,28 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
                 f"got {non_progress_interrupt_s}"
             )
 
+    wrapper_tool_failure_window_raw = _pick(
+        overrides,
+        "wrapper_tool_failure_window_s",
+        env_first(
+            os.environ,
+            WRAPPER_TOOL_FAILURE_WINDOW_ENV,
+            default="90",
+        ),
+    )
+    try:
+        wrapper_tool_failure_window_s = float(wrapper_tool_failure_window_raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            "wrapper_tool_failure_window_s must be numeric, "
+            f"got {wrapper_tool_failure_window_raw!r}"
+        ) from e
+    if not (60.0 <= wrapper_tool_failure_window_s <= 300.0):
+        raise ValueError(
+            "wrapper_tool_failure_window_s must be in [60, 300] seconds, "
+            f"got {wrapper_tool_failure_window_s}"
+        )
+
     return Settings(
         team_name=str(team_name),
         agent_name=str(agent_name),
@@ -241,6 +270,7 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
         turn_timeout_s=turn_timeout_s,
         non_progress_warn_s=non_progress_warn_s,
         non_progress_interrupt_s=non_progress_interrupt_s,
+        wrapper_tool_failure_window_s=wrapper_tool_failure_window_s,
     )
 
 

@@ -24,6 +24,7 @@ from claude_anyteam.messages import (
     TaskAssignmentIn,
     TaskCompleteOut,
     VisibilityEvent,
+    KNOWN_TASK_BLOCKED_REASONS,
     parse_protocol_text,
 )
 
@@ -239,6 +240,33 @@ def test_parse_batch_summary_visibility_event():
     assert isinstance(parsed, VisibilityEvent)
     assert parsed.kind == "batch_summary"
     assert parsed.payload["parentTaskId"] == "40"
+
+
+def test_parse_wrapper_tool_failure_unrecovered_visibility_event():
+    event = VisibilityEvent(
+        kind="wrapper_tool_failure_unrecovered",
+        event_id="worker:turn-1:000003",
+        team="team-x",
+        agent="worker",
+        backend="codex_app_server",
+        task_id="49",
+        turn_id="turn-1",
+        seq=3,
+        severity="warn",
+        summary="wrapper tool failed without recovery",
+        payload={
+            "tool_name": "mcp_anyteam_read_file",
+            "error_class": "enoent",
+            "silence_window_ms": 90000,
+            "recovery_hint_dispatched": False,
+        },
+    )
+
+    parsed = parse_protocol_text(event.model_dump_json(by_alias=True, exclude_none=True))
+
+    assert isinstance(parsed, VisibilityEvent)
+    assert parsed.kind == "wrapper_tool_failure_unrecovered"
+    assert "wrapper_tool_failure_unrecovered" in KNOWN_TASK_BLOCKED_REASONS
 
 
 def test_parse_typed_lifecycle_payload_variants():

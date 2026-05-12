@@ -617,6 +617,167 @@ def test_app_server_interrupt_fires_when_warn_none(monkeypatch):
     assert created[0].steers == [], "warn=None must not steer"
 
 
+def test_wrapper_tool_failure_unrecovered_emits_after_quiet_window(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    clock = Clock()
+    notifications = [
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "mcp_anyteam_read_file",
+                    "status": "failed",
+                    "error": "[Errno 2] No such file or directory: '/missing'",
+                }
+            },
+        },
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="read missing file",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    unrecovered = [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+    assert len(unrecovered) == 1
+    event = unrecovered[0]
+    assert event.visibility.mailbox is True
+    assert event.visibility.task_state is True
+    assert event.payload["tool_name"] == "mcp_anyteam_read_file"
+    assert event.payload["error_class"] == "enoent"
+    assert event.payload["silence_window_ms"] == 90000
+    assert event.payload["recovery_hint_dispatched"] is False
+
+
+def test_wrapper_tool_failure_recovered_by_later_tool_event_suppresses_signal(
+    monkeypatch,
+):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    clock = Clock()
+    notifications = [
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "task_update",
+                    "status": "failed",
+                    "error": "bad task id",
+                }
+            },
+        },
+        {"__advance__": 30},
+        {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": "task_list",
+                    "status": "completed",
+                }
+            },
+        },
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="recover from bad update",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    assert not [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+
+
+
 def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
     events_root: Path,
     monkeypatch,

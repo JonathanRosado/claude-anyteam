@@ -109,31 +109,21 @@ _TOOL_CALL_TYPE_SUBSTRINGS = (
     "imageview",           # Codex App Server image view
 )
 
-# Tool names our wrapper MCP server advertises. If any event payload
-# references one of these by name, it's a tool call — regardless of how
-# Codex spells the event type.
-_WRAPPER_TOOL_NAMES = frozenset({
-    "send_message",
-    "task_update",
-    "checkpoint_commit",
-    "task_create",
-    "read_inbox",
-    "task_list",
-    "read_config",
-})
-
 # Keep this diagnostic snapshot in sync with wrapper_server.EXPOSED_TOOLS.
 # Duplicated here intentionally so codex.py can log session-start state
 # without importing FastMCP/wrapper_server on the hot path.
 _WRAPPER_EXPECTED_TOOL_NAMES = (
     "send_message",
     "task_update",
+    "checkpoint_commit",
     "task_create",
     "task_batch_summary",
     "read_inbox",
     "task_list",
     "read_config",
     "mcp_anyteam_capability_manifest",
+    "mcp_anyteam_list_skills",
+    "mcp_anyteam_invoke_skill",
     "mcp_anyteam_shell",
     "mcp_anyteam_read_file",
     "mcp_anyteam_write_file",
@@ -143,6 +133,32 @@ _WRAPPER_EXPECTED_TOOL_NAMES = (
     "mcp_anyteam_grep",
     "mcp_anyteam_web_fetch",
 )
+
+# Tool names our wrapper MCP server advertises. If any event payload
+# references one of these by name, it's a tool call — regardless of how
+# Codex spells the event type. Keep this as the set form of
+# _WRAPPER_EXPECTED_TOOL_NAMES so #49 shadow-tool failures (for example
+# mcp_anyteam_read_file ENOENT) participate in the same recovery logic as
+# core team tools.
+_WRAPPER_TOOL_NAMES = frozenset(_WRAPPER_EXPECTED_TOOL_NAMES)
+
+_WRAPPER_TOOL_RECOVERY_EVENT_KINDS = frozenset(
+    {"turn_progress", "tool_event", "artifact_event"}
+)
+
+
+@dataclass
+class _PendingWrapperToolFailure:
+    failed_event_id: str
+    failed_event_seq: int
+    failed_at_monotonic: float
+    tool_name: str
+    error_class: str
+    error_detail: str | None
+    turn_id: str | None
+    recovered_at_monotonic: float | None = None
+    recovery_event_id: str | None = None
+    emitted: bool = False
 
 
 
@@ -159,6 +175,61 @@ def _bounded_preview(value: Any, *, limit: int = 1000) -> Any:
             for k, v in list(value.items())[:50]
         }
     return _bounded_preview(repr(value), limit=limit)
+
+
+def _wrapper_tool_error_detail(payload: dict[str, Any]) -> str | None:
+    """Best-effort bounded detail string for a failed wrapper-tool event."""
+
+    for key in (
+        "error",
+        "error_detail",
+        "stderr_preview",
+        "stdout_preview",
+        "raw_event_preview",
+    ):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(_bounded_preview(value, limit=600))
+    return None
+
+
+def _wrapper_tool_error_class(payload: dict[str, Any]) -> str:
+    """Return a stable-ish mid-turn wrapper-tool error discriminator.
+
+    This deliberately does not feed diagnostics.ERROR_CLASSES: #49's
+    unrecovered envelope is an in-flight visibility signal, not a terminal
+    turn failure. The class here is forensic payload only.
+    """
+
+    detail = " ".join(
+        str(value)
+        for value in (
+            payload.get("status"),
+            payload.get("error"),
+            payload.get("stderr_preview"),
+            payload.get("raw_event_preview"),
+        )
+        if value not in (None, "")
+    ).lower()
+    if any(fragment in detail for fragment in ("errno 2", "enoent", "no such file")):
+        return "enoent"
+    if any(fragment in detail for fragment in ("validation", "schema")):
+        return "schema_validation"
+    if "timeout" in detail or "timed out" in detail:
+        return "timeout"
+    if "not found" in detail:
+        return "not_found"
+    status = payload.get("status")
+    if isinstance(status, str) and status:
+        return status
+    return "wrapper_tool_error"
+
+
+def _is_failed_wrapper_tool_event(event: VisibilityEvent | None) -> bool:
+    if event is None or event.kind != "tool_event" or event.severity != "error":
+        return False
+    tool_name = event.payload.get("tool_name")
+    return isinstance(tool_name, str) and tool_name in _WRAPPER_TOOL_NAMES
 
 
 def _toolish_fields(value: Any, *, depth: int = 0, path: str = "") -> dict[str, Any]:
@@ -1521,6 +1592,7 @@ def app_server_invoke(
     overall_timeout_s: float = 1800.0,
     non_progress_warn_s: float | None = None,
     non_progress_interrupt_s: float | None = None,
+    wrapper_tool_failure_window_s: float = 90.0,
     steer_queue: "_SteerQueue | None" = None,
     mid_turn_hook: "Any | None" = None,
     resume_thread_id: str | None = None,
@@ -1573,6 +1645,7 @@ def app_server_invoke(
     current_turn_id: str | None = None
     turn_started_at: float | None = None
     visibility_seq = 0
+    pending_wrapper_tool_failures: list[_PendingWrapperToolFailure] = []
 
     def _emit_visibility_event(
         *,
@@ -1607,6 +1680,15 @@ def app_server_invoke(
                 "payload": payload,
             }
         )
+        if event.kind in _WRAPPER_TOOL_RECOVERY_EVENT_KINDS:
+            recovered_at = time.monotonic()
+            for pending in pending_wrapper_tool_failures:
+                if (
+                    pending.recovered_at_monotonic is None
+                    and event.seq > pending.failed_event_seq
+                ):
+                    pending.recovered_at_monotonic = recovered_at
+                    pending.recovery_event_id = event.event_id
         if event.visibility.stderr:
             log_payload = {
                 "kind": event.kind,
@@ -1736,11 +1818,29 @@ def app_server_invoke(
                     tool=_tool_name_from_event(fake_ev),
                     event={"item": item},
                 )
-            _visibility_for_app_server_item(
+            visibility_event = _visibility_for_app_server_item(
                 method=method,
                 item=item,
                 make_event=_emit_visibility_event,
             )
+            if _is_failed_wrapper_tool_event(visibility_event):
+                if visibility_event is None:
+                    return
+                pending_wrapper_tool_failures.append(
+                    _PendingWrapperToolFailure(
+                        failed_event_id=visibility_event.event_id,
+                        failed_event_seq=visibility_event.seq,
+                        failed_at_monotonic=time.monotonic(),
+                        tool_name=str(visibility_event.payload["tool_name"]),
+                        error_class=_wrapper_tool_error_class(
+                            visibility_event.payload
+                        ),
+                        error_detail=_wrapper_tool_error_detail(
+                            visibility_event.payload
+                        ),
+                        turn_id=visibility_event.turn_id,
+                    )
+                )
 
     # MCP config for the wrapper — same shape as the exec path, injected via
     # Codex's config override mechanism on thread start. App Server accepts
@@ -1909,6 +2009,7 @@ def app_server_invoke(
                 "timeout_s": overall_timeout_s,
                 "non_progress_soft_s": non_progress_warn_s,
                 "non_progress_interrupt_s": non_progress_interrupt_s,
+                "wrapper_tool_failure_window_s": wrapper_tool_failure_window_s,
                 "cwd": str(cwd),
                 "model": model,
                 "effort": effort,
@@ -1939,6 +2040,56 @@ def app_server_invoke(
         non_progress_interrupted = False
         transport_reconnect_attempts = 0
         done = False
+
+        def _emit_unrecovered_wrapper_tool_failures(now: float) -> None:
+            """Emit #49's Mode-B signal for wrapper-tool failures.
+
+            Mode A recovery is marked in `_emit_visibility_event` when any
+            later turn_progress/tool_event/artifact_event arrives (including
+            agentMessage deltas, which normalize to turn_progress). This
+            checker only fires after W when no such recovery event appeared.
+            It is signal-only: no steer, interrupt, or kill.
+            """
+
+            for pending in pending_wrapper_tool_failures:
+                if (
+                    pending.emitted
+                    or pending.recovered_at_monotonic is not None
+                    or (now - pending.failed_at_monotonic)
+                    < wrapper_tool_failure_window_s
+                ):
+                    continue
+                pending.emitted = True
+                silence_window_ms = int(wrapper_tool_failure_window_s * 1000)
+                payload: dict[str, Any] = {
+                    "tool_name": pending.tool_name,
+                    "error_class": pending.error_class,
+                    "error_detail": pending.error_detail,
+                    "turn_id": pending.turn_id,
+                    "failed_event_id": pending.failed_event_id,
+                    "failed_event_seq": pending.failed_event_seq,
+                    "last_progress_elapsed_s": int(
+                        last_progress_at - turn_started_at
+                    ),
+                    "silence_window_ms": silence_window_ms,
+                    "recovery_hint_dispatched": False,
+                }
+                payload = {k: v for k, v in payload.items() if v is not None}
+                _emit_visibility_event(
+                    kind="wrapper_tool_failure_unrecovered",
+                    severity="warn",
+                    summary=(
+                        f"wrapper tool {pending.tool_name} failed; no recovery "
+                        f"activity in {int(wrapper_tool_failure_window_s)}s"
+                    )[:200],
+                    visibility={
+                        "mailbox": True,
+                        "task_state": True,
+                        "event_log": True,
+                        "stderr": True,
+                    },
+                    payload=payload,
+                )
 
         def _resume_kwargs() -> dict[str, Any]:
             """Map thread/start kwargs to the subset accepted by thread/resume."""
@@ -2194,6 +2345,8 @@ def app_server_invoke(
             )
 
         while not done and time.monotonic() < deadline:
+            _emit_unrecovered_wrapper_tool_failures(time.monotonic())
+
             # 1. Deliver any pending steers. Non-blocking pop.
             if steer_queue is not None:
                 while True:
@@ -2261,6 +2414,7 @@ def app_server_invoke(
                 # ordering semantics.
                 now = time.monotonic()
                 warn_active = non_progress_warn_s is not None
+                _emit_unrecovered_wrapper_tool_failures(now)
                 if (
                     warn_active
                     and not non_progress_warned
