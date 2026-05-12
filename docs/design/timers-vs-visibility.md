@@ -178,48 +178,146 @@ What's missing for the stall conversation:
 
 All four envelopes follow the existing `VisibilityEvent` shape used by `emit_initialize_timeout_visibility_degraded` (`protocol_io.py:936-957`). The mailbox + event_log fan-out pattern stays.
 
+**Four-leg taxonomy integration** (per opus-reviewer item 2 — PR #42 precedent): every new envelope must coherently update FOUR registration points or `_safe_load` returns None and the receiver degrades to prose. The table below documents each envelope's commitments. Phase A implementation PRs MUST touch every "yes" cell in lock-step.
+
+| Envelope | top-level `kind` | `VisibilityEventKind` Literal (`messages.py:365`) | `parse_protocol_text` dispatch (`messages.py:489`) | `KNOWN_TASK_BLOCKED_REASONS` (`messages.py:275`) | `ERROR_CLASSES` + `classify_failure` (`diagnostics.py:117`) |
+| --- | --- | --- | --- | --- | --- |
+| `wrapper_tool_failure_unrecovered` | new top-level kind (not `visibility_degraded` — this is a discrete state-change signal, not an ambient degradation) | **add** | **add** to dispatch set | **add** the token (a lead acting on this event may choose `task_reassign` with this as the typed `reason`) | **add** `wrapper_tool_failure_unrecovered` to `ERROR_CLASSES`; extend `classify_failure` to recognize the substring shape |
+| `app_server_idle_quiet` | new top-level kind (heartbeat semantics don't map onto "degraded"; the model may be doing legitimate work) | **add** | **add** | **no** (signal, not interrupt — the lead may steer or wait, neither closes the task) | **no** (not a failure shape; healthy long turns also emit it) |
+| `subprocess_pressure` | new top-level kind | **add** | **add** | **no** (signal; remediation lives in `claude-anyteam diagnose`) | **no** (not a failure unless the underlying #43 issue manifests, which would then route through existing classes) |
+| `transport_alive` | new top-level kind (heartbeat; per opus-reviewer item 10, stays a `VisibilityEvent` not a `MailboxMessage` — see §9 Q2 answer) | **add** | **add** | **no** | **no** |
+
+**Why not `visibility_degraded` with `payload.surface`?** PR #42 chose `visibility_degraded` for `app_server_initialize_timeout` because that envelope represents an *ambient degraded state* (the handshake is broken; observing it doesn't change with time). The four new envelopes are *discrete state-change signals* — `wrapper_tool_failure_unrecovered` fires once per qualifying tool failure; `transport_alive` is a heartbeat; `app_server_idle_quiet` is a debounced edge-trigger. Distinct `kind` values let downstream consumers filter cheaply (north star §3) without parsing `payload.surface`.
+
 ### 5.1 `wrapper_tool_failure_unrecovered`
 
-**Emitted when:** the wrapper MCP returns an error to the routed CLI (Errno 2 on file ops, schema-validation fail on task_update, etc.) AND no `turn_progress` envelope arrives within a short bounded window (proposed: 5–10s).
+**Emitted when:** the wrapper MCP returns an error to the routed CLI (Errno 2 on file ops, schema-validation fail on task_update, etc.) AND no observable event of any kind arrives within a bounded window **W** after the failure. Default `W = 90s`, configurable per-team in [60, 300]s.
+
+**Window grounding (opus-reviewer item 1, empirical):** the original draft proposed W=5–10s. That is empirically falsified. Live telemetry from `/home/rosad/.claude/teams/anyteam-issues/events/codex-implementer-a.jsonl` (2026-05-12T16:35:36Z–16:37:15Z, ~17 events including 3 `visibility_degraded` from `wrapper_tool` errors) shows codex's natural Mode A recovery pattern:
+
+| Wall-clock after first failure | Observation |
+| --- | --- |
+| seq=7 (16:35:36.629Z) | first `wrapper_tool` failure (`mcp_anyteam_read_file`) |
+| seq=8 (16:35:37.559Z, +0.9s) | next `tool_event` — model immediately tried another tool |
+| seq=14 (16:35:38.273Z, +1.6s) | continued tool activity (`task_list completed`) |
+| seq=15 (16:35:55.872Z, +19.2s) | **17.6s natural quiet gap** during Mode A recovery |
+| seq=21 (16:36:17.528Z, +40.9s) | **19.7s gap** between productive bursts |
+| seq=31 (16:36:30.700Z, +54.1s) | another `wrapper_tool` failure mid-recovery — model still producing work |
+| seq=32 (16:36:36.437Z, +59.8s) | model recovered from that failure too |
+
+The **longest observed natural quiet gap during productive recovery was 19.7s**. The total productive recovery span before any "real" stall was ≥ 60s. Setting W=5–10s would fire `wrapper_tool_failure_unrecovered` during every Mode A recovery in our captured corpus, priming the lead to issue `task_reassign` against a model that's actively working. False-positive engine.
+
+**Conservative default W=90s** = 4.5× the longest observed natural gap (19.7s × 4.5 ≈ 89s) and ≥ the total productive recovery span (~60s). This is the cheapest defensible setting; tighter is a sharpening question for Phase A's measurement task (see §8 Phase A.5).
+
+### 5.1.1 Mode A/B discriminator (item 5)
+
+The full algorithm. opus-reviewer flagged §3's bimodality acknowledgment didn't operationalize; this is the operationalization. Implementation lives in the wrapper's event-emission loop alongside the existing `_app_server_transport_alive` probe.
+
+```python
+def on_wrapper_tool_error(error_event: ToolEvent) -> None:
+    """
+    Triggered when the wrapper MCP returns an error to the routed CLI.
+    Schedules a delayed Mode A/B discriminator check.
+    """
+    schedule_after(window_s=W, fn=lambda: _discriminate(error_event))
+
+def _discriminate(error_event: ToolEvent) -> None:
+    """
+    Run W seconds after a wrapper_tool failure. Decide Mode A (recovery
+    in progress) vs Mode B (model gave up / stalled).
+
+    Mode A: at least one of:
+      - new turn_progress envelope (any severity)
+      - new tool_event (success or failure — a retry counts as progress)
+      - new artifact_event (file change, commit)
+      - agentMessage byte-length delta > 0
+
+      All four are observable in the existing event stream. The exact
+      OR is the wrapper's existing "any progress?" predicate
+      (codex.py:2196-2199), lifted into a shared helper for clarity.
+
+    Mode B: none of the above within W. Emit wrapper_tool_failure_unrecovered.
+    """
+    window_start = error_event.timestamp_ms
+    window_end = window_start + (W * 1000)
+
+    progress_events = read_events_since(
+        team=error_event.team,
+        agent=error_event.agent,
+        since_ms=window_start,
+        kinds=("turn_progress", "tool_event", "artifact_event"),
+    )
+
+    if any(e.timestamp_ms <= window_end for e in progress_events):
+        return  # Mode A — model recovered. No emission.
+
+    if last_agent_message_byte_delta_since(window_start) > 0:
+        return  # Mode A — model still producing prose. No emission.
+
+    emit_visibility_event(
+        kind="wrapper_tool_failure_unrecovered",
+        severity="warn",
+        summary=f"wrapper tool {error_event.tool_name} failed; no recovery activity in {W}s",
+        payload={
+            "tool_name": error_event.tool_name,
+            "error_class": error_event.error_class,
+            "error_detail": _bounded_text(error_event.error_detail, 600),
+            "turn_id": error_event.turn_id,
+            "last_progress_at_ms": last_progress_at_ms(),
+            "silence_window_ms": W * 1000,
+            "recovery_hint_dispatched": False,
+        },
+    )
+```
+
+**Why ANY event kind (not just `turn_progress`)?** Because the empirical evidence shows productive recovery is dominated by `tool_event` (retry attempts) not `turn_progress` (model prose). A `turn_progress`-only check would still fire false-positively against the codex-implementer-a corpus. The four-kind disjunction matches what `codex.py:2196-2199` already treats as "observable progress."
+
+**Future-phase positive-signal alternative (opus-reviewer item 1b):** once §5.5 `working_on` is shipping and backends declare `working_on_compliance: best_effort` or `strict`, the discriminator can grow a `gave_up` claim from the model side — e.g., the model emits `working_on: gave_up — wrapper_tool failures repeatedly` and we trigger emission on the positive signal instead of inferring from quietude. This is filed as a follow-up task (see §7.6) and is the §1-respecting endgame. For v1 we ship the quietude-based discriminator with the empirical W=90s default.
 
 **Payload shape:**
 ```json
 {
-  "surface": "wrapper_tool_failure_unrecovered",
-  "tool_name": "mcp_anyteam_read_file",
-  "error_class": "enoent",
-  "error_detail": "/path/that/does/not/exist: Errno 2",
-  "turn_id": "...",
-  "last_progress_at_ms": 12345,
-  "silence_window_ms": 8000,
-  "recovery_hint_dispatched": false
+  "kind": "wrapper_tool_failure_unrecovered",
+  "severity": "warn",
+  "payload": {
+    "tool_name": "mcp_anyteam_read_file",
+    "error_class": "enoent",
+    "error_detail": "/path/that/does/not/exist: Errno 2",
+    "turn_id": "019e1d0a-473c-7061-ac0e-22ba789eca62",
+    "last_progress_at_ms": 1715541336629,
+    "silence_window_ms": 90000,
+    "recovery_hint_dispatched": false
+  }
 }
 ```
 
-**Lead's right action:** issue `task_reassign` or send a recovery_hint via `task_update`. The recovery_hint is the same payload that task #1 (#49) is already building — this event just makes it kickable from outside the wrapper.
+**Potential lead-side responses (informational; lead decides):** the lead may, depending on context and corroborating signals, choose to `task_reassign` (the typed `KNOWN_TASK_BLOCKED_REASONS` token is `wrapper_tool_failure_unrecovered`), send a recovery_hint via `task_update`, or do nothing if the model is observed to recover after envelope emission. The envelope itself does **not** act on the model — there is no wrapper-side steer, interrupt, or kill (§0). This is informational signal; action authority stays with the lead (and, per north-star §3, with peers when the lead is offline).
 
-**Replaces:** the 300s `non_progress_warn_s` for the most common stall case.
+**Relationship to soft watchdog:** signals roughly the same failure as the 300s `non_progress_warn_s`, at 3.3× earlier and without auto-steering the model. The soft watchdog is removed in Phase D (§8) once this envelope is observed catching the same cases.
 
 ### 5.2 `app_server_idle_quiet`
 
-**Emitted when:** for a configurable window (default 60s, *not* 300s), the App Server has produced no notification AND no `tool_event` delta AND no `artifact_event` delta AND the transport is alive.
+**Emitted when:** for a configurable window (default 60s, range [30, 600]), the App Server has produced no notification AND no `tool_event` delta AND no `artifact_event` delta AND the transport is alive. Re-emitted at most once per window per turn (debounced — see §7.4 cardinality).
 
 **Payload shape:**
 ```json
 {
-  "surface": "app_server_idle_quiet",
-  "turn_id": "...",
-  "elapsed_s": 90,
-  "since_last_progress_s": 75,
-  "transport_alive": true,
-  "tool_calls_in_flight": ["Bash:pytest"],
-  "last_working_on": "running test suite"
+  "kind": "app_server_idle_quiet",
+  "severity": "info",
+  "payload": {
+    "turn_id": "...",
+    "elapsed_s": 90,
+    "since_last_progress_s": 75,
+    "transport_alive": true,
+    "tool_calls_in_flight": ["Bash:pytest"],
+    "last_working_on": "running test suite"
+  }
 }
 ```
 
-**Lead's right action:** *usually nothing* — the in-flight tool tells them why the model is quiet. Action only escalates when `tool_calls_in_flight` is empty AND `last_working_on` is missing or stale. Crucially this event is a **signal**, not an **interrupt**: emission ≠ kill.
+**Potential lead-side responses:** *usually nothing* — the in-flight tool tells the lead why the model is quiet. The lead may escalate (send a steer, or `task_reassign`) when `tool_calls_in_flight` is empty AND `last_working_on` is missing or stale. This envelope is **signal**, not interrupt; emission ≠ kill (§0).
 
-**Replaces:** the 900s `turn_timeout_s` cap as the *signal* (the cap remains as a lead-offline backstop, §7).
+**Replaces:** the 900s `turn_timeout_s` cap as the *signal* (the cap stays as a lead-offline backstop, §7.1).
 
 ### 5.3 `subprocess_pressure`
 
@@ -231,40 +329,49 @@ All four envelopes follow the existing `VisibilityEvent` shape used by `emit_ini
 **Payload shape:**
 ```json
 {
-  "surface": "subprocess_pressure",
-  "kind": "sqlite_wal_replay",
-  "hint": "codex sqlite WAL is 480MB; startup may be slow",
-  "remediation": "claude-anyteam diagnose --codex-wal-truncate"
+  "kind": "subprocess_pressure",
+  "severity": "info",
+  "payload": {
+    "kind": "sqlite_wal_replay",
+    "hint": "codex sqlite WAL is 480MB; startup may be slow",
+    "remediation": "claude-anyteam diagnose --codex-wal-truncate"
+  }
 }
 ```
 
-**Lead's right action:** distinguish #43-class slowness from stalls; do not kill the teammate. The skill `claude-anyteam:diagnose` can read these events to surface remediation.
+**Potential lead-side responses:** distinguish #43-class slowness from stalls; *do not kill* the teammate; optionally run the suggested `remediation` command. The `claude-anyteam:diagnose` skill can read these events to surface remediation automatically.
 
 ### 5.4 `transport_alive` (heartbeat envelope)
 
-**Emitted when:** every N seconds (default 30s, aligned with existing `APP_SERVER_INITIALIZE_PROGRESS_INTERVAL_S`), the wrapper checks the routed CLI's transport is still responsive. Emission shape mirrors `app_server_initialize_progress` (`codex.py:928`).
+**Emitted when:** every N seconds (**default 90s**, range [30, 600], **per-teammate configurable** — bumped from the original 30s draft per opus-reviewer item 4 cardinality concern), the wrapper checks the routed CLI's transport is still responsive. Emission shape mirrors `app_server_initialize_progress` (`codex.py:928`).
+
+**Why 90s default?** No lead reacts to a heartbeat within 30s anyway, and 30s × N teammates × the per-team aggregate `visibility.jsonl` lock (see §7.4) was the cardinality concern. 90s detects a wedged fd within 2–3 cycles (~3–5 min) — still within the lead's reaction loop.
 
 **Payload shape:**
 ```json
 {
-  "surface": "transport_alive",
-  "transport": "jsonrpc_stdio",
-  "rtt_ms": 4,
-  "last_event_at_ms": 12345
+  "kind": "transport_alive",
+  "severity": "info",
+  "payload": {
+    "transport": "jsonrpc_stdio",
+    "rtt_ms": 4,
+    "last_event_at_ms": 12345,
+    "cadence_s": 90
+  }
 }
 ```
 
-**Mailbox treatment:** routes through `idle_notification`-class delivery so it does not crowd out substantive content (north star §3). Lead clients can filter cheaply by `message_kind`.
+**Routing (item 10 answered):** `transport_alive` is a `VisibilityEvent`, not a `MailboxMessage`. Rationale: post-hoc forensics needs heartbeat data in the event log (matches `app_server_initialize_progress` precedent from PR #42). Mailbox-side filtering for "don't crowd substantive content" is handled by message_kind, not by routing through a different channel.
 
 **Replaces:** the implicit assumption that "no notification → wedged transport." Now the absence of `transport_alive` is itself the signal.
 
 ### 5.5 Model-emitted `working_on` claim (prompt contract)
 
-**Required:** every backend prompt template (`prompts.py`, `backends/kimi/prompts.py`, gemini equivalents) gains a one-line contract: *"emit a `working_on` claim every ~30s of work or after every tool_call, whichever is sooner. Format: a 1-line description of current activity."*
+**Required:** every backend prompt template (`prompts.py`, `backends/kimi/prompts.py`, gemini equivalents) gains a one-line contract: *"emit a `working_on` claim every ~60s of work or after every tool_call, whichever is sooner. Format: a 1-line description of current activity."* Cadence raised from the original 30s draft per the same cardinality concern (§7.4).
 
-**Surface:** flows as a `turn_progress` envelope with `payload.working_on_claim = "..."`.
+**Surface:** flows as a `turn_progress` envelope with `payload.working_on_claim = "..."`. Does not introduce a new `VisibilityEventKind`; reuses the existing `turn_progress` kind with a structured payload field. (Four-leg taxonomy: zero new entries — adds a payload field on an existing kind. This is the cheapest possible integration.)
 
-**Capability declaration:** each backend declares `working_on_compliance: "strict" | "best_effort" | "absent"` in its capability manifest. `absent` means the stall-detection backstop (§7) cannot be raised against this backend.
+**Capability declaration:** each backend declares `working_on_compliance: "strict" | "best_effort" | "absent"` in its capability manifest. `absent` means the stall-detection backstop (§7.1) cannot be raised against this backend (and §5.1's future positive-signal `gave_up` discriminator can't be used).
 
 This is the **§3 piece**: requiring the *agent* to participate in its own visibility, not making the wrapper guess.
 
