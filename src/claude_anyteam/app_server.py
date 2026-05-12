@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from . import logger
 from .jsonrpc_stdio import JsonRpcStdioClient, JsonRpcStdioError
@@ -19,9 +19,11 @@ class AppServerClient(JsonRpcStdioClient):
         codex_binary: str = "codex",
         extra_args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        pre_start_hook: Callable[[], None] | None = None,
     ) -> None:
         self._codex_binary = codex_binary
         self._extra_args = list(extra_args or [])
+        self._pre_start_hook = pre_start_hook
         super().__init__(
             argv=[codex_binary, "app-server", *self._extra_args],
             env=env,
@@ -43,6 +45,13 @@ class AppServerClient(JsonRpcStdioClient):
         )
         self._error_cls = AppServerError
         self.last_thread_result: dict[str, Any] | None = None
+
+    def start(self) -> None:
+        """Start the child process after any wrapper-side preflight hook."""
+
+        if self._pre_start_hook is not None:
+            self._pre_start_hook()
+        super().start()
 
     # ---- transport health / restart ---------------------------------------
 
