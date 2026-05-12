@@ -1724,6 +1724,16 @@ def app_server_invoke(
     def _codex_log_bloat_pre_spawn() -> None:
         """Emit #43 pre-spawn visibility and run a bounded WAL checkpoint."""
 
+        pressure_alias_payload = {
+            "pressure_source": "sqlite_wal_bloat",
+            "remediation": "bounded_checkpoint_before_spawn",
+            "hint": (
+                "Run `claude-anyteam diagnose --codex-log-bloat`; if no Codex "
+                "process is running and checkpointing still fails, back up then "
+                "move/remove the matching logs_*.sqlite* files."
+            ),
+        }
+
         try:
             report = inspect_codex_log_bloat(env=os.environ)
         except Exception as e:
@@ -1750,6 +1760,7 @@ def app_server_invoke(
                 "surface": "codex_sqlite_wal_bloat",
                 "action": "bounded_checkpoint_before_spawn",
                 "diagnose_command": "claude-anyteam diagnose --codex-log-bloat",
+                **pressure_alias_payload,
                 **report_payload,
             },
         )
@@ -1763,15 +1774,15 @@ def app_server_invoke(
             return
         checkpoint_payload = {
             "surface": "codex_sqlite_wal_checkpoint",
+            **pressure_alias_payload,
             "results": [row.to_dict() for row in checkpoint_results],
         }
-        all_ok = all(row.ok for row in checkpoint_results if row.attempted)
-        any_attempted = any(row.attempted for row in checkpoint_results)
-        if not any_attempted:
+        if all(row.status == "disabled" for row in checkpoint_results):
             return
+        all_ok = all(row.ok for row in checkpoint_results)
         if all_ok:
             _emit_visibility_event(
-                kind="turn_progress",
+                kind="visibility_degraded",
                 severity="info",
                 summary="Codex sqlite WAL checkpoint completed before spawn",
                 visibility={
@@ -1791,7 +1802,7 @@ def app_server_invoke(
                     "App Server spawn"
                 ),
                 visibility={
-                    "mailbox": False,
+                    "mailbox": True,
                     "task_state": False,
                     "event_log": True,
                     "stderr": True,

@@ -7,6 +7,10 @@ All notable changes to claude-anyteam are documented here. Format follows [Keep 
 ### Added
 
 - **`wrapper_tool_failure_unrecovered` visibility envelope** (issue #49 / PR #60) surfaces Codex App Server wrapper-MCP tool failures that are not followed by `turn_progress`, `tool_event`, or `artifact_event` recovery activity within the discriminator window. The window is configurable with `--wrapper-tool-failure-window-s`, `CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S`, and the per-teammate agents-file key `wrapper_tool_failure_window_s`.
+- **Codex sqlite WAL-bloat diagnostics/mitigation** (#43 / PR #54 follow-up): `claude-anyteam diagnose --codex-log-bloat` reports `logs_*.sqlite-wal` size pressure, and Codex App Server spawn now emits typed `visibility_degraded` events when WAL bloat is detected or checkpoint remediation cannot complete. Operator controls are centrally registered env vars:
+  - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES` — warn threshold; default `104857600` bytes (100 MiB), bounded `[0, 10737418240]` (10 GiB).
+  - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT` — enable/disable the pre-spawn sqlite checkpoint attempt; default enabled (set `0`, `false`, `no`, `off`, or `disabled` to skip).
+  - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S` — checkpoint timeout budget; default `10s`, bounded `[0.001, 60]`; the same budget caps the aggregate time spent across all bloated WALs.
 
 ### Changed
 

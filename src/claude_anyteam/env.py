@@ -47,6 +47,17 @@ LEGACY_NON_PROGRESS_INTERRUPT_ENV = "CODEX_TEAMMATE_NON_PROGRESS_INTERRUPT_S"
 
 WRAPPER_TOOL_FAILURE_WINDOW_ENV = "CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S"
 
+# Codex CLI sqlite WAL-bloat mitigation (#43). These are claude-anyteam-owned
+# controls for warning on large ``logs_*.sqlite-wal`` files and attempting a
+# bounded sqlite checkpoint before spawning Codex App Server.
+CODEX_WAL_WARN_THRESHOLD_BYTES_ENV = (
+    "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES"
+)
+CODEX_WAL_CHECKPOINT_ENV = "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT"
+CODEX_WAL_CHECKPOINT_TIMEOUT_ENV = (
+    "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S"
+)
+
 # Codex App Server JSON-RPC ``initialize`` budget (#40 Phase 1).
 # Default 90s — chosen because the only successful empirical sample we
 # have (codex-reviewer turn 1, parking-ack prompt, ~17s) is well under

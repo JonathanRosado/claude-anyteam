@@ -20,19 +20,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from .env import (
+    CODEX_WAL_CHECKPOINT_ENV,
+    CODEX_WAL_CHECKPOINT_TIMEOUT_ENV,
+    CODEX_WAL_WARN_THRESHOLD_BYTES_ENV,
+)
+
 CODEX_HOME_ENV = "CODEX_HOME"
 CODEX_SQLITE_HOME_ENV = "CODEX_SQLITE_HOME"
 
-CODEX_WAL_WARN_THRESHOLD_BYTES_ENV = (
-    "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES"
-)
-CODEX_WAL_CHECKPOINT_ENV = "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT"
-CODEX_WAL_CHECKPOINT_TIMEOUT_ENV = (
-    "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S"
-)
-
 DEFAULT_CODEX_WAL_WARN_THRESHOLD_BYTES = 100 * 1024 * 1024
+MIN_CODEX_WAL_WARN_THRESHOLD_BYTES = 0
+MAX_CODEX_WAL_WARN_THRESHOLD_BYTES = 10 * 1024 * 1024 * 1024
 DEFAULT_CODEX_WAL_CHECKPOINT_TIMEOUT_S = 10.0
+MIN_CODEX_WAL_CHECKPOINT_TIMEOUT_S = 0.001
+MAX_CODEX_WAL_CHECKPOINT_TIMEOUT_S = 60.0
 LOGS_WAL_GLOB = "logs_*.sqlite-wal"
 
 _FALSEY = {"0", "false", "no", "off", "disabled"}
@@ -152,26 +154,48 @@ def _truthy_env_enabled(env: Mapping[str, str], name: str, *, default: bool) -> 
     return raw.strip().lower() not in _FALSEY
 
 
-def _int_env(env: Mapping[str, str], name: str, default: int) -> int:
+def _bounded_int_env(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    min_value: int,
+    max_value: int,
+) -> int:
     raw = env.get(name)
     if raw is None or raw == "":
         return default
     try:
         value = int(raw)
-    except ValueError:
-        return default
-    return max(0, value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if not (min_value <= value <= max_value):
+        raise ValueError(
+            f"{name} must be in [{min_value}, {max_value}], got {value}"
+        )
+    return value
 
 
-def _float_env(env: Mapping[str, str], name: str, default: float) -> float:
+def _bounded_float_env(
+    env: Mapping[str, str],
+    name: str,
+    default: float,
+    *,
+    min_value: float,
+    max_value: float,
+) -> float:
     raw = env.get(name)
     if raw is None or raw == "":
         return default
     try:
         value = float(raw)
-    except ValueError:
-        return default
-    return max(0.001, value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be numeric, got {raw!r}") from exc
+    if not (min_value <= value <= max_value):
+        raise ValueError(
+            f"{name} must be in [{min_value:g}, {max_value:g}] seconds, got {value}"
+        )
+    return value
 
 
 def codex_sqlite_home(
@@ -202,10 +226,12 @@ def codex_sqlite_home(
 
 def codex_wal_warn_threshold_bytes(env: Mapping[str, str] | None = None) -> int:
     env_map = env if env is not None else os.environ
-    return _int_env(
+    return _bounded_int_env(
         env_map,
         CODEX_WAL_WARN_THRESHOLD_BYTES_ENV,
         DEFAULT_CODEX_WAL_WARN_THRESHOLD_BYTES,
+        min_value=MIN_CODEX_WAL_WARN_THRESHOLD_BYTES,
+        max_value=MAX_CODEX_WAL_WARN_THRESHOLD_BYTES,
     )
 
 
@@ -222,11 +248,20 @@ def inspect_codex_log_bloat(
         sqlite_home, source = codex_sqlite_home(env_map)
     else:
         source = "explicit"
-    threshold = (
-        codex_wal_warn_threshold_bytes(env_map)
-        if threshold_bytes is None
-        else max(0, int(threshold_bytes))
-    )
+    if threshold_bytes is None:
+        threshold = codex_wal_warn_threshold_bytes(env_map)
+    else:
+        threshold = int(threshold_bytes)
+        if not (
+            MIN_CODEX_WAL_WARN_THRESHOLD_BYTES
+            <= threshold
+            <= MAX_CODEX_WAL_WARN_THRESHOLD_BYTES
+        ):
+            raise ValueError(
+                "threshold_bytes must be in "
+                f"[{MIN_CODEX_WAL_WARN_THRESHOLD_BYTES}, "
+                f"{MAX_CODEX_WAL_WARN_THRESHOLD_BYTES}], got {threshold}"
+            )
     rows: list[CodexWalFile] = []
     try:
         paths = sorted(sqlite_home.glob(LOGS_WAL_GLOB))
@@ -390,18 +425,47 @@ def checkpoint_bloated_codex_wals(
             for wal in report.bloated_wal_files
         )
     budget = (
-        _float_env(
+        _bounded_float_env(
             env_map,
             CODEX_WAL_CHECKPOINT_TIMEOUT_ENV,
             DEFAULT_CODEX_WAL_CHECKPOINT_TIMEOUT_S,
+            min_value=MIN_CODEX_WAL_CHECKPOINT_TIMEOUT_S,
+            max_value=MAX_CODEX_WAL_CHECKPOINT_TIMEOUT_S,
         )
         if timeout_s is None
-        else max(0.001, timeout_s)
+        else float(timeout_s)
     )
-    return tuple(
-        checkpoint_codex_wal(wal, timeout_s=budget)
-        for wal in report.bloated_wal_files
-    )
+    if not (
+        MIN_CODEX_WAL_CHECKPOINT_TIMEOUT_S
+        <= budget
+        <= MAX_CODEX_WAL_CHECKPOINT_TIMEOUT_S
+    ):
+        raise ValueError(
+            "timeout_s must be in "
+            f"[{MIN_CODEX_WAL_CHECKPOINT_TIMEOUT_S:g}, "
+            f"{MAX_CODEX_WAL_CHECKPOINT_TIMEOUT_S:g}] seconds, got {budget}"
+        )
+
+    deadline = time.monotonic() + budget
+    results: list[CodexWalCheckpointResult] = []
+    for wal in report.bloated_wal_files:
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            results.append(
+                CodexWalCheckpointResult(
+                    wal_path=wal.path,
+                    database_path=wal.database_path,
+                    attempted=False,
+                    status="timeout",
+                    error=(
+                        "aggregate Codex WAL checkpoint timeout exhausted "
+                        f"after {budget:g}s"
+                    ),
+                )
+            )
+            continue
+        results.append(checkpoint_codex_wal(wal, timeout_s=min(budget, remaining_s)))
+    return tuple(results)
 
 
 def format_bytes(num_bytes: int | None) -> str:
