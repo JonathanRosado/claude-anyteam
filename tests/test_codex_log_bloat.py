@@ -20,11 +20,13 @@ from claude_anyteam.codex_log_bloat import (
     CODEX_WAL_WARN_THRESHOLD_BYTES_ENV,
     MAX_CODEX_WAL_CHECKPOINT_TIMEOUT_S,
     MAX_CODEX_WAL_WARN_THRESHOLD_BYTES,
+    MIN_CODEX_WAL_WARN_THRESHOLD_BYTES,
     CodexWalFile,
     CodexLogBloatReport,
     CodexWalCheckpointResult,
     checkpoint_bloated_codex_wals,
     checkpoint_codex_wal,
+    codex_wal_warn_threshold_bytes,
     inspect_codex_log_bloat,
 )
 
@@ -151,6 +153,25 @@ def test_threshold_env_rejects_out_of_range_values(tmp_path: Path, monkeypatch) 
 
     with pytest.raises(ValueError, match=CODEX_WAL_WARN_THRESHOLD_BYTES_ENV):
         inspect_codex_log_bloat(sqlite_home=tmp_path)
+
+
+def test_threshold_env_rejects_values_below_one_mib(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv(CODEX_WAL_WARN_THRESHOLD_BYTES_ENV, "0")
+    with pytest.raises(ValueError, match=CODEX_WAL_WARN_THRESHOLD_BYTES_ENV):
+        inspect_codex_log_bloat(sqlite_home=tmp_path)
+
+    monkeypatch.setenv(
+        CODEX_WAL_WARN_THRESHOLD_BYTES_ENV,
+        str(MIN_CODEX_WAL_WARN_THRESHOLD_BYTES - 1),
+    )
+    with pytest.raises(ValueError, match=CODEX_WAL_WARN_THRESHOLD_BYTES_ENV):
+        inspect_codex_log_bloat(sqlite_home=tmp_path)
+
+    monkeypatch.setenv(
+        CODEX_WAL_WARN_THRESHOLD_BYTES_ENV,
+        str(MIN_CODEX_WAL_WARN_THRESHOLD_BYTES),
+    )
+    assert codex_wal_warn_threshold_bytes() == MIN_CODEX_WAL_WARN_THRESHOLD_BYTES
 
 
 def test_checkpoint_timeout_env_rejects_out_of_range_values(

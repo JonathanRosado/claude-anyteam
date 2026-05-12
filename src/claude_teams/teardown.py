@@ -465,7 +465,6 @@ def _append_team_kill_completed_event(
         },
         payload={
             "surface": "team_kill_completed",
-            "team_name": team_name,
             "requested": result.get("requested", 0),
             "graceful": list(result.get("graceful", [])),
             "forced": list(result.get("forced", [])),

@@ -315,11 +315,13 @@ CAPABILITY_HOOKS: dict[str, CapabilityRuntimeHook] = {
         test_paths=(
             "tests/test_visibility_events.py::test_wrapper_tool_failure_unrecovered_emits_after_quiet_window",
             "tests/test_visibility_events.py::test_wrapper_tool_failure_multi_failure_series_emits_one_terminal_envelope",
+            "tests/test_visibility_events.py::test_wrapper_tool_failure_per_tool_debounce_independent",
             "tests/test_app_server_default.py::test_wrapper_tool_failure_window_env_and_overrides_are_honored",
         ),
         note=(
             "Codex App Server emits wrapper_tool_failure_unrecovered after the "
-            "configured discriminator window and debounces same-tool retry loops."
+            "configured discriminator window, debounces same-tool retry loops, "
+            "and keeps different wrapper tools independent."
         ),
     ),
 }
@@ -675,6 +677,9 @@ _BASE_CAPABILITY_MANIFEST: dict[str, dict[str, Any]] = {
             "Gemini, or Kimi until those backends expose the same live wrapper "
             "tool event stream and discriminator window."
         ),
+        # Per the capability-manifest schema convention, ``failure_modes`` is
+        # the closed list callers must handle. For monitoring capabilities that
+        # includes non-terminal outcomes such as recovered/debounced signals.
         "failure_modes": [
             "WRAPPER_TOOL_FAILURE_UNRECOVERED",
             "WRAPPER_TOOL_FAILURE_RECOVERED_BY_PROGRESS",

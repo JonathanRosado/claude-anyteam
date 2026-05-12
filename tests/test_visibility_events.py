@@ -1024,6 +1024,88 @@ def test_wrapper_tool_failure_retry_loop_debounces_by_tool_name(monkeypatch):
 
 
 
+def test_wrapper_tool_failure_per_tool_debounce_independent(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    class AdvancingQueue:
+        def __init__(self, items: list[dict], clock: Clock):
+            self.items = list(items)
+            self.clock = clock
+
+        def get(self, timeout=None):
+            if self.items:
+                item = self.items.pop(0)
+                if "__advance__" in item:
+                    self.clock.now += float(item["__advance__"])
+                    raise RuntimeError("empty (test)")
+                return item
+            raise RuntimeError("empty (test)")
+
+    def failed_tool(tool_name: str, error: str) -> dict:
+        return {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "mcpToolCall",
+                    "server": "claude_anyteam_wrapper",
+                    "tool": tool_name,
+                    "status": "failed",
+                    "error": error,
+                }
+            },
+        }
+
+    clock = Clock()
+    notifications = [
+        failed_tool("task_update", "bad task id"),
+        {"__advance__": 1},
+        failed_tool(
+            "mcp_anyteam_read_file",
+            "[Errno 2] No such file or directory: '/missing'",
+        ),
+        {"__advance__": 91},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+
+    class Client(_FakeClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, notifications=[], **kwargs)
+            self.notifications = AdvancingQueue(notifications, clock)
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", Client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", clock.monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="fail with two wrapper tools",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="49",
+            overall_timeout_s=900,
+            non_progress_warn_s=300,
+            wrapper_tool_failure_window_s=90,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    unrecovered = [
+        e for e in emitted if e.kind == "wrapper_tool_failure_unrecovered"
+    ]
+    assert [e.payload["tool_name"] for e in unrecovered] == [
+        "task_update",
+        "mcp_anyteam_read_file",
+    ]
+    assert {e.payload["debounced_by"] for e in unrecovered} == {"tool_name"}
+
+
 def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
     events_root: Path,
     monkeypatch,

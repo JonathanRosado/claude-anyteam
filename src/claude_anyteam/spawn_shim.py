@@ -36,6 +36,7 @@ PRIMARY_BINARY = "claude-anyteam"
 LEGACY_BINARY = "codex-teammate"
 GEMINI_BINARY = "gemini-anyteam"
 KIMI_BINARY = "kimi-anyteam"
+UNPARSEABLE_AGENT_CONFIG_PATH = "<unparseable>"
 
 
 @dataclass
@@ -125,6 +126,14 @@ def _agent_config_path(team_name: str, agent_name: str) -> str:
     )
 
 
+def _agent_config_path_for_event(
+    team_name: str | None, agent_name: str | None
+) -> str:
+    if team_name and agent_name:
+        return _agent_config_path(team_name, agent_name)
+    return UNPARSEABLE_AGENT_CONFIG_PATH
+
+
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -145,17 +154,13 @@ def _team_agent_suggestion(parsed: ParsedArgs) -> str:
 
 
 def _refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int:
-    config_path = (
-        _agent_config_path(parsed.team_name, parsed.agent_name)
-        if parsed.team_name and parsed.agent_name
-        else None
-    )
+    config_path = _agent_config_path_for_event(parsed.team_name, parsed.agent_name)
     suggestion = _team_agent_suggestion(parsed)
     message = (
         f"Refusing bare {route} routed teammate {parsed.agent_name!r}: no "
         "per-teammate config file was found"
     )
-    if config_path:
+    if config_path != UNPARSEABLE_AGENT_CONFIG_PATH:
         message += f" at {config_path}"
     message += (
         f". Run `{suggestion}` before Agent(...), or set "
@@ -185,17 +190,13 @@ def _refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int:
 
 
 def _emit_bare_prefix_override_event(route: str, parsed: ParsedArgs) -> None:
-    config_path = (
-        _agent_config_path(parsed.team_name, parsed.agent_name)
-        if parsed.team_name and parsed.agent_name
-        else None
-    )
+    config_path = _agent_config_path_for_event(parsed.team_name, parsed.agent_name)
     message = (
         f"Allowing bare {route} routed teammate {parsed.agent_name!r} because "
         f"{ALLOW_BARE_PREFIX_ENV}=1 is set and no per-teammate config file "
         "was found"
     )
-    if config_path:
+    if config_path != UNPARSEABLE_AGENT_CONFIG_PATH:
         message += f" at {config_path}"
     record: dict[str, object] = {
         "event": "spawn_shim.bare_prefix_allowed_via_override",

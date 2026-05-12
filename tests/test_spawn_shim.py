@@ -558,6 +558,47 @@ def test_bare_prefix_override_allows_dispatch_without_config(monkeypatch, tmp_pa
     assert json.loads(stderr_lines[1])["route"] == "codex"
 
 
+def test_bare_prefix_override_uses_unparseable_config_path_sentinel(
+    monkeypatch, tmp_path, capsys
+):
+    calls = _record_execv(monkeypatch)
+    _clear_binary_env(monkeypatch)
+    monkeypatch.setenv("CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "/usr/local/bin/claude-anyteam-spawn-shim",
+            "--agent-name",
+            "codex-ghost",
+        ],
+    )
+    monkeypatch.setattr(
+        spawn_shim.shutil,
+        "which",
+        lambda n: {
+            "claude-anyteam": "/usr/local/bin/claude-anyteam",
+            "claude": "/usr/local/bin/claude",
+        }.get(n),
+    )
+
+    assert spawn_shim.main() == 0
+
+    assert calls == [
+        (
+            "/usr/local/bin/claude-anyteam",
+            ["/usr/local/bin/claude-anyteam", "--name", "codex-ghost"],
+        )
+    ]
+    stderr_lines = capsys.readouterr().err.strip().splitlines()
+    override = json.loads(stderr_lines[0])
+    assert override["event"] == "spawn_shim.bare_prefix_allowed_via_override"
+    assert override["team_name"] is None
+    assert override["config_path"] == "<unparseable>"
+    assert json.loads(stderr_lines[1])["route"] == "codex"
+
+
 def test_agent_config_malformed_json_is_tolerated(monkeypatch, tmp_path, capsys):
     _write_agent_config(tmp_path, "t", "codex-bad", "{not: valid json")
     calls, stderr = _codex_argv_for(monkeypatch, tmp_path, "t", "codex-bad", capsys)

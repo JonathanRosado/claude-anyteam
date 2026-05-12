@@ -148,9 +148,9 @@ choices get flagged in review.
 
 ---
 
-## 4. Configuration surface — two knob classes, two checklists
+## 4. Configuration surface — three knob classes, three checklists
 
-Not every tunable needs every surface. There are **two classes of
+Not every tunable needs every surface. There are **three classes of
 config knob** in this codebase, and they have different requirements.
 Decide which class your tunable falls into before adding surfaces.
 
@@ -201,31 +201,60 @@ to vary per spawn.
   since PR #65; the WAL bloat threshold and checkpoint policy belong
   to the operator's Codex install, not a per-teammate decision.
 
+### 4.c Per-CLI-operation knobs (command flag + env fallback)
+
+Tunables that govern **one explicit operator command invocation** —
+not a teammate runtime and not a persistent wrapper-process policy. These
+belong on the command's CLI surface, may also have an env var for scripts
+or local operator defaults, and should **not** get an `agents/<name>.json`
+key or capability-manifest field.
+
+The precedent is `team-kill`'s graceful shutdown budget:
+
+| Surface | Example |
+| --- | --- |
+| **CLI flag** | `claude-anyteam team-kill --timeout-s <seconds>` |
+| **Environment variable** | `CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S` |
+| **`agents/<name>.json` key** | n/a — `team-kill` operates on a team at call time, not on one teammate's adapter config |
+| **Capability-manifest field** | n/a — this is a CLI/MCP operation budget, not a backend capability |
+
+Use this class when the setting answers, "How should this one operator
+action run right now?" rather than "How should this teammate behave on
+future turns?" or "How should this installation mitigate a global host
+condition?"
+
 ### Decide which class you're in — a one-question test
 
-Ask: **"Would a single team realistically want different values for
-this knob across two of its teammates?"**
+Ask first: **"Is this knob scoped to one explicit CLI/MCP operation
+invocation?"**
 
-- **Yes** → class 4.a, full four-fold surface in lock-step.
-- **No** → class 4.b, env-var-only is acceptable; `env.py`
-  registration is still required either way.
+- **Yes** → class 4.c, command flag + optional env fallback; no
+  per-teammate JSON or capability-manifest field.
+- **No** → ask: **"Would a single team realistically want different
+  values for this knob across two of its teammates?"**
+  - **Yes** → class 4.a, full four-fold surface in lock-step.
+  - **No** → class 4.b, env-var-only is acceptable; `env.py`
+    registration is still required either way.
 
-If unsure, default to 4.a — adding surfaces later is harder than
-trimming unused ones, and per-teammate overrides are forward-compatible
-even when no one is using them.
+If unsure between 4.a and 4.b, default to 4.a — adding surfaces later is
+harder than trimming unused ones, and per-teammate overrides are
+forward-compatible even when no one is using them. If unsure between 4.b
+and 4.c, ask whether the value should persist across all future wrapper
+spawns (4.b) or just parameterize one operator command (4.c).
 
-### Naming convention (both classes — RFC §5.6)
+### Naming convention (all classes — RFC §5.6)
 
-- CLI flag (class 4.a only) is `--<knob-name>-s` (terminal `-s`
-  indicates seconds; matches `--turn-timeout-s`,
-  `--non-progress-warn-s`).
+- CLI flag (class 4.a and 4.c) is `--<knob-name>-s` when the value
+  is a seconds budget (terminal `-s` indicates seconds; matches
+  `--turn-timeout-s`, `--non-progress-warn-s`, and
+  `team-kill --timeout-s`).
 - Env var prefix is always `CLAUDE_ANYTEAM_*` (the rebrand preserves
   `CODEX_TEAMMATE_*` as a fallback for legacy installs — see
   `env.py` — but new vars do NOT need a legacy alias).
 - JSON key (class 4.a only) is the env var name minus the prefix,
-  lowercased with underscores.
+  lowercased with underscores. Class 4.c knobs do not get JSON keys.
 - Env var name **must** be registered as a module-level constant in
-  `src/claude_anyteam/env.py` (both classes), not inline in the
+  `src/claude_anyteam/env.py` (all classes), not inline in the
   caller. **S3 from PR-#54 review** caught the inverse:
   `codex_log_bloat.py` defined three new env var names as local
   constants, which made them invisible to anyone reading `env.py`
@@ -236,7 +265,7 @@ even when no one is using them.
 **Cross-reference:** when adding a class-4.a tunable, also add it to
 the RFC's existing-knobs table
 (`docs/design/timers-vs-visibility.md` §5.6) so the inventory stays
-current. Class-4.b tunables don't need to appear in §5.6 (the RFC's
+current. Class-4.b and 4.c tunables don't need to appear in §5.6 (the RFC's
 scope is per-teammate behavioral knobs), but they MUST be documented
 in the `CHANGELOG.md` `## [Unreleased]` entry with their default and
 range — operators read the changelog to learn what they can set.
@@ -280,6 +309,12 @@ entirely.
 - `wrapper_tool_failure_window_s`: `[60, 300]` seconds (empirically
   grounded in the natural Mode A recovery gap distribution — see
   RFC §5.1).
+- `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES`: `[1 MiB,
+  10 GiB]` (below 1 MiB is operator error and would turn the bloat
+  detector into a false-positive engine; default remains 100 MiB).
+- `CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S` / `team-kill
+  --timeout-s`: `[1, 60]` seconds (fast teardown should not recreate
+  the long-hang behavior it exists to avoid).
 
 **Rule of thumb:** pick a range based on empirical or doctrinal
 grounding, document the grounding in the docstring or RFC, and raise

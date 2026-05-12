@@ -540,6 +540,8 @@ def test_team_kill_force_removes_members_and_resets_tasks(fake_home, monkeypatch
     events = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "events" / "team-lead.jsonl")
     assert events[-1]["kind"] == "team_kill_completed"
     assert events[-1]["payload"]["surface"] == "team_kill_completed"
+    assert events[-1]["team"] == "build"
+    assert "team_name" not in events[-1]["payload"]
     assert events[-1]["payload"]["forced"] == ["codex-alice", "gemini-bob"]
     assert events[-1]["payload"]["graceful"] == []
     aggregate = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "visibility.jsonl")
@@ -610,6 +612,7 @@ def test_force_kill_team_reports_purge_error_and_audits_completion(fake_home, mo
     events = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "events" / "team-lead.jsonl")
     assert events[-1]["kind"] == "team_kill_completed"
     assert events[-1]["severity"] == "warn"
+    assert "team_name" not in events[-1]["payload"]
     assert events[-1]["payload"]["purge_error"] == "disk busy"
 
 

@@ -1681,7 +1681,13 @@ def app_server_invoke(
                 "payload": payload,
             }
         )
-        if visibility_event_counts_as_wrapper_tool_recovery(event):
+        # A failed wrapper-tool event is a new discriminator candidate, not
+        # recovery activity for earlier wrapper-tool failures. Successful
+        # tool/progress/artifact events still close pending failures.
+        if (
+            visibility_event_counts_as_wrapper_tool_recovery(event)
+            and not _is_failed_wrapper_tool_event(event)
+        ):
             recovered_at = time.monotonic()
             for pending in pending_wrapper_tool_failures:
                 if (

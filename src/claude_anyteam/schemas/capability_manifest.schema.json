@@ -167,7 +167,8 @@
           "items": {
             "type": "string",
             "minLength": 1
-          }
+          },
+          "$comment": "Historical manifest field name: for diagnostic/monitoring capabilities this closed caller-handled list may include non-terminal outcomes (for example recovered or debounced signals), not only fatal failures."
         },
         "callable_from_peers": {
           "type": "boolean"
