@@ -2,7 +2,7 @@
 set -eu
 
 SETTINGS_PATH=${HOME}/.claude/settings.json
-ORIENTATION_MESSAGE="claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex, gemini-* to Gemini, kimi-* to Kimi. Use \`claude-anyteam team-agent|team-patch|team-roster\` for team config (preferred over hand-edits). Docs: https://github.com/JonathanRosado/claude-anyteam"
+ORIENTATION_MESSAGE="claude-anyteam is installed; codex-*/gemini-*/kimi-* teammates require \`claude-anyteam team-agent <name> --team <team> ...\` before Agent(...), or the spawn shim refuses the bare prefix (override: CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1). After spawn run \`claude-anyteam team-patch --all-external\`; inspect with \`team-roster\`. Docs: https://github.com/JonathanRosado/claude-anyteam"
 DRIFT_WARNING='claude-anyteam: settings drifted — run `claude-anyteam install` to repair'
 
 settings_has_required_env() {

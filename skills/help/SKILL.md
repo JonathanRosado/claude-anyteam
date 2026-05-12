@@ -1,7 +1,7 @@
 ---
 name: help
-description: Use proactively when the user wants help creating, observing, or managing Agent Teams teammates with claude-anyteam CLI backends. Covers spawn (`team-agent`, `team-patch`, `team-roster`), observability (`status`, `diagnose`, `visibility-tail`), and the codex-app-server native tool surface (imagegeneration, websearch, imageview, filechange) that lives outside the wrapper-MCP layer. Prefer this skill over ad-hoc Write/Edit/Bash against `~/.claude/teams/` and over reaching for `codex-jr:codex-rescue` when the user wants a real teammate.
-when_to_use: User asks to create, route, configure, or troubleshoot codex-*, gemini-*, or kimi-* Agent Teams teammates; OR the lead is about to write per-teammate model/effort config files or patch agentType after spawn; OR the user says "spin up codex teammates", "spawn codex team", "team of codex/gemini/kimi", or any phrase that implies multiple monitorable / pingable teammates rather than a one-shot subagent; OR the user asks "is the team healthy", "how is teammate X doing", "what is the team working on", "check on the team", "any progress from <name>", or otherwise wants to observe a running team; OR the user wants codex to generate images, do model-side web search, view an image, or use any other codex-app-server-native tool; OR a lead is about to reach for `Agent(subagent_type="codex-jr:codex-rescue")` for what is actually team-shaped work.
+description: Use proactively when the user wants help creating, observing, or managing Agent Teams teammates with claude-anyteam CLI backends. Covers the required spawn setup (`team-agent` before `Agent(...)`, otherwise bare codex-/gemini-/kimi- prefixes are refused), post-spawn repair (`team-patch`, `team-roster`), observability (`status`, `diagnose`, `visibility-tail`), and the codex-app-server native tool surface (imagegeneration, websearch, imageview, filechange) that lives outside the wrapper-MCP layer. Prefer this skill over ad-hoc Write/Edit/Bash against `~/.claude/teams/` and over reaching for `codex-jr:codex-rescue` when the user wants a real teammate.
+when_to_use: User asks to create, route, configure, or troubleshoot codex-*, gemini-*, or kimi-* Agent Teams teammates; OR the lead is about to spawn one of those prefixes without first running `claude-anyteam team-agent`; OR the lead is about to write per-teammate model/effort config files or patch agentType after spawn; OR the user says "spin up codex teammates", "spawn codex team", "team of codex/gemini/kimi", or any phrase that implies multiple monitorable / pingable teammates rather than a one-shot subagent; OR the user asks "is the team healthy", "how is teammate X doing", "what is the team working on", "check on the team", "any progress from <name>", or otherwise wants to observe a running team; OR the user wants codex to generate images, do model-side web search, view an image, or use any other codex-app-server-native tool; OR a lead is about to reach for `Agent(subagent_type="codex-jr:codex-rescue")` for what is actually team-shaped work.
 ---
 
 claude-anyteam lets Claude Code route selected Agent Teams teammates to external CLI agents through the installed spawn shim.
@@ -12,7 +12,7 @@ The plugin ships three kinds of CLI surface; reach for the one that matches the 
 
 | Surface         | Command                                  | Use when                                                                  |
 |-----------------|------------------------------------------|---------------------------------------------------------------------------|
-| Spawn / config  | `claude-anyteam team-agent <name> ...`   | Set per-teammate model/effort BEFORE `Agent(...)` (writes the agent file) |
+| Spawn / config  | `claude-anyteam team-agent <name> ...`   | Required BEFORE `Agent(...)` for codex-/gemini-/kimi- names (writes the agent file) |
 | Spawn / config  | `claude-anyteam team-patch ...`          | Patch `agentType` on routed members AFTER `Agent(...)` calls land         |
 | Spawn / config  | `claude-anyteam team-roster --team T`    | Inspect roster (members, backends, effort, capability versions)           |
 | Observe         | `claude-anyteam status [--team T]`       | One-screen team snapshot — roster, overrides, incidents, last activity    |
@@ -38,6 +38,7 @@ Failure mode: if the lead reaches for `codex-jr:codex-rescue` when the user want
 - Names matching `^kimi-` route to the Kimi CLI adapter (`kimi-anyteam`).
 - Other teammate names continue to launch native Claude teammates.
 - The same Agent Teams `TeamCreate` / `Agent(...)` flow is used; only the teammate name prefix selects the backend.
+- Guardrail: routed prefixes require a matching `~/.claude/teams/<team>/agents/<name>.json` created by `claude-anyteam team-agent` before `Agent(...)`. If the file is missing, the spawn shim soft-refuses the bare prefix with an actionable error instead of silently falling back to a native Claude teammate. Advanced override: set `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1` only when intentionally using adapter defaults without a per-teammate file.
 
 ## When to choose a backend
 
@@ -94,7 +95,7 @@ For `websearch` (model-side fresh web search, distinct from `mcp_anyteam_web_fet
 
 ## Setting model and effort per teammate
 
-**Use the `claude-anyteam team-agent` CLI, not raw file writes.** The spawn shim reads `~/.claude/teams/<team>/agents/<name>.json` for per-teammate `model` and `effort` overrides and passes them as `--model X --effort Y` to the adapter; the CLI is the typed contract for writing those files. Run it BEFORE calling `Agent(...)` for that teammate. Missing file = adapter defaults.
+**Use the `claude-anyteam team-agent` CLI, not raw file writes.** The spawn shim reads `~/.claude/teams/<team>/agents/<name>.json` for per-teammate `model` and `effort` overrides and passes them as `--model X --effort Y` to the adapter; the CLI is the typed contract for writing those files. Run it BEFORE calling `Agent(...)` for that teammate. Missing file = bare prefix soft-refuse for `codex-*` / `gemini-*` / `kimi-*` unless `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1` is set deliberately.
 
 ```bash
 claude-anyteam team-agent codex-implementer --team build-team --model gpt-5.5 --effort xhigh
