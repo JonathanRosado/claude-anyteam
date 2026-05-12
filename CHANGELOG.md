@@ -9,7 +9,15 @@ All notable changes to claude-anyteam are documented here. Format follows [Keep 
 - **`turn_timeout_s` default bumped 900 → 1800s** (task #5). The prior 900s cap interrupted legitimately long Codex turns (large test suites, multi-file refactors at `xhigh` effort) and was the dominant pain the visibility-driven RFC at `docs/design/timers-vs-visibility.md` (issue #50) was written to address. Cap remains 3600s — no single turn should run longer than an hour. Affects Codex App Server (`turn_timeout_s`), Codex Exec, and `claude-native` (`CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S`). Set `--turn-timeout-s 900` or `CLAUDE_ANYTEAM_TURN_TIMEOUT_S=900` to restore the prior default for any single teammate.
 - **`non_progress_warn_s` default flipped from 300s to None (opt-in)** (task #5 / RFC #50 Phase B). The soft non-progress watchdog now ships disabled by default. Lead reads typed visibility events instead — see `docs/design/timers-vs-visibility.md` for the migration plan and the new envelope taxonomy. Existing users who want the prior behavior set `--non-progress-warn-s 300` or `CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S=300`.
 - **`non_progress_warn_s` range upper bumped 900 → 1800s** so opt-in users can scale the watchdog proportionally to the new `turn_timeout_s` default. Range now `[60, 1800]` when explicitly set.
-- **Kimi / Gemini subprocess `timeout_s` defaults bumped 600 → 1800s** in `backends/kimi/invoke.py` and `backends/gemini/invoke.py` for consistency with the new `turn_timeout_s` default. Headless callers that rely on the function-default behavior get the longer cap; explicit callers are unaffected.
+- **Kimi / Gemini subprocess `timeout_s` defaults bumped 600 → 1800s** in `backends/kimi/invoke.py` and `backends/gemini/invoke.py` for consistency with the new `turn_timeout_s` default. Production main loops (`backends/{kimi,gemini}/loop.py`) build kwargs without `timeout_s` and call `headless_invoke.run(**kwargs)`, so production paths inherit the new 1800s default — not headless-only.
+
+### Fixed
+
+- **`non_progress_interrupt_s` decoupled from the soft-watchdog flag** (PR #52 block-fix per opus-reviewer 2026-05-12). The opt-in overnight-kill knob now works correctly with the new `non_progress_warn_s=None` default. **Semantic split** — operators reading the docs should know which path fires when:
+  - **When `non_progress_warn_s` is set (opt-in to soft watchdog):** the interrupt preserves the **original semantics** verbatim — fires only after the soft warn has fired, no later checkpoint was observed since the warn, AND total turn elapsed time (`now - turn_started_at`) exceeds `non_progress_interrupt_s`. The anchor is turn-start.
+  - **When `non_progress_warn_s` is `None` (new default):** the interrupt uses **silence-window semantics** — fires when no observable progress for `non_progress_interrupt_s` seconds (`now - last_progress_at >= non_progress_interrupt_s`). The anchor is last-progress, not turn-start. This is the §7.1 overnight-kill semantic the RFC carve-out promised.
+  - The log payload's `warn_active` field tells which path fired post-hoc.
+  - Both semantics are correct for their use case; the split exists because warn-as-precondition is meaningful when warn fires but vacuous when it doesn't, so we substitute the most-direct equivalent ("no progress for interrupt_s seconds") in the absence-case.
 
 ### Documentation
 
