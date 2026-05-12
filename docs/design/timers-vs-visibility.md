@@ -1,25 +1,52 @@
 # RFC: visibility-driven stall handling (replace soft timers with lead-actionable events)
 
-**Status:** draft (task #6) — primary author `opus-architect`, adversarial review `opus-reviewer`
-**Date:** 2026-05-12
+**Status:** draft v2 (task #6) — primary author `opus-architect`, adversarial review `opus-reviewer`
+**Date:** 2026-05-12 (v1); 2026-05-12 revised (v2)
 **Tracks:** north star §2 (visibility parity), §3 (peer efficiency)
 **Related issues:** #40 (concurrent initialize hang), #43 (sqlite WAL bloat), #49 (mid-turn stall after wrapper_tool failure)
 **Related task:** #5 (bump `turn_timeout_s` default)
 **Related PR:** #42 (Phase 1 — typed initialize-timeout events)
 
+**v2 revision log** (response to opus-reviewer's 2026-05-12 REQUEST CHANGES, items 1, 2, 3, 4 blocking + 5–10 sharpening):
+
+- §5.1 — window widened from 5–10s to **60–90s** (default 90s), anchored to the empirical `codex-implementer-a` recovery trace (item 1). New §5.1.1 adds the Mode A/B discriminator pseudocode (item 5). §5.1 prescriptive "right action" language demoted to "potential lead-side responses (informational; lead decides)" (item 3).
+- §0 (new) — explicit engagement with invariant 11: *signal-emitting wall-clock windows are not the same primitive as action-triggering soft timers* (item 3).
+- §5 — every new envelope now ships with a four-leg taxonomy integration table covering `VisibilityEventKind` Literal, `parse_protocol_text` dispatch case, `KNOWN_TASK_BLOCKED_REASONS` token, and `ERROR_CLASSES + classify_failure` entry. Each envelope's top-level `kind` value (distinct kind vs `visibility_degraded` with `payload.surface`) is explicit (item 2).
+- §7.4 — cardinality argument backed by the per-team aggregate `visibility.jsonl` file (`protocol_io.py:514`). `transport_alive` cadence raised to **default 90s, range [30, 600]**, per-teammate configurable. Combined cardinality with §5.5 `working_on` is bounded to ≤ 4 envelopes/min/teammate at default settings (item 4).
+- §1 inventory — adds codex `tools/call` 120s ceiling as a bounded-I/O entry with documented workaround (per team-lead's late note).
+- §1.2 — Kimi 600s reclassification commits to "future-phase demotion conditional on `working_on_compliance: best_effort`" (item 6).
+- §6 / §7.5 — `non_progress_warn_s` default flip ships with **one release of deprecation envelope warning** before becoming the default (item 9 backwards-compat).
+- §7.1 — overnight watchdog persona is **filed as a follow-up task at RFC merge**, not left as an open question (item 7). Open questions §9 trimmed accordingly.
+- §8 Phase D — clarified to "unifies the action-triggering wall-clock onto the signal-emitting wall-clock," not "removes" the wall-clock delta (item 8).
+- §9 Q2 — answered: `transport_alive` is a `VisibilityEvent`, not a `MailboxMessage` (item 10).
+
+## 0 — Signal-emitting wall-clock windows ≠ action-triggering soft timers
+
+Before the inventory: the architectural distinction this RFC depends on. opus-reviewer's item 3 correctly flagged that §5.1, §5.2, and §5.4 all contain wall-clock windows. That is true. The defensible distinction is **what fires when the clock expires**:
+
+| Today's soft timer | Proposed visibility window |
+| --- | --- |
+| `non_progress_warn_s` fires at 300s → adapter **steers the model and writes to its working memory**. Action lives inside the wrapper. The model has to reconcile the unsolicited steer against its own state. | `app_server_idle_quiet` fires at 60s → emits a typed envelope to the lead. **No model-side action.** The lead reads the envelope and may or may not act. |
+| `turn_timeout_s` fires at 900s → adapter **interrupts the turn and discards in-flight work**. Hard kill from the wrapper. | `wrapper_tool_failure_unrecovered` fires at 90s → emits a typed envelope. **No interrupt, no kill.** Optional lead-side action (task_reassign, recovery_hint) is a *separate* invocation, not a side effect of the timer. |
+| `non_progress_interrupt_s` opt-in → adapter **issues `turn_interrupt`** if the window passes. | Same opt-in flag becomes a **consumer** of `app_server_idle_quiet` events, not its own wall-clock loop. The interrupt is still wall-clock-triggered (item 8) but the *delta computation* lives in one place. |
+
+The user's meta-ask was *"timers may not be needed if visibility is enough."* That is shorthand for *"don't have the wrapper take destructive action on a wall-clock."* The new envelopes preserve that — they emit signal, they don't act. Reviewers and implementers should read this RFC as **"replace destructive-wall-clock-actions with observable-wall-clock-signals,"** not as *"remove all wall-clock primitives."* The latter is impossible (PR #42's `app_server_initialize_timeout` is wall-clock and we still need it).
+
+This framing is load-bearing for the whole RFC. If a follow-up PR cites this doc to argue "no new wall-clock windows," that PR is misreading §0.
+
 ## TL;DR
 
-The user has been bitten by wall-clock timers (the 900s `turn_timeout_s`, the 300s `non_progress_warn_s`) more than they have been helped by them. Their meta-ask is sharp: *"if enough visibility is built into the protocol, timers may not be needed."*
+The user has been bitten by wall-clock timers that **act on the model** (the 900s `turn_timeout_s` interrupts, the 300s `non_progress_warn_s` steers). Their meta-ask is sharp: *"if enough visibility is built into the protocol, timers may not be needed."*
 
-The answer is mostly **yes, with caveats**:
+The answer is mostly **yes, with the §0 distinction**:
 
-- **Stall-detection timers** (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`) are coping mechanisms for missing visibility. They predate the typed-event work landed in PR #27 (v0.8.0 protocol revision) and PR #42 (Phase 1 initialize events). With four new typed envelopes (`wrapper_tool_failure_unrecovered`, `app_server_idle_quiet`, `subprocess_pressure`, `transport_alive`) and a mandatory model-emitted `working_on` claim, all three can be demoted to *opt-in backstops for the lead-offline case*.
-- **Bounded-I/O timers** (`DEFAULT_MANIFEST_READ_TIMEOUT_S`, `DEFAULT_FILE_LOCK_TIMEOUT_S`, JSON-RPC request ceilings, subprocess version probes) are not coping mechanisms — they cap real transport latency, and they stay.
+- **Stall-detection timers** (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`) are coping mechanisms for missing visibility. They predate the typed-event work landed in PR #27 (v0.8.0 protocol revision) and PR #42 (Phase 1 initialize events). With four new typed envelopes (`wrapper_tool_failure_unrecovered`, `app_server_idle_quiet`, `subprocess_pressure`, `transport_alive`) and a mandatory model-emitted `working_on` claim, all three can be demoted to *opt-in backstops for the lead-offline case*. The new envelopes are still wall-clock-driven (§0); they just emit signal instead of acting on the model.
+- **Bounded-I/O timers** (`DEFAULT_MANIFEST_READ_TIMEOUT_S`, `DEFAULT_FILE_LOCK_TIMEOUT_S`, JSON-RPC request ceilings, subprocess version probes, codex `tools/call` 120s ceiling) are not coping mechanisms — they cap real transport latency, and they stay.
 - **Teardown timers** (`JsonRpcStdioClient.close(timeout=5.0)`, process-group SIGTERM grace) are bounded budgets, not stall-detection. They stay, with documented per-call budgets and a separate RFC follow-up under task #7 for cumulative team-teardown.
 
-The architectural distinction is **"timer over IPC you control"** vs **"timer over modeling time you do not."** The first is fine. The second has been the source of every false-positive in our observed corpus.
+The architectural distinction is **"wall-clock that emits signal"** vs **"wall-clock that acts on the model."** The first is fine. The second has been the source of every false-positive in our observed corpus.
 
-This RFC proposes the new event taxonomy, the migration plan, and the lead-offline carve-out where timers still earn their keep.
+This RFC proposes the new event taxonomy, the migration plan, and the lead-offline carve-out where action-triggering timers still earn their keep.
 
 ---
 
