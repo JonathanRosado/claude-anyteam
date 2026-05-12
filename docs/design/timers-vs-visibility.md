@@ -381,6 +381,27 @@ def _discriminate(error_event: ToolEvent) -> None:
 
 This is the **§3 piece**: requiring the *agent* to participate in its own visibility, not making the wrapper guess.
 
+### 5.6 Configuration surface (post-approval sharpen 3)
+
+PR #42 set the four-fold-surface precedent for new tunables: every knob exposed on the CLI also gets an env var, a per-teammate `agents/<name>.json` key, AND (where applicable) a capability-manifest field. This section names the surfaces for the v2 envelopes' tunables so Phase A's implementation PR doesn't reinvent the naming on the fly.
+
+| Tunable | CLI flag | Env var | `agents/<name>.json` key | Capability-manifest field |
+| --- | --- | --- | --- | --- |
+| `wrapper_tool_failure_unrecovered` window W (§5.1, default 90s, range [60, 300]) | `--wrapper-tool-failure-window-s` | `CLAUDE_ANYTEAM_WRAPPER_TOOL_FAILURE_WINDOW_S` | `wrapper_tool_failure_window_s` | n/a (wrapper-side primitive; not declared as backend capability) |
+| `app_server_idle_quiet` window (§5.2, default 60s, range [30, 600]) | `--app-server-idle-quiet-window-s` | `CLAUDE_ANYTEAM_APP_SERVER_IDLE_QUIET_WINDOW_S` | `app_server_idle_quiet_window_s` | n/a |
+| `transport_alive` cadence (§5.4, default 90s, range [30, 600]) | `--transport-alive-cadence-s` | `CLAUDE_ANYTEAM_TRANSPORT_ALIVE_CADENCE_S` | `transport_alive_cadence_s` | n/a |
+| `working_on` claim cadence (§5.5, default 60s) | `--working-on-cadence-s` | `CLAUDE_ANYTEAM_WORKING_ON_CADENCE_S` | `working_on_cadence_s` | reuses existing `working_on_compliance: "strict" \| "best_effort" \| "absent"` (per-backend) |
+| `subprocess_pressure` debounce (§5.3, default 60s) | `--subprocess-pressure-debounce-s` | `CLAUDE_ANYTEAM_SUBPROCESS_PRESSURE_DEBOUNCE_S` | `subprocess_pressure_debounce_s` | per-backend detection-heuristics manifest field (each backend declares which signals it inspects) |
+
+**Naming consistency:** all env vars use the `CLAUDE_ANYTEAM_*` prefix; all CLI flags use the `--<knob-name>-s` pattern (terminal `-s` indicating seconds, matching `--turn-timeout-s`, `--non-progress-warn-s` precedent); all per-teammate JSON keys use the same name as the env var minus the prefix, lowercased with underscores.
+
+**Existing knobs (for cross-reference):**
+- `turn_timeout_s` — `--turn-timeout-s` / `CLAUDE_ANYTEAM_TURN_TIMEOUT_S` / `turn_timeout_s` (default 1800 as of PR #52).
+- `non_progress_warn_s` — `--non-progress-warn-s` / `CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S` / `non_progress_warn_s` (default None as of PR #52, opt-in).
+- `non_progress_interrupt_s` — `--non-progress-interrupt-s` / `CLAUDE_ANYTEAM_NON_PROGRESS_INTERRUPT_S` / `non_progress_interrupt_s` (default None, opt-in overnight knob; decoupled from warn flag in PR #52 block-fix 38a3287).
+
+Phase A's implementation PR is free to deviate from these names if a strong reason emerges; if it does, it MUST update this section in the RFC simultaneously so the two stay in lock-step.
+
 ---
 
 ## 6 — Proposed reclassification of existing timers
