@@ -468,44 +468,59 @@ This is the §1-respecting endgame: the *agent* declares its state, the wrapper 
 
 **Phase A — emit the events** (no behavior change).
 
-1. Add `wrapper_tool_failure_unrecovered`, `app_server_idle_quiet`, `subprocess_pressure`, `transport_alive` to `protocol_io.py` as new `VisibilityEvent` emitters mirroring `emit_initialize_timeout_visibility_degraded`.
-2. Wire emission in `codex.py` (App Server polling loop), `backends/gemini/loop.py`, `backends/kimi/loop.py` where applicable per per-backend capability.
-3. Add `working_on` contract to `prompts.py` and per-backend prompt templates.
-4. Declare per-backend `working_on_compliance` and new event capability strings in the capability manifest.
-5. Wire `claude-anyteam:diagnose` skill / `visibility_tail` to recognize the four new envelopes.
+For each of the four new envelopes, the implementation PR MUST update all four taxonomy registration points (see §5 integration table) in lock-step or the receiver degrades to prose. The PR-#42 lock-step pattern is the precedent.
+
+1. **Per-envelope four-leg taxonomy registration** in `messages.py` and `diagnostics.py` — table at §5.
+2. Add `wrapper_tool_failure_unrecovered`, `app_server_idle_quiet`, `subprocess_pressure`, `transport_alive` to `protocol_io.py` as new `VisibilityEvent` emitters mirroring `emit_initialize_timeout_visibility_degraded`.
+3. Wire emission in `codex.py` (App Server polling loop, including the §5.1.1 Mode A/B discriminator), `backends/gemini/loop.py`, `backends/kimi/loop.py` where applicable per per-backend capability.
+4. Add `working_on` contract to `prompts.py` and per-backend prompt templates.
+5. Declare per-backend `working_on_compliance` and new event capability strings in the capability manifest.
+6. Wire `claude-anyteam:diagnose` skill / `visibility_tail` to recognize the four new envelopes.
 
 Ship as a normal feature PR. No defaults change.
 
-**Phase B — flip defaults** (task #5 territory).
+**Phase A.5 — cardinality measurement** (gate for Phase B; per opus-reviewer item 4).
 
-1. `turn_timeout_s` default 900 → 1800 (task #5 has this as its primary deliverable).
-2. `non_progress_warn_s` default 300 → None (off by default). Keep the knob; opt-in for users who want the soft watchdog steer behavior.
-3. CHANGELOG entry; release note documenting the new defaults and the visibility events that replace them.
+Synthetic load at M={10, 50, 100} teammates with v2 cadences (§7.4 table). Report aggregate-lock held-time and write-rate per second on `events/.lock`. Gate Phase B on the measurement: if M=100 lock contention exceeds 50ms per acquisition or 10 writes/s sustained, fall back to per-agent-only routing for `transport_alive` and `working_on` (skip aggregate mirror).
 
-**Phase C — teach the lead** (skill update).
+**Phase B — flip defaults** (task #5 territory, partially landed as PR #52).
 
-1. `claude-anyteam:help` skill gains a "stall handling" section: *"when you see `wrapper_tool_failure_unrecovered`, the right move is to send a recovery_hint via task_update or to issue task_reassign. When you see `app_server_idle_quiet` with empty `tool_calls_in_flight`, consider sending a `turn/steer`. When you see `transport_alive` absent for >2 cycles, kill and respawn."*
-2. Peers get the same guidance via capability-manifest semantic-guidance fields.
+1. `turn_timeout_s` default 900 → 1800 (task #5 / PR #52 lands this).
+2. `non_progress_warn_s` default 300 → None (off by default). Keep the knob; opt-in for users who want the soft watchdog steer behavior. (PR #52 lands this; the one-release deprecation envelope mitigation discussed in §7.5 is a follow-up amendment if reviewers prefer.)
+3. CHANGELOG entry; release note documenting the new defaults and the visibility events that replace them. (Already in PR #52.)
 
-**Phase D — retire the soft watchdog code path** (cleanup).
+**Phase C — teach the lead and peers** (skill + manifest update).
 
-Once Phase A–C have shipped and the visibility events are observed catching the same cases in production, remove the soft watchdog code path (`codex.py:2084-2180`). Keep `non_progress_interrupt_s` as the opt-in overnight knob, but have it consume `app_server_idle_quiet` events rather than computing its own wall-clock delta.
+1. `claude-anyteam:help` skill gains a "stall handling" section. Crucial framing (per §0): the text describes **what each envelope means and what *potential* lead-side responses exist**, not "the right action." Example: *"`wrapper_tool_failure_unrecovered` indicates the model didn't produce observable progress for W=90s after a wrapper tool failure. **Potential responses** (lead decides): inspect `events/<agent>.jsonl` around the event timestamp to check Mode A vs Mode B; if Mode B, send a recovery_hint via `task_update` or issue `task_reassign`; if Mode A, wait for the model's natural recovery."*
+2. Peers get the same guidance via capability-manifest semantic-guidance fields. Per north-star §3, peers should be able to react when the lead is offline — same envelope, same potential responses, same authority chain.
+3. Add the codex `tools/call` 120s ceiling warning to the skill body (per §1.2 inventory entry).
+
+**Phase D — unify wall-clock loops** (cleanup; not "remove all wall-clock," per item 8).
+
+Once Phase A–C have shipped and the visibility events are observed catching the same cases in production, the redundant wall-clock loop in `codex.py:2084-2180` (the soft watchdog's `(now - last_progress_at) >= non_progress_warn_s` check) becomes redundant with `app_server_idle_quiet`'s emission loop. Phase D **unifies these two wall-clock loops onto one** — `non_progress_interrupt_s` (when opt-in by overnight users) becomes a consumer of `app_server_idle_quiet` events rather than computing its own delta.
+
+**Clarification (opus-reviewer item 8):** this is not "Phase D removes the wall-clock delta" — the wrapper still has to know wall-clock time to emit `app_server_idle_quiet`. What's unified is **the count of wall-clock loops** (one signal-emitter instead of two parallel deltas). The action-triggering loop collapses onto the signal-emitting loop. The wrapper still has wall-clock state; we just don't maintain two parallel copies of it.
 
 ---
 
-## 9 — Open questions for `team-lead` / `opus-reviewer`
+## 9 — Open questions for `team-lead` (revised after opus-reviewer's items 7 and 10 closed)
 
-1. **Is the overnight carve-out enough?** Should we also prototype the "watchdog persona" lead subagent (§7.1 option 2) before retiring `non_progress_warn_s`? Argument for: stronger §3 alignment. Argument against: complexity, defer to follow-up.
-2. **Should `transport_alive` be a `VisibilityEvent` or a `MailboxMessage`?** It's a heartbeat — feels mailbox-shaped. But it's also lead-only by default, which feels event-shaped. Either works; mailbox is cheaper to filter cheaply per north star §3.
-3. **Per-backend `working_on_compliance`** — do we measure this empirically or trust the manifest? Empirical measurement would mean the wrapper tracks `working_on` claim frequency and downgrades the declared compliance if it slips. Probably overkill for v1; declare and trust.
-4. **Should `app_server_idle_quiet` ever steer?** Today the soft watchdog auto-steers ("you have produced no externally visible checkpoint for Xs"). The visibility-driven model says: emit the event, let the lead decide. But for autonomous overnight runs the auto-steer is the *only* thing that fires. Recommendation: keep auto-steer opt-in via `non_progress_interrupt_s`-style knob.
+1. **Per-backend `working_on_compliance` — measured or trusted?** Empirical measurement would mean the wrapper tracks `working_on` claim frequency and downgrades the declared compliance if it slips. Probably overkill for v1; declare and trust. **Recommendation:** declare-and-trust for v1; revisit if Phase A.5 measurement reveals systematic non-compliance.
+2. **Should `app_server_idle_quiet` ever auto-steer?** Today the soft watchdog auto-steers ("you have produced no externally visible checkpoint for Xs"). The visibility-driven model says: emit the event, let the lead decide. For autonomous overnight runs the auto-steer is the *only* thing that fires. **Recommendation:** keep auto-steer opt-in via `non_progress_interrupt_s`-style knob (i.e., the existing knob's new behavior in Phase D unification — see §8 Phase D).
+3. **Is Phase A.5's measurement budget worth the wait?** Phase A is large enough already (four envelopes + working_on + 4-leg taxonomy x 3 backends). Adding a measurement gate before Phase B delays the user-visible win (the default flip). **Alternative:** ship Phase B in parallel with A.5; if A.5 finds aggregate-lock contention, follow-up PR routes around it. **Recommendation:** ship in parallel; A.5 is a gate on the *cadence-tightening* decisions, not on the default flip itself.
+
+**Closed by v2:**
+- ~~"Is the overnight carve-out enough?"~~ — closed by §7.1 commitment to file watchdog-persona follow-up task at merge (item 7).
+- ~~"Should `transport_alive` be a `VisibilityEvent` or a `MailboxMessage`?"~~ — closed by §5.4 answer: `VisibilityEvent` (item 10).
 
 ---
 
 ## 10 — Summary
 
-Stall-detection timers are coping mechanisms for missing visibility. The user has felt this directly: the 900s `turn_timeout_s` is the dominant pain. Four typed events + a prompt-contract `working_on` claim replace the signal the timers provided, more sharply and with better lead-actionability. Wall-clock interrupt earns its keep in exactly one scenario — lead-offline overnight runs — and stays opt-in for that case. Bounded-I/O and teardown timers are a separate category and stay.
+Stall-detection timers that **act on the model** are coping mechanisms for missing visibility. The user has felt this directly: the 900s `turn_timeout_s` interrupt was the dominant pain. Four typed envelopes + a model-emitted `working_on` claim **replace the action** (steer / kill) with **signal** (lead-observable envelope, lead decides). The envelopes are still wall-clock-driven (§0); they just emit instead of acting.
 
-The migration is staged so no defaults change until the events are emitting and the lead can see them. After Phase B the user's central complaint ("the 900s for codex is really fucking us over") is resolved: the cap is 1800s, but it almost never fires because `app_server_idle_quiet` + `wrapper_tool_failure_unrecovered` lets the lead intervene at second 10, not second 900.
+After Phase B (already landed by PR #52) the user's central complaint ("the 900s for codex is really fucking us over") is structurally resolved: cap is 1800s. After Phase A (the four envelopes) the lead can intervene at second 90 (`wrapper_tool_failure_unrecovered` window W=90s, grounded in the codex-implementer-a empirical trace), not second 900. After Phase D the two parallel wall-clock loops collapse onto one.
 
-This RFC is the design layer for tasks #1 (#49 recovery), #4 (#40 Phase 2), #5 (timeout defaults), and is referenced from #7 (teardown speed) where the teardown timer carve-out applies.
+Wall-clock action-triggering interrupts earn their keep in exactly one scenario — **lead-offline overnight runs**, where no observer exists — and stay opt-in for that case via `non_progress_interrupt_s`. A follow-up task to design the lead-watchdog persona (option 2) lands at this RFC's merge, so option (1) is not the permanent answer by default. Bounded-I/O timers and teardown timers are separate categories and stay.
+
+This RFC is the design layer for tasks #1 (#49 recovery — implementer-b should use §5.1's `wrapper_tool_failure_unrecovered` envelope with W=90s and the §5.1.1 Mode A/B discriminator), #4 (#40 Phase 2 — implementer-a should use `transport_alive` + the lead-offline carve-out), #5 (timeout defaults — already landed as PR #52), and is referenced from #7 (teardown speed) where the teardown timer carve-out applies.
