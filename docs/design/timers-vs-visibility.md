@@ -148,7 +148,7 @@ This is the **hard case for "timers are sufficient."** The 300s warn + 900s kill
 - The 300s steer carries no recovery_hint — it's a generic nudge.
 - The 900s kill discards any partial work and produces a generic prose error, not a typed reason the lead can grep.
 
-A `wrapper_tool_failure_unrecovered` event (§5.1) — emitted ~5s after a wrapper_tool error if no follow-up `turn_progress` arrives — gives the lead a sharp signal in seconds, with the failing tool name and error class in the payload. The lead's `Agent` skill can then issue `task_reassign` or send a recovery_hint *before* 5 minutes of dead air.
+A `wrapper_tool_failure_unrecovered` event (§5.1) — emitted at W=90s after a wrapper_tool error if no observable progress of any kind arrives within the discriminator window — gives the lead a sharp signal in ~1.5 min, with the failing tool name and error class in the payload. The lead's `Agent` skill can then `task_reassign` or send a recovery_hint *before* the 1800s `turn_timeout_s` cap would otherwise discard the work.
 
 **This is the case the user is really complaining about.** It is the strongest argument for the RFC.
 
@@ -382,13 +382,13 @@ This is the **§3 piece**: requiring the *agent* to participate in its own visib
 | Today's timer | Disposition under this RFC |
 | --- | --- |
 | `turn_timeout_s` (900s default) | **Stays as backstop, raised to 1800s default (task #5).** Only relevant when no `app_server_idle_quiet` interpretation is possible (lead offline). Cap remains 3600s. |
-| `non_progress_warn_s` (300s default) | **Default flipped to None (off).** Existing users who pinned a value keep working. The signal it provided is dominated by `app_server_idle_quiet` (event-driven, 60s default) + `wrapper_tool_failure_unrecovered` (specific, 5–10s). |
-| `non_progress_interrupt_s` (None default) | **Stays opt-in; documented as the overnight-runs knob.** This is the carve-out — see §7. |
+| `non_progress_warn_s` (300s default) | **Default flipped to None (off)** as of PR #52. Existing users who pinned a value keep working. The signal it provided is dominated by `app_server_idle_quiet` (event-driven, 60s default) + `wrapper_tool_failure_unrecovered` (specific, W=90s default, range [60, 300]). |
+| `non_progress_interrupt_s` (None default) | **Stays opt-in; documented as the overnight-runs knob.** This is the carve-out — see §7. **PR #52 block-fix (38a3287):** decoupled from the warn flag so it works correctly with `non_progress_warn_s=None`. |
 | `app_server_initialize_timeout` (90s) | **Stays.** Already paired with typed events per PR #42; template for the others. |
 | `JsonRpcStdioClient` 600s ceilings | **Stay.** Transport-level catch-all. |
 | `DEFAULT_FILE_LOCK_TIMEOUT_S` (30s) | **Stays.** Bounded I/O. |
 | Version-probe timeouts (5–10s) | **Stay.** Bounded I/O. |
-| `kimi invoke timeout_s=600` | **Stays** (Kimi has no `turn/steer` so the hard cap is the only escape). Consider raising to 1800s for consistency with the new `turn_timeout_s` default (task #5). |
+| `kimi invoke timeout_s` | **Raised 600 → 1800 in PR #52** for consistency with the new `turn_timeout_s` default (task #5). Future-phase demotion path documented at §1.2: once Kimi declares `working_on_compliance: best_effort`, the 1800s can be demoted to a backstop driven by `app_server_idle_quiet`-style signal. |
 | Teardown / shutdown 5.0s grace | **Stays; revisited under task #7.** |
 
 ---
