@@ -154,6 +154,48 @@ def test_team_agent_writes_wrapper_tool_failure_window(fake_home, capsys):
     assert "wrapper_tool_failure_window_s=120.0" in capsys.readouterr().out
 
 
+def test_team_agent_writes_auto_pickup_protocol_flag(fake_home, capsys):
+    rc = cli_main(
+        [
+            "team-agent",
+            "codex-alice",
+            "--team",
+            "build",
+            "--auto-pickup-next-task",
+        ]
+    )
+
+    assert rc == 0
+    cfg = json.loads(_agent_path(fake_home, "build", "codex-alice").read_text())
+    assert cfg == {"auto_pickup_next_task": True}
+    assert "auto_pickup_next_task=True" in capsys.readouterr().out
+
+
+def test_team_agent_can_disable_auto_pickup_protocol_flag(fake_home):
+    cli_main(
+        [
+            "team-agent",
+            "codex-alice",
+            "--team",
+            "build",
+            "--auto-pickup-next-task",
+        ]
+    )
+    rc = cli_main(
+        [
+            "team-agent",
+            "codex-alice",
+            "--team",
+            "build",
+            "--no-auto-pickup-next-task",
+        ]
+    )
+
+    assert rc == 0
+    cfg = json.loads(_agent_path(fake_home, "build", "codex-alice").read_text())
+    assert cfg == {"auto_pickup_next_task": False}
+
+
 def test_team_agent_neither_model_nor_effort_is_an_error(fake_home, capsys):
     rc = cli_main(["team-agent", "codex-alice", "--team", "build"])
     assert rc == 2
@@ -172,10 +214,23 @@ def test_team_agent_overwrites_existing_keys(fake_home):
 def test_team_agent_strips_unknown_keys_on_write(fake_home):
     path = _agent_path(fake_home, "build", "codex-alice")
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"model": "gpt-5.5", "effort": "high", "rogue_key": "bad"}))
+    path.write_text(
+        json.dumps(
+            {
+                "model": "gpt-5.5",
+                "effort": "high",
+                "auto_pickup_next_task": True,
+                "rogue_key": "bad",
+            }
+        )
+    )
     cli_main(["team-agent", "codex-alice", "--team", "build", "--effort", "xhigh"])
     cfg = json.loads(path.read_text())
-    assert cfg == {"model": "gpt-5.5", "effort": "xhigh"}
+    assert cfg == {
+        "model": "gpt-5.5",
+        "effort": "xhigh",
+        "auto_pickup_next_task": True,
+    }
     assert "rogue_key" not in cfg
 
 

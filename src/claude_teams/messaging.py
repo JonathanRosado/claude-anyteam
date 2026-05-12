@@ -27,6 +27,7 @@ from claude_teams._filelock import file_lock
 from claude_teams.models import (
     InboxAttachment,
     InboxMessage,
+    NextTaskWakeup,
     ShutdownRequest,
     TaskAssignment,
     TaskFile,
@@ -515,6 +516,33 @@ def send_task_assignment(
         coupling=task.coupling,
     )
     send_structured_message(team_name, assigned_by, task.owner, payload, base_dir=base_dir)
+
+
+def send_next_task_wakeup(
+    team_name: str,
+    recipient: str,
+    task: TaskFile,
+    *,
+    completed_task_id: str,
+    base_dir: Path | None = None,
+) -> InboxMessage:
+    summary = f"Auto-pickup task #{task.id}: {task.subject}"
+    payload = NextTaskWakeup(
+        task_id=task.id,
+        summary=summary,
+        subject=task.subject,
+        completed_task_id=completed_task_id,
+        timestamp=now_iso(),
+    )
+    msg = InboxMessage(
+        from_="team-protocol",
+        text=payload.model_dump_json(by_alias=True, exclude_none=True),
+        timestamp=now_iso(),
+        read=False,
+        summary=f"next_task:{task.id}",
+        message_kind="next_task",
+    )
+    return append_message(team_name, recipient, msg, base_dir=base_dir)
 
 
 def send_shutdown_request(

@@ -12,6 +12,7 @@ from claude_anyteam.messages import (
     BatchSummaryChild,
     BatchSummaryPayload,
     IdleNotificationOut,
+    NextTaskIn,
     PermissionRequestOut,
     PlanBlockedOut,
     PlanApprovalRequestIn,
@@ -42,6 +43,23 @@ def test_parse_task_assignment_snake_and_camel():
     assert isinstance(p, TaskAssignmentIn)
     assert p.task_id == "42"
     assert p.assigned_by == "team-lead"
+
+
+def test_parse_next_task_wakeup():
+    body = {
+        "type": "next_task",
+        "task_id": "43",
+        "summary": "Auto-pickup task #43: Follow-up",
+        "subject": "Follow-up",
+        "completed_task_id": "42",
+        "timestamp": "2026-05-12T12:00:00.000Z",
+    }
+
+    p = parse_protocol_text(json.dumps(body))
+
+    assert isinstance(p, NextTaskIn)
+    assert p.task_id == "43"
+    assert p.completed_task_id == "42"
 
 
 def test_parse_shutdown_request_snake_case():

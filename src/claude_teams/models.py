@@ -89,6 +89,14 @@ class TeamConfig(BaseModel):
     lead_agent_id: str = Field(alias="leadAgentId")
     lead_session_id: str = Field(alias="leadSessionId")
     members: list[MemberUnion]
+    auto_pickup_next_task: bool = Field(
+        default=False,
+        description=(
+            "When true, a teammate that completes an owned task is "
+            "automatically assigned the lowest-ID pending, unblocked, "
+            "unclaimed task and receives a lightweight next_task wake-up."
+        ),
+    )
 
 
 class TaskFile(BaseModel):
@@ -206,6 +214,17 @@ class TaskAssignment(BaseModel):
     assigned_by: str = Field(alias="assignedBy")
     timestamp: str
     coupling: dict[str, Any] | None = None
+
+
+class NextTaskWakeup(BaseModel):
+    model_config = {"populate_by_name": True}
+
+    type: Literal["next_task"] = "next_task"
+    task_id: str
+    summary: str
+    subject: str | None = None
+    completed_task_id: str | None = None
+    timestamp: str
 
 
 class ShutdownRequest(BaseModel):

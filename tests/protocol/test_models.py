@@ -10,6 +10,7 @@ from claude_teams.models import (
     InboxAttachment,
     InboxMessage,
     LeadMember,
+    NextTaskWakeup,
     PermissionRequest,
     PlanApprovalResponse,
     PlanBlocked,
@@ -220,7 +221,60 @@ class TestTeamConfig:
         assert raw["createdAt"] == 1770398183858
         assert raw["leadAgentId"] == "team-lead@test"
         assert raw["leadSessionId"] == "abc-123"
+        assert raw["auto_pickup_next_task"] is False
+        assert config.auto_pickup_next_task is False
         assert len(raw["members"]) == 1
+
+    def test_auto_pickup_next_task_defaults_false_for_legacy_config(self):
+        raw = {
+            "name": "test",
+            "description": "",
+            "createdAt": 100,
+            "leadAgentId": "team-lead@test",
+            "leadSessionId": "sid",
+            "members": [
+                {
+                    "agentId": "team-lead@test",
+                    "name": "team-lead",
+                    "agentType": "team-lead",
+                    "model": "opus",
+                    "joinedAt": 100,
+                    "tmuxPaneId": "",
+                    "cwd": "/tmp",
+                    "subscriptions": [],
+                },
+            ],
+        }
+
+        config = TeamConfig.model_validate(raw)
+
+        assert config.auto_pickup_next_task is False
+
+    def test_auto_pickup_next_task_can_be_enabled(self):
+        raw = {
+            "name": "test",
+            "description": "",
+            "createdAt": 100,
+            "leadAgentId": "team-lead@test",
+            "leadSessionId": "sid",
+            "auto_pickup_next_task": True,
+            "members": [
+                {
+                    "agentId": "team-lead@test",
+                    "name": "team-lead",
+                    "agentType": "team-lead",
+                    "model": "opus",
+                    "joinedAt": 100,
+                    "tmuxPaneId": "",
+                    "cwd": "/tmp",
+                    "subscriptions": [],
+                },
+            ],
+        }
+
+        config = TeamConfig.model_validate(raw)
+
+        assert config.auto_pickup_next_task is True
 
     def test_deserializes_mixed_members(self):
         raw = {
@@ -420,6 +474,20 @@ class TestStructuredMessages:
         assert data["type"] == "task_assignment"
         assert data["taskId"] == "1"
         assert data["assignedBy"] == "team-lead"
+
+    def test_next_task_wakeup(self):
+        n = NextTaskWakeup(
+            task_id="2",
+            summary="Auto-pickup task #2: Follow-up",
+            subject="Follow-up",
+            completed_task_id="1",
+            timestamp="2026-05-12T12:00:00.000Z",
+        )
+        data = json.loads(n.model_dump_json(by_alias=True))
+        assert data["type"] == "next_task"
+        assert data["task_id"] == "2"
+        assert data["completed_task_id"] == "1"
+        assert data["summary"].startswith("Auto-pickup task #2")
 
     def test_shutdown_request(self):
         r = ShutdownRequest(

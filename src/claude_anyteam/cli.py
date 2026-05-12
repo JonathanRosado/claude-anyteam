@@ -165,7 +165,7 @@ def _build_run_parser() -> argparse.ArgumentParser:
             "Management commands:\n"
             "  claude-anyteam install      Persist the claude-anyteam shim in ~/.claude/settings.json\n"
             "  claude-anyteam uninstall    Remove the installed Codex/Gemini teammate shim settings\n"
-            "  claude-anyteam team-agent   Write per-teammate model/effort/watchdog/turn-timeout to ~/.claude/teams/<team>/agents/<agent>.json\n"
+            "  claude-anyteam team-agent   Write per-teammate model/effort/watchdog/turn-timeout/protocol overrides to ~/.claude/teams/<team>/agents/<agent>.json\n"
             "  claude-anyteam team-patch   Patch agentType post-spawn so wrapper MCP validation passes\n"
             "  claude-anyteam team-roster  Print one-line-per-member team summary (flags ghosts and dead-pane members)\n"
             "  claude-anyteam team-config  Print resolved spawn-time config for a teammate (host model + adapter overrides)\n"

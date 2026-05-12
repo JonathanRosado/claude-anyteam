@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import deque
 from pathlib import Path
 from typing import Any
 
+from claude_teams import messaging, teams as team_store
 from claude_teams._filelock import file_lock
 from claude_teams.models import TaskFile
-from claude_teams.teams import team_exists
 
 TASKS_DIR = Path.home() / ".claude" / "tasks"
+TEAMS_DIR = Path.home() / ".claude" / "teams"
+
+logger = logging.getLogger(__name__)
 
 
 def _tasks_dir(base_dir: Path | None = None) -> Path:
     return (base_dir / "tasks") if base_dir else TASKS_DIR
+
+
+def _teams_dir(base_dir: Path | None = None) -> Path:
+    return (base_dir / "teams") if base_dir else TEAMS_DIR
 
 
 _STATUS_ORDER = {"pending": 0, "in_progress": 1, "completed": 2}
@@ -84,6 +92,181 @@ def _validate_parent_task_id(
         current = parent.parent_task_id
 
 
+def _agent_config_path(
+    team_name: str,
+    agent_name: str,
+    base_dir: Path | None = None,
+) -> Path:
+    return _teams_dir(base_dir) / team_name / "agents" / f"{agent_name}.json"
+
+
+def _agent_auto_pickup_enabled(
+    team_name: str,
+    agent_name: str,
+    base_dir: Path | None = None,
+) -> bool:
+    path = _agent_config_path(team_name, agent_name, base_dir=base_dir)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "task.auto_pickup.agent_config_unreadable",
+            extra={
+                "team": team_name,
+                "agent": agent_name,
+                "path": str(path),
+                "error": str(exc),
+            },
+        )
+        return False
+    return isinstance(raw, dict) and raw.get("auto_pickup_next_task") is True
+
+
+def _team_auto_pickup_enabled(
+    team_name: str,
+    base_dir: Path | None = None,
+) -> bool:
+    try:
+        return bool(
+            team_store.read_config(team_name, base_dir=base_dir).auto_pickup_next_task
+        )
+    except Exception as exc:
+        logger.warning(
+            "task.auto_pickup.team_config_unreadable",
+            extra={"team": team_name, "error": str(exc)},
+        )
+        return False
+
+
+def _auto_pickup_enabled(
+    team_name: str,
+    agent_name: str,
+    base_dir: Path | None = None,
+) -> bool:
+    return _team_auto_pickup_enabled(
+        team_name, base_dir=base_dir
+    ) or _agent_auto_pickup_enabled(team_name, agent_name, base_dir=base_dir)
+
+
+def _task_unblocked(task: TaskFile, by_id: dict[str, TaskFile]) -> bool:
+    for blocker_id in task.blocked_by:
+        blocker = by_id.get(blocker_id)
+        if blocker is not None and blocker.status not in ("completed", "deleted"):
+            return False
+    return True
+
+
+def _sorted_task_files(team_dir: Path) -> list[tuple[Path, TaskFile]]:
+    entries: list[tuple[int, Path, TaskFile]] = []
+    for fpath in team_dir.glob("*.json"):
+        try:
+            numeric_id = int(fpath.stem)
+        except ValueError:
+            continue
+        entries.append((numeric_id, fpath, TaskFile(**json.loads(fpath.read_text()))))
+    entries.sort(key=lambda item: item[0])
+    return [(fpath, task) for _, fpath, task in entries]
+
+
+def _assign_next_unblocked_unclaimed_task(
+    team_name: str,
+    owner: str,
+    *,
+    completed_task_id: str,
+    base_dir: Path | None = None,
+) -> TaskFile | None:
+    """Atomically assign the lowest-ID pending/unblocked/unclaimed task.
+
+    This deliberately performs the read-check-write under the task lock rather
+    than calling ``update_task``: the post-completion hook has already
+    committed the completed task, and the next-task assignment must preserve
+    compare-and-set semantics so any concurrent explicit owner assignment that
+    reaches the lock first wins.
+    """
+
+    team_dir = _tasks_dir(base_dir) / team_name
+    lock_path = team_dir / ".lock"
+
+    with file_lock(lock_path):
+        entries = _sorted_task_files(team_dir)
+        by_id = {task.id: task for _, task in entries}
+        for fpath, task in entries:
+            if task.id == completed_task_id:
+                continue
+            if task.status != "pending":
+                continue
+            if task.owner not in (None, ""):
+                continue
+            if not _task_unblocked(task, by_id):
+                continue
+            task.owner = owner
+            fpath.write_text(
+                json.dumps(task.model_dump(by_alias=True, exclude_none=True))
+            )
+            return task
+    return None
+
+
+def _auto_pickup_next_task_after_completion(
+    team_name: str,
+    completed_task: TaskFile,
+    *,
+    was_completed: bool,
+    base_dir: Path | None = None,
+) -> None:
+    if was_completed or completed_task.status != "completed":
+        return
+    owner = completed_task.owner
+    if not owner:
+        return
+    if not _auto_pickup_enabled(team_name, owner, base_dir=base_dir):
+        return
+
+    try:
+        next_task = _assign_next_unblocked_unclaimed_task(
+            team_name,
+            owner,
+            completed_task_id=completed_task.id,
+            base_dir=base_dir,
+        )
+    except Exception as exc:
+        logger.warning(
+            "task.auto_pickup.assign_failed",
+            extra={
+                "team": team_name,
+                "agent": owner,
+                "task_id": completed_task.id,
+                "error": str(exc),
+            },
+        )
+        return
+
+    if next_task is None:
+        return
+
+    try:
+        messaging.send_next_task_wakeup(
+            team_name,
+            owner,
+            next_task,
+            completed_task_id=completed_task.id,
+            base_dir=base_dir,
+        )
+    except Exception as exc:
+        logger.warning(
+            "task.auto_pickup.wakeup_failed",
+            extra={
+                "team": team_name,
+                "agent": owner,
+                "completed_task_id": completed_task.id,
+                "next_task_id": next_task.id,
+                "error": str(exc),
+            },
+        )
+
+
 def next_task_id(team_name: str, base_dir: Path | None = None) -> str:
     team_dir = _tasks_dir(base_dir) / team_name
     ids: list[int] = []
@@ -107,7 +290,7 @@ def create_task(
 ) -> TaskFile:
     if not subject or not subject.strip():
         raise ValueError("Task subject must not be empty")
-    if not team_exists(team_name, base_dir):
+    if not team_store.team_exists(team_name, base_dir):
         raise ValueError(f"Team {team_name!r} does not exist")
     team_dir = _tasks_dir(base_dir) / team_name
     team_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +347,7 @@ def update_task(
     with file_lock(lock_path):
         # --- Phase 1: Read ---
         task = TaskFile(**json.loads(fpath.read_text()))
+        was_completed = task.status == "completed"
 
         # --- Phase 2: Validate (no disk writes) ---
         pending_edges: dict[str, set[str]] = {}
@@ -340,13 +524,19 @@ def update_task(
             )
             _flush_pending_writes(pending_writes)
 
+    _auto_pickup_next_task_after_completion(
+        team_name,
+        task,
+        was_completed=was_completed,
+        base_dir=base_dir,
+    )
     return task
 
 
 def list_tasks(
     team_name: str, base_dir: Path | None = None
 ) -> list[TaskFile]:
-    if not team_exists(team_name, base_dir):
+    if not team_store.team_exists(team_name, base_dir):
         raise ValueError(f"Team {team_name!r} does not exist")
     team_dir = _tasks_dir(base_dir) / team_name
     tasks: list[TaskFile] = []

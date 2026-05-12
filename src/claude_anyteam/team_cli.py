@@ -2,7 +2,7 @@
 
 Team-management subcommands of ``claude-anyteam``:
 
-  * ``team-agent``  — write per-teammate ``model``/``effort``/watchdog overrides at
+  * ``team-agent``  — write per-teammate ``model``/``effort``/watchdog/protocol overrides at
                       ``~/.claude/teams/<team>/agents/<agent>.json``. The spawn
                       shim reads this file and forwards the values to the
                       routed adapter (Codex, Gemini, Kimi). Native Claude
@@ -51,8 +51,9 @@ from claude_teams import teardown
 # becomes the union and the per-backend adapter remains the source of truth.
 EFFORT_CHOICES = ("minimal", "low", "medium", "high", "xhigh")
 
-# Whitelisted keys mirror spawn_shim._AGENT_CONFIG_KEYS; expanding this set
-# requires extending the shim too.
+# Whitelisted keys for agents/<name>.json. Most are adapter launch knobs read
+# by spawn_shim; protocol-level keys such as auto_pickup_next_task are consumed
+# by the task dispatcher and deliberately are not forwarded as adapter argv.
 AGENT_CONFIG_KEYS = (
     "model",
     "effort",
@@ -60,6 +61,7 @@ AGENT_CONFIG_KEYS = (
     "non_progress_warn_s",
     "non_progress_interrupt_s",
     "wrapper_tool_failure_window_s",
+    "auto_pickup_next_task",
 )
 
 # Default post-spawn agentType for codex-/gemini-/kimi- teammates. The Agent
@@ -138,6 +140,7 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
             "  claude-anyteam team-agent codex-alice --team build --model gpt-5.5 --effort xhigh\n"
             "  claude-anyteam team-agent codex-alice --team build --non-progress-warn-s 300 \\\n"
             "    --non-progress-interrupt-s 420\n"
+            "  claude-anyteam team-agent codex-alice --team build --auto-pickup-next-task\n"
             "  claude-anyteam team-agent gemini-bob  --team build --model gemini-3.1-pro-preview --effort high\n"
             "  claude-anyteam team-agent kimi-cara   --team build --model kimi-for-coding\n"
             "  claude-anyteam team-agent codex-alice --team build --remove\n"
@@ -193,6 +196,23 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--auto-pickup-next-task",
+        dest="auto_pickup_next_task",
+        action="store_true",
+        default=None,
+        help=(
+            "Protocol opt-in: after this teammate marks a task completed, "
+            "automatically assign it the lowest-ID pending, unblocked, "
+            "unclaimed task and send a lightweight next_task wake-up."
+        ),
+    )
+    p.add_argument(
+        "--no-auto-pickup-next-task",
+        dest="auto_pickup_next_task",
+        action="store_false",
+        help="Disable the per-teammate auto_pickup_next_task protocol opt-in.",
+    )
+    p.add_argument(
         "--remove",
         action="store_true",
         help="Delete the per-teammate config file instead of writing one",
@@ -232,12 +252,14 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         and args.non_progress_warn_s is None
         and args.non_progress_interrupt_s is None
         and args.wrapper_tool_failure_window_s is None
+        and args.auto_pickup_next_task is None
     ):
         err.write(
             "error: at least one of --model/--effort/--turn-timeout-s/"
             "--non-progress-warn-s/--non-progress-interrupt-s/"
-            "--wrapper-tool-failure-window-s must be provided (or use --remove "
-            "to delete)\n"
+            "--wrapper-tool-failure-window-s/--auto-pickup-next-task/"
+            "--no-auto-pickup-next-task must be provided (or use --remove to "
+            "delete)\n"
         )
         return 2
 
@@ -288,6 +310,8 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         config["wrapper_tool_failure_window_s"] = (
             args.wrapper_tool_failure_window_s
         )
+    if args.auto_pickup_next_task is not None:
+        config["auto_pickup_next_task"] = args.auto_pickup_next_task
 
     _write_atomic_json(path, config)
 

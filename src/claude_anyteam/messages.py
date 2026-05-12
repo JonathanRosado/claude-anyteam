@@ -38,6 +38,15 @@ class TaskAssignmentIn(_Base):
     coupling: dict[str, Any] | None = None
 
 
+class NextTaskIn(_Base):
+    type: Literal["next_task"] = "next_task"
+    task_id: str
+    summary: str | None = None
+    subject: str | None = None
+    completed_task_id: str | None = None
+    timestamp: str | None = None
+
+
 class ShutdownRequestIn(_Base):
     """Inbound shutdown request.
 
@@ -472,6 +481,8 @@ def parse_protocol_text(text: str) -> _Base | None:
     t = raw.get("type") or raw.get("kind")
     if t == "task_assignment":
         return _safe_load(TaskAssignmentIn, raw)
+    if t == "next_task":
+        return _safe_load(NextTaskIn, raw)
     if t == "shutdown_request":
         return _safe_load(ShutdownRequestIn, raw)
     if t == "shutdown_approved":

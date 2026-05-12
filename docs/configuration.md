@@ -103,6 +103,37 @@ Every flag has an equivalent env var:
 | `CLAUDE_ANYTEAM_KIMI_BACKEND` | Kimi transport: `headless` (default) or `acp` (reserved; v1 raises until ACP is wired) |
 | `CLAUDE_ANYTEAM_KIMI_THINKING` | Kimi thinking mode: `auto` (default), `on`, or `off` |
 
+## Team protocol flags
+
+The team protocol also reads opt-in booleans from `~/.claude/teams/<team>/config.json`.
+These are not adapter CLI flags or environment variables; they control shared
+team behavior in the filesystem protocol layer.
+
+| Key | Default | Purpose |
+|---|---:|---|
+| `auto_pickup_next_task` | `false` | After a teammate marks an owned task `completed`, atomically assign that same teammate the lowest-ID `pending`, unblocked, unclaimed task (`owner` absent/empty) and append a lightweight `{"type":"next_task","task_id":"..."}` wake-up to their inbox. If no candidate exists, the teammate idles as before. |
+
+You can enable auto-pickup for the whole team by editing the team config:
+
+```json
+{
+  "name": "build",
+  "auto_pickup_next_task": true
+}
+```
+
+Or enable/disable it for one teammate via the per-agent config file described
+below:
+
+```bash
+claude-anyteam team-agent codex-alice --team build --auto-pickup-next-task
+claude-anyteam team-agent codex-alice --team build --no-auto-pickup-next-task
+```
+
+The per-team and per-teammate flags are combined with logical OR: a teammate
+auto-picks up the next queued task when either the team config or that
+teammate's `agents/<name>.json` has `auto_pickup_next_task: true`.
+
 ## Per-teammate configuration (shim path)
 
 Claude Code's Agent Teams UI only passes name, team, and plan-mode to the spawn shim — it has no field for per-teammate model/effort. To bridge that gap, the shim looks up a per-agent config file at spawn time:
@@ -116,28 +147,30 @@ Claude Code's Agent Teams UI only passes name, team, and plan-mode to the spawn 
 ```bash
 claude-anyteam team-agent codex-alice --team build --model gpt-5.5 --effort xhigh
 claude-anyteam team-agent codex-alice --team build --wrapper-tool-failure-window-s 120
+claude-anyteam team-agent codex-alice --team build --auto-pickup-next-task
 claude-anyteam team-agent gemini-bob  --team build --model gemini-3-pro-preview --effort high
 claude-anyteam team-agent codex-alice --team build --remove                       # delete the file
 ```
 
-The CLI writes atomically, validates the agent/team names against path-traversal, drops unknown keys (only `model`, `effort`, and the allowlisted Codex App Server timing knobs are honored), and is idempotent — re-running with the same args is a no-op. The on-disk shape is JSON that the shim reads at spawn time:
+The CLI writes atomically, validates the agent/team names against path-traversal, drops unknown keys (only `model`, `effort`, the allowlisted Codex App Server timing knobs, and `auto_pickup_next_task` are honored), and is idempotent — re-running with the same args is a no-op. The on-disk shape is JSON that the shim reads at spawn time and the protocol dispatcher reads at task-completion time:
 
 ```json
 {
   "model": "kimi-code/kimi-for-coding",
   "effort": "xhigh",
-  "wrapper_tool_failure_window_s": 120
+  "wrapper_tool_failure_window_s": 120,
+  "auto_pickup_next_task": true
 }
 ```
 
-When the shim dispatches a `codex-*`, `gemini-*`, or `kimi-*` teammate, it requires this file to exist, reads it, and appends `--model` / `--effort` to the adapter invocation when those keys are present. For Codex, the effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object. Codex-only timing keys (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`) are forwarded only to Codex spawns. For Gemini, `--effort` maps through adapter-owned model aliases when supported by the selected Gemini model family. For Kimi, `--model` is passed as `--model <slug>` and effort controls thinking on/off as above.
+When the shim dispatches a `codex-*`, `gemini-*`, or `kimi-*` teammate, it requires this file to exist, reads it, and appends `--model` / `--effort` to the adapter invocation when those keys are present. For Codex, the effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object. Codex-only timing keys (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`) are forwarded only to Codex spawns. `auto_pickup_next_task` is protocol-only and is not forwarded to any adapter. For Gemini, `--effort` maps through adapter-owned model aliases when supported by the selected Gemini model family. For Kimi, `--model` is passed as `--model <slug>` and effort controls thinking on/off as above.
 
 Behavior:
 
 - Missing file for a routed prefix (`codex-*`, `gemini-*`, `kimi-*`, or a custom external route) — soft-refuse with `spawn_shim.bare_prefix_refused`, including the expected config path, a `claude-anyteam team-agent ...` command, and the escape hatch below.
 - `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1` — advanced escape hatch: allow a routed prefix to start with adapter defaults when no per-teammate file exists. Use only when intentionally bypassing `team-agent`; leaving it unset is what prevents silent native-Claude-looking fallbacks.
 - Malformed JSON or unreadable file — logs `spawn_shim.agent_config_error` to stderr and continues; teammate still starts.
-- Unknown keys — ignored. Only `model`, `effort`, `turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, and `wrapper_tool_failure_window_s` are forwarded today; more keys may be added later.
+- Unknown keys — ignored. Only `model`, `effort`, `turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`, and the protocol-only `auto_pickup_next_task` are honored today; more keys may be added later.
 - Native (`claude-*`) teammates — the file is not consulted; native dispatch is always pass-through.
 
 Precedence (highest wins): per-agent config file → env vars (`CLAUDE_ANYTEAM_MODEL`, `CLAUDE_ANYTEAM_EFFORT` for Codex/Kimi, `CLAUDE_ANYTEAM_GEMINI_EFFORT` / `CLAUDE_ANYTEAM_GEMINI_TRUST` for Gemini, `CLAUDE_ANYTEAM_KIMI_THINKING` for Kimi thinking override) → adapter defaults → backend CLI defaults.
@@ -160,7 +193,7 @@ The `claude-anyteam team-*` subcommands cover the routine team-management writes
 
 | Command | Purpose |
 |---|---|
-| `claude-anyteam team-agent <name> --team <team> [--model X] [--effort Y] [--wrapper-tool-failure-window-s N]` | Write `~/.claude/teams/<team>/agents/<name>.json`. Whitelisted keys: `model`, `effort`, and Codex App Server timing knobs (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`). Use `--remove` to delete. `--print-path` emits the file path on stdout. |
+| `claude-anyteam team-agent <name> --team <team> [--model X] [--effort Y] [--wrapper-tool-failure-window-s N] [--auto-pickup-next-task]` | Write `~/.claude/teams/<team>/agents/<name>.json`. Whitelisted keys: `model`, `effort`, Codex App Server timing knobs (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`), and protocol flag `auto_pickup_next_task`. Use `--no-auto-pickup-next-task` to turn off the per-teammate flag, `--remove` to delete, and `--print-path` to emit the file path on stdout. |
 | `claude-anyteam team-patch <name> --team <team>` <br> `claude-anyteam team-patch --team <team> --all-external` | Set `agentType="claude-anyteam"` on a routed-adapter member in `~/.claude/teams/<team>/config.json`. The host `Agent(...)` tool spawns external-LLM teammates with `agentType="general-purpose"` which the wrapper MCP rejects; this command is the post-spawn fixup. `--all-external` patches every `codex-*`, `gemini-*`, or `kimi-*` member at once. |
 | `claude-anyteam team-roster --team <team>` <br> `claude-anyteam team-roster --team <team> --json` | Print a one-line-per-member roster summary (or a JSON array) so a coordinating LLM can introspect the team without parsing config.json. |
 | `claude-anyteam team-kill --team <team> --force` <br> `claude-anyteam team-kill --team <team> --force --purge` | Fast whole-team teardown for the common "kill team X, create team Y" workflow. The command sends shutdown requests in parallel, waits a bounded grace period (default 5s, range `[1, 60]`; override with `--timeout-s` or `CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S`), force-kills remaining tmux targets / known wrapper subprocesses, removes non-lead members, resets their unfinished task ownership, and optionally purges the team + tasks directories. Completion is recorded as a `team_kill_completed` visibility event when the team event log remains available. |
