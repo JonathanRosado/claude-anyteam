@@ -20,6 +20,11 @@ Team-management subcommands of ``claude-anyteam``:
                       coordinating LLM can introspect the team without
                       reading and parsing config.json by hand.
 
+  * ``team-kill``   — explicit fast teardown for the common "kill team X,
+                      create team Y" workflow. It fans out shutdown requests,
+                      waits a short bounded budget, then force-kills remaining
+                      teammates and optionally purges team state.
+
 These commands exist so a coordinating LLM has a typed, allowlistable
 contract for team management and does not have to know magic file paths,
 JSON shapes, or which fields need which post-spawn fixups. Future
@@ -39,6 +44,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from claude_teams._filelock import config_lock
+from claude_teams import teardown
 
 # Effort whitelist mirrors the per-backend allowlists (Codex/Gemini/Kimi all
 # accept the same five-tier scale). If a future backend diverges, this
@@ -963,12 +969,112 @@ def _team_prune_dead_command(argv: list[str], *, stdout: TextIO | None = None, s
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# team-kill
+# --------------------------------------------------------------------------- #
+
+
+def _build_team_kill_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="claude-anyteam team-kill",
+        description=(
+            "Fast teardown for a whole team. Sends shutdown_request to every "
+            "non-lead member in parallel, waits a short bounded budget for "
+            "graceful deregistration, then force-kills any remaining tmux "
+            "targets / known wrapper subprocesses and removes those members "
+            "from config."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-anyteam team-kill --team build --force\n"
+            "  claude-anyteam team-kill --team build --force --purge\n"
+            "  claude-anyteam team-kill --team build --force --timeout-s 2 --json\n"
+            "\nWithout --purge the team config is left with only team-lead so a lead can "
+            "inspect residual diagnostics. With --purge, ~/.claude/teams/<team> "
+            "and ~/.claude/tasks/<team> are removed after teammates are stopped."
+        ),
+    )
+    p.add_argument("--team", type=_validate_team_name, required=True, help="Team name")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Required confirmation: stop teammates and rewrite team config.",
+    )
+    p.add_argument(
+        "--purge",
+        action="store_true",
+        help="After all non-lead teammates are removed, delete the team and tasks directories.",
+    )
+    p.add_argument(
+        "--timeout-s",
+        type=float,
+        default=teardown.DEFAULT_GRACEFUL_TIMEOUT_S,
+        help=(
+            "Seconds to wait for graceful shutdown before force kill "
+            f"(default: {teardown.DEFAULT_GRACEFUL_TIMEOUT_S:g})."
+        ),
+    )
+    p.add_argument(
+        "--reason",
+        default="fast team teardown requested",
+        help="Reason string included in shutdown_request messages.",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the full JSON result instead of a one-line summary.",
+    )
+    return p
+
+
+def _team_kill_command(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    args = _build_team_kill_parser().parse_args(argv)
+
+    if not args.force:
+        err.write("error: team-kill is destructive; re-run with --force to stop teammates\n")
+        return 2
+    if args.timeout_s < 0:
+        err.write("error: --timeout-s must be >= 0\n")
+        return 2
+
+    try:
+        result = teardown.force_kill_team(
+            args.team,
+            force=True,
+            purge=args.purge,
+            graceful_timeout_s=args.timeout_s,
+            reason=args.reason,
+            base_dir=Path.home() / ".claude",
+        )
+    except FileNotFoundError as exc:
+        err.write(f"error: {exc}\n")
+        return 1
+    except ValueError as exc:
+        err.write(f"error: {exc}\n")
+        return 2
+    except Exception as exc:
+        err.write(f"error: team-kill failed: {exc}\n")
+        return 1
+
+    if args.json:
+        out.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    else:
+        out.write(result["message"] + f" in {result['elapsed_s']:.2f}s\n")
+        if result.get("purge_error"):
+            err.write(f"warning: purge failed: {result['purge_error']}\n")
+    return 0 if result.get("success") else 1
+
+
 _SUBCOMMANDS = {
     "team-agent": _team_agent_command,
     "team-patch": _team_patch_command,
     "team-roster": _team_roster_command,
     "team-config": _team_config_command,
     "team-prune-dead": _team_prune_dead_command,
+    "team-kill": _team_kill_command,
 }
 
 

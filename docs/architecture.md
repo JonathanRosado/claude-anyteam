@@ -165,7 +165,7 @@ Both pieces (leader mirror + adapter entry) are required. The shim enables step 
 6. Task completes; adapter writes `task_complete` to lead's inbox
 7. Codex App Server teammates can incorporate peer messages mid-execution via `turn/steer`; Gemini, Kimi, and native-Claude teammates currently receive peer messages on the next poll / prompt boundary rather than live App Server steering.
 
-The wrapper MCP server exposes a narrowed protocol surface to external backends: core team tools (`send_message`, `task_update`, `task_create`, `task_batch_summary`, `read_inbox`, `task_list`, `read_config`), rich capability lookup (`mcp_anyteam_capability_manifest`), and shadow helpers for filesystem/search/web access. Destructive team-control tools like `team_delete` and `force_kill_teammate` are deliberately blocked — Codex, Gemini, Kimi, or native Claude has full coding access but cannot break the team.
+The wrapper MCP server exposes a narrowed protocol surface to external backends: core team tools (`send_message`, `task_update`, `task_create`, `task_batch_summary`, `read_inbox`, `task_list`, `read_config`), rich capability lookup (`mcp_anyteam_capability_manifest`), and shadow helpers for filesystem/search/web access. Destructive team-control tools like `team_delete`, `force_kill_teammate`, and `force_kill_team` are deliberately blocked — Codex, Gemini, Kimi, or native Claude has full coding access but cannot break the team.
 
 ## Extending to new models
 
