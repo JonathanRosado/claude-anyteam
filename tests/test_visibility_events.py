@@ -492,6 +492,131 @@ def test_app_server_no_checkpoint_after_300s_emits_turn_progress(monkeypatch):
     assert created[0].interrupts == []
 
 
+def test_app_server_warn_none_emits_no_steer(monkeypatch):
+    """Negative test for PR #52 sharpen item 2 / RFC #50 §0.
+
+    With non_progress_warn_s=None (the new default), the soft watchdog
+    must NOT call client.turn_steer no matter how much wall-clock passes
+    inside the polling loop. Guards against a regression that flips the
+    `warn_active` predicate the wrong way.
+    """
+    notifications = [
+        {"__raise__": True},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+    created: list[_FakeClient] = []
+
+    def make_client(*args, **kwargs):
+        client = _FakeClient(*args, notifications=notifications, **kwargs)
+        created.append(client)
+        return client
+
+    # Empty-notif iteration sees time=600 (well past the old 300s warn
+    # threshold). If the watchdog were active and the guard misbehaved,
+    # this would fire a steer. Then turn/completed terminates cleanly,
+    # all under the 1800s turn_timeout cap.
+    ticks = iter([0, 0, 0, 0, 0, 600, 601, 602])
+
+    def fake_monotonic():
+        try:
+            return next(ticks)
+        except StopIteration:
+            return 602
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", make_client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", fake_monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="long task",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="16",
+            overall_timeout_s=1800,
+            non_progress_warn_s=None,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 0
+    assert created[0].steers == [], (
+        "with non_progress_warn_s=None, the soft watchdog must not steer; "
+        f"got {len(created[0].steers)} steer(s): {created[0].steers}"
+    )
+    assert created[0].interrupts == []
+    progress_warns = [
+        e for e in emitted if e.kind == "turn_progress" and e.severity == "warn"
+    ]
+    assert progress_warns == [], (
+        "with non_progress_warn_s=None, no turn_progress warn envelope "
+        f"should be emitted; got {len(progress_warns)}"
+    )
+
+
+def test_app_server_interrupt_fires_when_warn_none(monkeypatch):
+    """PR #52 block-fix positive coverage.
+
+    With non_progress_warn_s=None (the new default) + an explicit opt-in
+    non_progress_interrupt_s for overnight kills, the interrupt must fire
+    when no observable progress for >= interrupt_s seconds. Prior to the
+    decoupling, this path was silently dead because the interrupt block
+    required `non_progress_warned=True`, which only the warn block sets.
+    """
+    notifications = [
+        {"__raise__": True},
+        {"__raise__": True},
+        {"method": "turn/completed", "params": {"turn": {"status": "ok"}}},
+    ]
+    created: list[_FakeClient] = []
+
+    def make_client(*args, **kwargs):
+        client = _FakeClient(*args, notifications=notifications, **kwargs)
+        created.append(client)
+        return client
+
+    # last_progress_at is set inside app_server_invoke right before the
+    # polling loop. Interrupt threshold is 1200s; first empty-notif tick
+    # reads time as 1201 (just past), so the decoupled-warn=None branch
+    # should fire interrupt.
+    ticks = iter([0, 0, 0, 0, 0, 1201, 1202, 1203])
+
+    def fake_monotonic():
+        try:
+            return next(ticks)
+        except StopIteration:
+            return 1203
+
+    emitted: list[VisibilityEvent] = []
+    with (
+        patch.object(app_server_mod, "AppServerClient", make_client),
+        monkeypatch.context() as m,
+    ):
+        m.setattr(codex_mod.time, "monotonic", fake_monotonic)
+        result = codex_mod.app_server_invoke(
+            task_prompt="long task",
+            cwd=Path("/tmp"),
+            schema=None,
+            settings_team="team-x",
+            settings_agent="codex-runtime",
+            task_id="16",
+            overall_timeout_s=1800,
+            non_progress_warn_s=None,
+            non_progress_interrupt_s=1200,
+            event_sink=emitted.append,
+        )
+
+    assert result.exit_code == 124, (
+        "interrupt should fire when warn=None + interrupt_s threshold passes "
+        f"without observable progress; got exit_code={result.exit_code}"
+    )
+    assert created[0].interrupts, "turn_interrupt must be called"
+    # warn=None ⇒ no steer regardless of the interrupt firing
+    assert created[0].steers == [], "warn=None must not steer"
+
+
 def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
     events_root: Path,
     monkeypatch,
