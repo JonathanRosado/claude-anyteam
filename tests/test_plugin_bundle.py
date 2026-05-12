@@ -15,11 +15,9 @@ WRAPPER_SCRIPT = REPO_ROOT / "bin" / "claude-anyteam"
 HELP_SKILL = REPO_ROOT / "skills" / "help" / "SKILL.md"
 STATUS_SKILL = REPO_ROOT / "skills" / "status" / "SKILL.md"
 ORIENTATION_MESSAGE = (
-    "claude-anyteam is installed; codex-*/gemini-*/kimi-* teammates require "
-    "`claude-anyteam team-agent <name> --team <team> ...` before Agent(...), or the spawn shim refuses "
-    "the bare prefix (override: CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1). After spawn run "
-    "`claude-anyteam team-patch --all-external`; inspect with `team-roster`. "
-    "Docs: https://github.com/JonathanRosado/claude-anyteam"
+    "claude-anyteam is installed; Agent Teams teammates named codex-* route to Codex, "
+    "gemini-* to Gemini, kimi-* to Kimi. Use `claude-anyteam team-agent|team-patch|team-roster` "
+    "for team config (preferred over hand-edits). Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
 DRIFT_WARNING = "claude-anyteam: settings drifted — run `claude-anyteam install` to repair"
 
@@ -44,9 +42,7 @@ def test_plugin_manifests_exist_and_are_well_formed() -> None:
     assert marketplace["plugins"][0]["name"] == "claude-anyteam"
     assert marketplace["plugins"][0]["source"] == "./"
     assert "Kimi" in plugin["description"]
-    assert "team-agent" in plugin["description"]
     assert "kimi-*" in marketplace["plugins"][0]["description"]
-    assert "team-agent" in marketplace["plugins"][0]["description"]
     assert "kimi" in plugin["keywords"]
     assert "kimi" in marketplace["plugins"][0]["tags"]
 
@@ -67,8 +63,6 @@ def test_help_skill_exists_and_teaches_claude_about_cli_teammates() -> None:
     assert "kimi-code/kimi-for-coding" in content
     assert "TeamCreate" in content
     assert "Agent(" in content
-    assert "bare prefix" in content
-    assert "CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX" in content
     assert "when_to_use:" in content
     # Must not mark this skill as user-invokable only; it's proactive.
     assert "disable-model-invocation: true" not in content

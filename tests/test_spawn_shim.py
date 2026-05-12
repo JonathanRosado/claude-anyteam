@@ -31,11 +31,9 @@ def _clear_route_env(monkeypatch) -> None:
     monkeypatch.delenv("CLAUDE_ANYTEAM_KIMI_SHIM_MATCH", raising=False)
 
 
-def test_codex_dispatch(monkeypatch, tmp_path, capsys):
+def test_codex_dispatch(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
     _clear_binary_env(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "codex-alice", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -155,10 +153,8 @@ def test_no_identity_flags_falls_back_to_native(monkeypatch):
     assert calls == [("/opt/bin/claude", argv)]
 
 
-def test_env_overrides_pattern_and_codex_binary(monkeypatch, tmp_path):
+def test_env_overrides_pattern_and_codex_binary(monkeypatch):
     calls = _record_execv(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "helper-bob", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -244,11 +240,9 @@ def test_native_claude_override_cannot_resolve_to_current_shim(monkeypatch):
     assert spawn_shim._resolve_native_claude("/shim/bin/claude") is None
 
 
-def test_plan_mode_flag_is_forwarded(monkeypatch, tmp_path):
+def test_plan_mode_flag_is_forwarded(monkeypatch):
     calls = _record_execv(monkeypatch)
     _clear_binary_env(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "codex-planner", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -284,11 +278,9 @@ def test_plan_mode_flag_is_forwarded(monkeypatch, tmp_path):
     ]
 
 
-def test_unknown_flags_are_stripped_on_codex_route(monkeypatch, tmp_path):
+def test_unknown_flags_are_stripped_on_codex_route(monkeypatch):
     calls = _record_execv(monkeypatch)
     _clear_binary_env(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "codex-alice", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -460,82 +452,13 @@ def test_agent_config_forwards_model_only(monkeypatch, tmp_path, capsys):
     assert "--effort" not in argv
 
 
-def test_routed_prefix_without_agent_config_soft_refuses(monkeypatch, tmp_path, capsys):
-    calls = _record_execv(monkeypatch)
-    _clear_binary_env(monkeypatch)
-    monkeypatch.delenv("CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "/usr/local/bin/claude-anyteam-spawn-shim",
-            "--agent-name",
-            "codex-ghost",
-            "--team-name",
-            "t",
-        ],
-    )
-    monkeypatch.setattr(
-        spawn_shim.shutil,
-        "which",
-        lambda n: {
-            "claude-anyteam": "/usr/local/bin/claude-anyteam",
-            "claude": "/usr/local/bin/claude",
-        }.get(n),
-    )
-
-    assert spawn_shim.main() == 2
-
-    assert calls == []
-    log = json.loads(capsys.readouterr().err)
-    assert log["event"] == "spawn_shim.bare_prefix_refused"
-    assert log["route"] == "codex"
-    assert log["agent_name"] == "codex-ghost"
-    assert log["team_name"] == "t"
-    assert log["error_class"] == "missing_agent_config"
-    assert log["config_path"].endswith("/.claude/teams/t/agents/codex-ghost.json")
-    assert (
-        log["suggested_command"]
-        == "claude-anyteam team-agent codex-ghost --team t --model <model> --effort <effort>"
-    )
-    assert log["override_env"] == "CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX"
-
-
-def test_bare_prefix_override_allows_dispatch_without_config(monkeypatch, tmp_path, capsys):
-    calls = _record_execv(monkeypatch)
-    _clear_binary_env(monkeypatch)
-    monkeypatch.setenv("CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX", "1")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "/usr/local/bin/claude-anyteam-spawn-shim",
-            "--agent-name",
-            "codex-ghost",
-            "--team-name",
-            "t",
-        ],
-    )
-    monkeypatch.setattr(
-        spawn_shim.shutil,
-        "which",
-        lambda n: {
-            "claude-anyteam": "/usr/local/bin/claude-anyteam",
-            "claude": "/usr/local/bin/claude",
-        }.get(n),
-    )
-
-    assert spawn_shim.main() == 0
-
-    assert calls == [
-        (
-            "/usr/local/bin/claude-anyteam",
-            ["/usr/local/bin/claude-anyteam", "--name", "codex-ghost", "--team", "t"],
-        )
-    ]
-    assert json.loads(capsys.readouterr().err)["route"] == "codex"
+def test_agent_config_missing_file_is_noop(monkeypatch, tmp_path, capsys):
+    calls, stderr = _codex_argv_for(monkeypatch, tmp_path, "t", "codex-ghost", capsys)
+    _, argv = calls[0]
+    assert "--model" not in argv
+    assert "--effort" not in argv
+    # No error should be logged for a missing file.
+    assert "spawn_shim.agent_config_error" not in stderr
 
 
 def test_agent_config_malformed_json_is_tolerated(monkeypatch, tmp_path, capsys):
@@ -585,11 +508,9 @@ def test_agent_config_not_loaded_for_native_route(monkeypatch, tmp_path, capsys)
     assert "--model" not in forwarded
 
 
-def test_gemini_dispatch_for_gemini_prefix(monkeypatch, tmp_path, capsys):
+def test_gemini_dispatch_for_gemini_prefix(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
     monkeypatch.delenv("CLAUDE_ANYTEAM_GEMINI_BINARY", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "gemini-rhea", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -689,12 +610,10 @@ def test_gemini_dispatch_does_not_forward_codex_watchdog_flags(monkeypatch, tmp_
     }
 
 
-def test_kimi_dispatch_for_kimi_prefix(monkeypatch, tmp_path, capsys):
+def test_kimi_dispatch_for_kimi_prefix(monkeypatch, capsys):
     calls = _record_execv(monkeypatch)
     _clear_route_env(monkeypatch)
     monkeypatch.delenv("CLAUDE_ANYTEAM_KIMI_BINARY", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "kimi-rhea", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -732,13 +651,11 @@ def test_kimi_dispatch_for_kimi_prefix(monkeypatch, tmp_path, capsys):
     assert json.loads(capsys.readouterr().err)["route"] == "kimi"
 
 
-def test_kimi_dispatch_respects_match_env_override(monkeypatch, tmp_path):
+def test_kimi_dispatch_respects_match_env_override(monkeypatch):
     calls = _record_execv(monkeypatch)
     _clear_route_env(monkeypatch)
     monkeypatch.delenv("CLAUDE_ANYTEAM_KIMI_BINARY", raising=False)
     monkeypatch.setenv("CLAUDE_ANYTEAM_KIMI_SHIM_MATCH", r"^moon-")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "moon-scout", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -775,12 +692,10 @@ def test_kimi_dispatch_respects_match_env_override(monkeypatch, tmp_path):
     ]
 
 
-def test_kimi_dispatch_respects_binary_env_override(monkeypatch, tmp_path):
+def test_kimi_dispatch_respects_binary_env_override(monkeypatch):
     calls = _record_execv(monkeypatch)
     _clear_route_env(monkeypatch)
     monkeypatch.setenv("CLAUDE_ANYTEAM_KIMI_BINARY", "/custom/bin/kimi-launcher")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "kimi-builder", {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -817,16 +732,13 @@ def test_kimi_dispatch_respects_binary_env_override(monkeypatch, tmp_path):
     ]
 
 
-def test_kimi_match_does_not_preempt_codex_or_gemini_routes(monkeypatch, tmp_path):
+def test_kimi_match_does_not_preempt_codex_or_gemini_routes(monkeypatch):
     calls = _record_execv(monkeypatch)
     _clear_route_env(monkeypatch)
     _clear_binary_env(monkeypatch)
     monkeypatch.delenv("CLAUDE_ANYTEAM_GEMINI_BINARY", raising=False)
     monkeypatch.delenv("CLAUDE_ANYTEAM_KIMI_BINARY", raising=False)
     monkeypatch.setenv("CLAUDE_ANYTEAM_KIMI_SHIM_MATCH", r"^(codex|gemini)-")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _write_agent_config(tmp_path, "shim-build", "codex-overlap", {})
-    _write_agent_config(tmp_path, "shim-build", "gemini-overlap", {})
     monkeypatch.setattr(
         spawn_shim.shutil,
         "which",

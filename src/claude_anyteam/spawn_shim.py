@@ -13,7 +13,6 @@ import sys
 from dataclasses import dataclass
 
 from .env import (
-    ALLOW_BARE_PREFIX_ENV,
     BINARY_ENV,
     CLAUDE_SHIM_MATCH_ENV,
     LEGACY_BINARY_ENV,
@@ -124,81 +123,13 @@ def _agent_config_path(team_name: str, agent_name: str) -> str:
     )
 
 
-def _env_flag_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _agent_config_exists(team_name: str | None, agent_name: str | None) -> bool:
-    if not team_name or not agent_name:
-        return False
-    return os.path.exists(_agent_config_path(team_name, agent_name))
-
-
-def _team_agent_suggestion(parsed: ParsedArgs) -> str:
-    agent = parsed.agent_name or "<agent-name>"
-    team = parsed.team_name or "<team-name>"
-    return (
-        f"claude-anyteam team-agent {agent} --team {team} "
-        "--model <model> --effort <effort>"
-    )
-
-
-def _refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int:
-    config_path = (
-        _agent_config_path(parsed.team_name, parsed.agent_name)
-        if parsed.team_name and parsed.agent_name
-        else None
-    )
-    suggestion = _team_agent_suggestion(parsed)
-    message = (
-        f"Refusing bare {route} routed teammate {parsed.agent_name!r}: no "
-        "per-teammate config file was found"
-    )
-    if config_path:
-        message += f" at {config_path}"
-    message += (
-        f". Run `{suggestion}` before Agent(...), or set "
-        f"{ALLOW_BARE_PREFIX_ENV}=1 to intentionally use adapter defaults."
-    )
-    record: dict[str, object] = {
-        "event": "spawn_shim.bare_prefix_refused",
-        "route": route,
-        "agent_name": parsed.agent_name,
-        "team_name": parsed.team_name,
-        "error_class": "missing_agent_config",
-        "error_detail": message,
-        "message": message,
-        "config_path": config_path,
-        "suggested_command": suggestion,
-        "override_env": ALLOW_BARE_PREFIX_ENV,
-        "override_hint": (
-            f"Set {ALLOW_BARE_PREFIX_ENV}=1 only when you intentionally want "
-            "a routed teammate to start with adapter defaults and no "
-            "team-agent config."
-        ),
-        "issue": "#48",
-    }
-    sys.stderr.write(json.dumps(record, sort_keys=True) + "\n")
-    sys.stderr.flush()
-    return 2
-
-
-def _maybe_refuse_bare_routed_prefix(route: str, parsed: ParsedArgs) -> int | None:
-    if _env_flag_enabled(ALLOW_BARE_PREFIX_ENV):
-        return None
-    if _agent_config_exists(parsed.team_name, parsed.agent_name):
-        return None
-    return _refuse_bare_routed_prefix(route, parsed)
-
-
 def _load_agent_config(team_name: str | None, agent_name: str | None) -> dict[str, str]:
     """Read per-teammate overrides from the team's agents directory.
 
-    Silently returns an empty dict on unreadable file, malformed JSON, or
-    non-object content. Missing routed-adapter config is rejected before this
-    helper runs unless CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1 is set; with that
-    explicit override, teammates still start with whatever defaults the
-    adapter picks up from env or backend config.
+    Silently returns an empty dict on missing file, unreadable file, malformed
+    JSON, or non-object content. The spawn path must tolerate a broken or
+    missing config — teammates should still start with whatever defaults
+    the adapter picks up from env or ~/.codex/config.toml.
 
     Only whitelisted keys are forwarded; unknown keys are ignored.
     """
@@ -381,9 +312,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if _codex_route(parsed):
-        refusal = _maybe_refuse_bare_routed_prefix("codex", parsed)
-        if refusal is not None:
-            return refusal
         binary = _require_binary(
             _resolve_binary(PRIMARY_BINARY, BINARY_ENV, LEGACY_BINARY_ENV, fallback_name=LEGACY_BINARY),
             PRIMARY_BINARY,
@@ -396,9 +324,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if _gemini_route(parsed):
-        refusal = _maybe_refuse_bare_routed_prefix("gemini", parsed)
-        if refusal is not None:
-            return refusal
         binary = _require_binary(_resolve_binary(GEMINI_BINARY, GEMINI_BINARY_ENV), GEMINI_BINARY)
         adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=True)
         _log_dispatch("gemini", parsed.agent_name, binary, agent_config or None)
@@ -406,9 +331,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if _kimi_route(parsed):
-        refusal = _maybe_refuse_bare_routed_prefix("kimi", parsed)
-        if refusal is not None:
-            return refusal
         binary = _require_binary(_resolve_binary(KIMI_BINARY, KIMI_BINARY_ENV), KIMI_BINARY)
         adapter_argv, agent_config = _adapter_argv(binary, parsed, include_effort=True)
         _log_dispatch("kimi", parsed.agent_name, binary, agent_config or None)
