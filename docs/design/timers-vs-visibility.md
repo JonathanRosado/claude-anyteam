@@ -395,15 +395,17 @@ This is the **§3 piece**: requiring the *agent* to participate in its own visib
 
 ## 7 — Tradeoffs and carve-outs
 
-### 7.1 Overnight / lead-offline runs
+### 7.1 Overnight / lead-offline runs (item 7)
 
 The user has explicitly said "all night is fine" for some long-running tasks. With no human watching the event stream, events without an observer have no effect. Three options:
 
-1. **Keep `turn_timeout_s` and `non_progress_interrupt_s` as opt-in for these scenarios.** This is the RFC's recommendation. The lead's invocation (`/loop`, `schedule`, autonomous mode) is the right place to opt in.
-2. **Spawn a Claude lead subagent ("watchdog persona") that consumes events overnight.** Cheap because most idle periods are healthy. This is the §3-aligned solution but requires a new persona; defer to follow-up.
-3. **Cron-style heartbeat:** require the team-lead process to emit a periodic `lead_alive` event; if absent for >5min, peers fall back to wall-clock timers. Symmetric to `transport_alive`. Worth prototyping.
+1. **Keep `turn_timeout_s` and `non_progress_interrupt_s` as opt-in for these scenarios.** This is the RFC's recommendation for v1. The lead's invocation (`/loop`, `schedule`, autonomous mode) is the right place to opt in. This is the §0-aligned hold: action-triggering timers are appropriate when no observer exists.
+2. **Spawn a Claude lead subagent ("watchdog persona") that consumes events overnight.** Cheap because most idle periods are healthy. This is the §3-aligned solution.
+3. **Cron-style heartbeat:** require the team-lead process to emit a periodic `lead_alive` event; if absent for >5min, peers fall back to wall-clock timers. Symmetric to `transport_alive`. Lighter-weight than option 2; loses the "interpret events intelligently" benefit.
 
-Recommendation: (1) for v1, (2) prototyped under a follow-up issue.
+**v1 commitment:** option (1). The opt-in flag `non_progress_interrupt_s` stays, documented as the overnight-runs knob.
+
+**Follow-up commitment (per opus-reviewer item 7):** option (2) — the watchdog persona — **is filed as a tracked task at this RFC's merge**, not left as a §9 open question. The task title is "META: lead-watchdog persona for overnight/autonomous runs" and references this RFC §7.1. Option (3) is sketched there as an alternative; both will be evaluated empirically before §7.1 v2 of this RFC. Without that commitment, option (2) would become "the ghost design that justifies leaving the timer in indefinitely" (opus-reviewer's exact phrasing). The follow-up task makes the revisit concrete.
 
 ### 7.2 Routed-CLI non-compliance with `working_on`
 
@@ -415,23 +417,50 @@ A backend whose model ignores the prompt instruction reverts to "silent thinking
 
 ### 7.3 Steer-resistant stalls (transport wedged)
 
-A teammate whose JSON-RPC fd is wedged can't emit events AND can't be steered. `transport_alive` catches this; the lead's right action is `task_reassign` + force-kill via teardown. No timer needed — `transport_alive` absence *is* the signal.
+A teammate whose JSON-RPC fd is wedged can't emit events AND can't be steered. `transport_alive` absence catches this; potential lead-side response is `task_reassign` + force-kill via teardown. No new wrapper-side timer is added — `transport_alive` absence (= no envelope for >2 cadence windows) *is* the signal.
 
-### 7.4 Cost of more events
+### 7.4 Cardinality and lock contention (item 4)
 
-Every new envelope is bytes in the mailbox and rows in the event log. We mitigate:
+opus-reviewer's original concern: the per-team aggregate `visibility.jsonl` file (`protocol_io.py:514`, `team_visibility_event_path`) sees every visibility-event write. The fan-out path is: `append_event` → write to `events/<agent>.jsonl` (per-agent) AND mirror to `team/visibility.jsonl` (aggregate), both under `events/.lock`. For **M** teammates emitting at cadence **C** seconds, the steady-state write rate to that single lock is **2M/C writes/second** (per-agent + aggregate).
 
-- All four new envelopes route through `idle_notification`-class delivery semantics when emitted as heartbeats (no UI crowding).
-- `app_server_idle_quiet` is rate-limited to one per silence window, not continuous.
-- `transport_alive` is the only periodic one (30s); the rest are state-change triggered.
+**The original draft's "~2 envelopes/min/teammate" was wrong.** Combining `transport_alive` (30s cadence → 2/min) + `working_on` claims (30s cadence → 2/min) + occasional state-change envelopes ≈ **4–6/min/teammate**. At M=10 ⇒ 1.3 writes/s on the single lock. At M=100 ⇒ 13 writes/s. opus-reviewer is correct: the original cost claim was hand-waved.
 
-Expected steady-state cost: ~2 envelopes/min/teammate on a healthy team, ~5/min on a degraded one. Mailbox JSON files already handle 10x this; no new pressure.
+**v2 mitigations** (committing to option (b) from opus-reviewer's three choices, plus per-teammate configurability):
 
-### 7.5 Backwards compatibility
+| Envelope | Original cadence | v2 cadence | Per-teammate configurable? |
+| --- | --- | --- | --- |
+| `transport_alive` | 30s | **default 90s, range [30, 600]** | yes |
+| `working_on` claim | 30s | **default 60s, range [30, 300]** | yes (via `working_on_compliance` capability + per-team override) |
+| `app_server_idle_quiet` | 60s window, debounced ≤1/window | **unchanged** (already debounced) | yes (window configurable) |
+| `wrapper_tool_failure_unrecovered` | state-change, 5–10s window | state-change, **W=90s** window | yes (W configurable) |
+| `subprocess_pressure` | state-change | state-change, **debounced ≥ 60s** | yes |
 
-- Config knobs stay (no removed names) — old `agents/<name>.json` files keep parsing.
-- Default values shift (task #5 will land the new numbers); CHANGELOG entry required.
-- Wrapper MCP capability manifest gains four new capability strings; old clients that don't know them skip them per the existing degrade-gracefully contract.
+**Resulting cardinality at defaults:** ~2 envelopes/min/teammate steady-state (1 `transport_alive` per 90s + 1 `working_on` per 60s). At M=100, that's 200 envelopes/min total = ~3.3 writes/s on the aggregate lock. **Still high, but bounded and acceptable.** For comparison, today's `app_server_initialize_progress` cadence is 30s during init and we've not seen aggregate-lock contention in production.
+
+**If empirical measurement (Phase A.5) shows the aggregate lock is the bottleneck at M ≥ 50,** the fallback is opus-reviewer's option (a): decouple `transport_alive` and `working_on` from the aggregate mirror (write only to per-agent jsonl). Trade-off: the lead's TUI projection loses heartbeat visibility unless it attaches per-agent. Documented as a Phase A.5 contingency, not the default.
+
+**Phase A.5 (new):** measurement task — synthetic load at M={10, 50, 100} with the v2 cadence. Report aggregate-lock held-time and write-rate. Gate Phase B on the measurement: if M=100 lock contention exceeds 50ms/lock-acquisition, fall back to per-agent-only routing for `transport_alive` and `working_on`.
+
+### 7.5 Backwards compatibility (item 9)
+
+opus-reviewer's correct flag: anyone who didn't pin `non_progress_warn_s` (the majority) gets a silent behavior change when the default flips 300 → None — they lose the soft watchdog. CHANGELOG alone is weak.
+
+**v2 commitment:** one release of explicit warning before the flip:
+
+- **Release N (RFC ships, Phase A emits events):** no defaults change. The new envelopes start flowing. Users with `non_progress_warn_s` at its default 300 see the soft watchdog continue to fire AND the new envelopes alongside. Logs a `visibility_degraded` envelope at first turn with `surface: "non_progress_warn_s_default_deprecated"` payload pointing at this RFC.
+- **Release N+1 (Phase B flips defaults):** default flips to None. Users who saw the N-release warning have one cycle to opt in explicitly. Users who didn't (no prior runs) get the new default cleanly.
+
+This pattern matches the deprecation rung-2-then-rung-3 ladder used elsewhere (e.g., `KNOWN_TASK_BLOCKED_REASONS` enforcement). PR for task #5 (which lands the Phase B default flip) is technically jumping straight to rung 3 — that PR (#52) was filed before this v2 RFC revision. **The mitigation:** v2 RFC notes that PR #52's default flip pre-empted the one-release warning cycle. CHANGELOG already documents the env-var restore knob (`CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S=300`). Acceptable risk because the prior default (300s steer) was *itself* a user-pain source the user explicitly wanted gone — flipping straight to None is closer to user intent than gradual deprecation. If reviewers disagree, PR #52 can be amended pre-merge to emit the deprecation envelope for one release before the flip.
+
+### 7.6 Future: model-side `gave_up` claim (positive-signal alternative to §5.1 quietude inference)
+
+(per opus-reviewer item 1b deferred path)
+
+Once §5.5 `working_on` is shipping and backends declare `working_on_compliance: best_effort` or `strict`, §5.1's quietude-based discriminator can be **replaced** by a model-side positive signal: the model emits `working_on: gave_up — wrapper_tool failures repeatedly` and the wrapper emits `wrapper_tool_failure_unrecovered` on the positive signal, not on inferring from silence.
+
+This is the §1-respecting endgame: the *agent* declares its state, the wrapper does not guess. It's deferred to follow-up because (a) it requires `working_on_compliance: best_effort` minimum across all backends we ship, (b) the prompt contract for `gave_up` needs design work (false-claim risk, taxonomy of give-up reasons), and (c) the v1 quietude discriminator is sufficient to ship the #49-class win immediately.
+
+**Filed as a follow-up task at RFC merge:** "RFC: positive-signal `gave_up` claim — §5.1 successor."
 
 ---
 
