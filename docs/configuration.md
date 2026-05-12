@@ -115,11 +115,12 @@ The CLI writes atomically, validates the agent/team names against path-traversal
 }
 ```
 
-When the shim dispatches a `codex-*`, `gemini-*`, or `kimi-*` teammate, it reads this file (if present) and appends `--model` / `--effort` to the adapter invocation. For Codex, the effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object. For Gemini, `--effort` maps through adapter-owned model aliases when supported by the selected Gemini model family. For Kimi, `--model` is passed as `--model <slug>` and effort controls thinking on/off as above.
+When the shim dispatches a `codex-*`, `gemini-*`, or `kimi-*` teammate, it requires this file to exist, reads it, and appends `--model` / `--effort` to the adapter invocation when those keys are present. For Codex, the effect is identical to typing those flags on the command line — both App Server and fresh-exec modes pick them up through the shared `Settings` object. For Gemini, `--effort` maps through adapter-owned model aliases when supported by the selected Gemini model family. For Kimi, `--model` is passed as `--model <slug>` and effort controls thinking on/off as above.
 
 Behavior:
 
-- Missing file — no-op, teammate starts with env/default config.
+- Missing file for a routed prefix (`codex-*`, `gemini-*`, `kimi-*`, or a custom external route) — soft-refuse with `spawn_shim.bare_prefix_refused`, including the expected config path, a `claude-anyteam team-agent ...` command, and the escape hatch below.
+- `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1` — advanced escape hatch: allow a routed prefix to start with adapter defaults when no per-teammate file exists. Use only when intentionally bypassing `team-agent`; leaving it unset is what prevents silent native-Claude-looking fallbacks.
 - Malformed JSON or unreadable file — logs `spawn_shim.agent_config_error` to stderr and continues; teammate still starts.
 - Unknown keys — ignored. Only `model` and `effort` are forwarded today; more keys may be added later.
 - Native (`claude-*`) teammates — the file is not consulted; native dispatch is always pass-through.
@@ -171,6 +172,7 @@ The report combines `team-roster --json`, the rich manifest cache under `~/.clau
 | `CLAUDE_ANYTEAM_GEMINI_BINARY` | Set by the installer to the Gemini adapter binary path. The shim uses this for `gemini-*` spawns. |
 | `CLAUDE_ANYTEAM_KIMI_BINARY` | Set by the installer to the Kimi adapter binary path. The shim uses this for `kimi-*` spawns. |
 | `CLAUDE_ANYTEAM_SHIM_MATCH` / `CLAUDE_ANYTEAM_GEMINI_SHIM_MATCH` / `CLAUDE_ANYTEAM_KIMI_SHIM_MATCH` | Regexes for `codex-*`, `gemini-*`, and `kimi-*` routing. Defaults: `^codex-`, `^gemini-`, `^kimi-`. |
+| `CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX` | Set to `1` to allow routed prefixes without a `team-agent` file. Default unset means the shim refuses bare routed prefixes with an actionable error. |
 | `CODEX_TEAMMATE_NATIVE_CLAUDE` | Path to the native `claude` binary. Auto-detected; only set if the shim picks the wrong one. |
 
 ## Teammate display mode
