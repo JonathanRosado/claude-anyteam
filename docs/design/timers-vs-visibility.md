@@ -205,9 +205,11 @@ All four envelopes follow the existing `VisibilityEvent` shape used by `emit_ini
 | seq=31 (16:36:30.700Z, +54.1s) | another `wrapper_tool` failure mid-recovery — model still producing work |
 | seq=32 (16:36:36.437Z, +59.8s) | model recovered from that failure too |
 
-The **longest observed natural quiet gap during productive recovery was 19.7s**. The total productive recovery span before any "real" stall was ≥ 60s. Setting W=5–10s would fire `wrapper_tool_failure_unrecovered` during every Mode A recovery in our captured corpus, priming the lead to issue `task_reassign` against a model that's actively working. False-positive engine.
+The **longest observed natural quiet gap during productive recovery was 19.7s** *in the first 60s window post-failure*. The total productive recovery span before any "real" stall was ≥ 60s. Setting W=5–10s would fire `wrapper_tool_failure_unrecovered` during every Mode A recovery in our captured corpus, priming the lead to issue `task_reassign` against a model that's actively working. False-positive engine.
 
-**Conservative default W=90s** = 4.5× the longest observed natural gap (19.7s × 4.5 ≈ 89s) and ≥ the total productive recovery span (~60s). This is the cheapest defensible setting; tighter is a sharpening question for Phase A's measurement task (see §8 Phase A.5).
+**Sample-size caveat (post-approval sharpen):** the table above is the immediate post-failure window. opus-reviewer subsequently parsed the full 534-event `codex-implementer-a` log and found Mode A natural progress gaps during otherwise-productive operation occasionally reach **47.3s** (seq 94→95), **59.3s** (seq 102→103), and **90.5s** (seq 156→157). The post-failure recovery sample driving W=90s is **n=3** (all observed recoveries occurred within ~1s of the failure). The broader Mode A gap distribution argues W=90s remains a reasonable conservative floor — it's at the 90.5s upper tail of the observed natural-gap distribution — but the empirical evidence for the exact 90s number is thin and is one of the things Phase A.5's synthetic load measurement should validate. The implementation PR should treat W as instrumented (emit `app_server_idle_quiet`-class metrics covering the W window so we can revisit with N >> 3 evidence).
+
+**Conservative default W=90s** = 4.5× the longest observed natural gap within the immediate post-failure window (19.7s × 4.5 ≈ 89s) and at the upper tail of the broader natural-gap distribution (~90.5s). This is the cheapest defensible setting given current evidence; tighter or looser is a Phase A.5 measurement question (see §8 Phase A.5).
 
 ### 5.1.1 Mode A/B discriminator (item 5)
 
