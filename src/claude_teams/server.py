@@ -854,7 +854,7 @@ def force_kill_team(
     team_name: str,
     ctx: Context,
     purge: bool = False,
-    graceful_timeout_s: float = teardown.DEFAULT_GRACEFUL_TIMEOUT_S,
+    graceful_timeout_s: float | None = None,
 ) -> dict:
     """Fast whole-team teardown for lead control-plane use.
 

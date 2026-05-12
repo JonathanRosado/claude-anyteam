@@ -11,6 +11,7 @@ All notable changes to claude-anyteam are documented here. Format follows [Keep 
   - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_WARN_THRESHOLD_BYTES` — warn threshold; default `104857600` bytes (100 MiB), bounded `[0, 10737418240]` (10 GiB).
   - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT` — enable/disable the pre-spawn sqlite checkpoint attempt; default enabled (set `0`, `false`, `no`, `off`, or `disabled` to skip).
   - `CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S` — checkpoint timeout budget; default `10s`, bounded `[0.001, 60]`; the same budget caps the aggregate time spent across all bloated WALs.
+- **Fast team teardown surfaces for `team-kill`.** Adds the `claude-anyteam team-kill --team <team> --force [--purge]` CLI verb, the lead-only `force_kill_team` MCP tool, and the wrapper `BLOCKED_TOOLS` extension that keeps destructive teardown unavailable to routed teammates. Follow-up sharpens bound the graceful budget to `[1, 60]` seconds, add `CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S`, parallelize remaining force-kills, and record a `team_kill_completed` visibility-envelope audit entry.
 
 ### Changed
 

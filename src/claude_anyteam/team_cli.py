@@ -1009,10 +1009,12 @@ def _build_team_kill_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--timeout-s",
         type=float,
-        default=teardown.DEFAULT_GRACEFUL_TIMEOUT_S,
+        default=None,
         help=(
-            "Seconds to wait for graceful shutdown before force kill "
-            f"(default: {teardown.DEFAULT_GRACEFUL_TIMEOUT_S:g})."
+            "Seconds to wait for graceful shutdown before force kill. "
+            f"Range {teardown.graceful_timeout_range_text()}, default "
+            f"{teardown.DEFAULT_GRACEFUL_TIMEOUT_S:g}; overrides "
+            f"{teardown.TEAM_KILL_GRACEFUL_TIMEOUT_ENV}."
         ),
     )
     p.add_argument(
@@ -1036,8 +1038,13 @@ def _team_kill_command(argv: list[str], *, stdout: TextIO | None = None, stderr:
     if not args.force:
         err.write("error: team-kill is destructive; re-run with --force to stop teammates\n")
         return 2
-    if args.timeout_s < 0:
-        err.write("error: --timeout-s must be >= 0\n")
+    if args.timeout_s is not None and not (
+        teardown.MIN_GRACEFUL_TIMEOUT_S <= args.timeout_s <= teardown.MAX_GRACEFUL_TIMEOUT_S
+    ):
+        err.write(
+            f"error: --timeout-s must be in {teardown.graceful_timeout_range_text()} "
+            f"seconds, got {args.timeout_s}\n"
+        )
         return 2
 
     try:

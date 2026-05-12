@@ -403,6 +403,9 @@ VisibilityEventKind = Literal[
     # This is a top-level signal, not ``visibility_degraded`` and not a
     # diagnostics.ERROR_CLASSES terminal failure.
     "wrapper_tool_failure_unrecovered",
+    # Discrete audit event for explicit destructive whole-team teardown
+    # (`claude-anyteam team-kill` / lead-only `force_kill_team`).
+    "team_kill_completed",
 ]
 
 VisibilitySeverity = Literal["debug", "info", "warn", "error"]
@@ -514,6 +517,7 @@ def parse_protocol_text(text: str) -> _Base | None:
         "app_server_initialize_completed",
         "app_server_initialize_progress",
         "wrapper_tool_failure_unrecovered",
+        "team_kill_completed",
     }:
         return _safe_load(VisibilityEvent, raw)
     return None

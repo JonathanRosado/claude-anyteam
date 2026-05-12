@@ -269,6 +269,31 @@ def test_parse_wrapper_tool_failure_unrecovered_visibility_event():
     assert "wrapper_tool_failure_unrecovered" in KNOWN_TASK_BLOCKED_REASONS
 
 
+def test_parse_team_kill_completed_visibility_event():
+    event = VisibilityEvent(
+        kind="team_kill_completed",
+        event_id="team-lead:team-kill:abc123",
+        team="team-x",
+        agent="team-lead",
+        backend="claude_teams.teardown",
+        seq=0,
+        severity="info",
+        summary="team killed",
+        payload={
+            "surface": "team_kill_completed",
+            "graceful": ["codex-a"],
+            "forced": ["gemini-b"],
+            "elapsed_s": 1.2,
+        },
+    )
+
+    parsed = parse_protocol_text(event.model_dump_json(by_alias=True, exclude_none=True))
+
+    assert isinstance(parsed, VisibilityEvent)
+    assert parsed.kind == "team_kill_completed"
+    assert parsed.payload["surface"] == "team_kill_completed"
+
+
 def test_parse_typed_lifecycle_payload_variants():
     examples = [
         (

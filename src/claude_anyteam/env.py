@@ -58,6 +58,8 @@ CODEX_WAL_CHECKPOINT_TIMEOUT_ENV = (
     "CLAUDE_ANYTEAM_CODEX_SQLITE_WAL_CHECKPOINT_TIMEOUT_S"
 )
 
+TEAM_KILL_GRACEFUL_TIMEOUT_ENV = "CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S"
+
 # Codex App Server JSON-RPC ``initialize`` budget (#40 Phase 1).
 # Default 90s — chosen because the only successful empirical sample we
 # have (codex-reviewer turn 1, parking-ack prompt, ~17s) is well under

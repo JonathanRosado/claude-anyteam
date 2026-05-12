@@ -399,6 +399,7 @@ PR #42 set the four-fold-surface precedent for new tunables: every knob exposed 
 - `turn_timeout_s` — `--turn-timeout-s` / `CLAUDE_ANYTEAM_TURN_TIMEOUT_S` / `turn_timeout_s` (default 1800 as of PR #52).
 - `non_progress_warn_s` — `--non-progress-warn-s` / `CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S` / `non_progress_warn_s` (default None as of PR #52, opt-in).
 - `non_progress_interrupt_s` — `--non-progress-interrupt-s` / `CLAUDE_ANYTEAM_NON_PROGRESS_INTERRUPT_S` / `non_progress_interrupt_s` (default None, opt-in overnight knob; decoupled from warn flag in PR #52 block-fix 38a3287).
+- `team-kill` graceful teardown budget — `claude-anyteam team-kill --timeout-s` / `CLAUDE_ANYTEAM_TEAM_KILL_GRACEFUL_TIMEOUT_S` / n/a per-agent key (whole-team destructive operation; default 5s, range `[1, 60]` as of PR #61 follow-up).
 
 Phase A's implementation PR is free to deviate from these names if a strong reason emerges; if it does, it MUST update this section in the RFC simultaneously so the two stay in lock-step.
 

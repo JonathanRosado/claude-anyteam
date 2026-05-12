@@ -19,16 +19,71 @@ import json
 import os
 import signal
 import time
+import uuid
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from claude_anyteam.env import TEAM_KILL_GRACEFUL_TIMEOUT_ENV
+from claude_anyteam.messages import VisibilityEvent
 from claude_teams import messaging, tasks, teams
+from claude_teams._filelock import file_lock
 from claude_teams.models import TeammateMember
 from claude_teams.spawner import kill_tmux_pane
 
 DEFAULT_GRACEFUL_TIMEOUT_S = 5.0
+MIN_GRACEFUL_TIMEOUT_S = 1.0
+MAX_GRACEFUL_TIMEOUT_S = 60.0
 WRAPPER_PID_TERM_TIMEOUT_S = 0.5
+
+
+def _format_timeout_bound(value: float) -> str:
+    return f"{value:g}"
+
+
+def graceful_timeout_range_text() -> str:
+    """Return the operator-facing graceful-budget range."""
+    return (
+        f"[{_format_timeout_bound(MIN_GRACEFUL_TIMEOUT_S)}, "
+        f"{_format_timeout_bound(MAX_GRACEFUL_TIMEOUT_S)}]"
+    )
+
+
+def resolve_graceful_timeout_s(
+    value: float | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> float:
+    """Resolve and validate the team-kill graceful shutdown budget.
+
+    ``team-kill`` is an explicitly fast teardown path.  Keep the public CLI/MCP
+    surface bounded so a typo such as ``--timeout-s 600`` cannot accidentally
+    recreate the long-hang behavior this command exists to avoid.
+    """
+    source = "graceful_timeout_s"
+    if value is None:
+        env_map = os.environ if env is None else env
+        raw = env_map.get(TEAM_KILL_GRACEFUL_TIMEOUT_ENV)
+        if raw not in (None, ""):
+            source = TEAM_KILL_GRACEFUL_TIMEOUT_ENV
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"{source} must be a number in {graceful_timeout_range_text()} seconds, "
+                    f"got {raw!r}"
+                ) from None
+        else:
+            value = DEFAULT_GRACEFUL_TIMEOUT_S
+
+    timeout_s = float(value)
+    if not (MIN_GRACEFUL_TIMEOUT_S <= timeout_s <= MAX_GRACEFUL_TIMEOUT_S):
+        raise ValueError(
+            f"{source} must be in {graceful_timeout_range_text()} seconds, "
+            f"got {value}"
+        )
+    return timeout_s
 
 
 def _teams_root(base_dir: Path | None = None) -> Path:
@@ -272,12 +327,177 @@ def _wait_for_graceful_exits(
     return initial_names - remaining
 
 
+def _force_cleanup_member(
+    team_name: str,
+    name: str,
+    member: TeammateMember,
+    *,
+    base_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Force-kill and clean up one remaining teammate.
+
+    This unit is intentionally independent so the slow parts (tmux signal,
+    wrapper PID TERM/KILL wait, task ownership reset) can run in parallel across
+    a large wedged team.  Config/task mutations still serialize through their
+    existing file locks.
+    """
+    row: dict[str, Any] = {
+        "name": name,
+        "graceful": False,
+        "forced": True,
+        "tmux_pane_id": member.tmux_pane_id,
+        "tmux_killed": False,
+        "wrapper_pid": None,
+        "wrapper_pid_killed": False,
+        "removed": False,
+        "tasks_reset": False,
+        "errors": [],
+    }
+
+    pane_id = member.tmux_pane_id
+    if pane_id and pane_id != "in-process":
+        try:
+            kill_tmux_pane(pane_id)
+            row["tmux_killed"] = True
+        except Exception as exc:
+            row["errors"].append(f"kill tmux target {pane_id!r} failed: {exc}")
+
+    wrapper_pid = _latest_wrapper_diag_pid(team_name, name, base_dir=base_dir)
+    row["wrapper_pid"] = wrapper_pid
+    killed_pid, pid_errors = _kill_validated_wrapper_pid(
+        wrapper_pid,
+        team_name=team_name,
+        agent_name=name,
+    )
+    row["wrapper_pid_killed"] = killed_pid
+    row["errors"].extend(pid_errors)
+
+    try:
+        teams.remove_member(team_name, name, base_dir=base_dir)
+        row["removed"] = True
+    except Exception as exc:
+        row["errors"].append(f"remove member failed: {exc}")
+
+    try:
+        tasks.reset_owner_tasks(team_name, name, base_dir=base_dir)
+        row["tasks_reset"] = True
+    except Exception as exc:
+        row["errors"].append(f"reset owned tasks failed: {exc}")
+
+    row["cleaned_files"] = _cleanup_member_files(team_name, name, base_dir=base_dir)
+    return row
+
+
+def _force_cleanup_members_parallel(
+    team_name: str,
+    remaining_members: dict[str, TeammateMember],
+    *,
+    base_dir: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    if not remaining_members:
+        return {}
+
+    max_workers = min(32, max(1, len(remaining_members)))
+    out: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="team-kill-force") as executor:
+        future_to_name = {
+            executor.submit(
+                _force_cleanup_member,
+                team_name,
+                name,
+                member,
+                base_dir=base_dir,
+            ): name
+            for name, member in remaining_members.items()
+        }
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                out[name] = future.result()
+            except Exception as exc:  # best-effort teardown should continue
+                out[name] = {
+                    "name": name,
+                    "graceful": False,
+                    "forced": True,
+                    "errors": [f"force cleanup failed: {exc}"],
+                    "removed": False,
+                    "tasks_reset": False,
+                    "cleaned_files": [],
+                }
+    return out
+
+
+def _visibility_event_paths(team_name: str, *, base_dir: Path | None = None) -> tuple[Path, Path, Path]:
+    team_root = _team_root(team_name, base_dir)
+    events_dir = team_root / "events"
+    return events_dir, events_dir / "team-lead.jsonl", team_root / "visibility.jsonl"
+
+
+def _append_team_kill_completed_event(
+    team_name: str,
+    result: dict[str, Any],
+    *,
+    base_dir: Path | None = None,
+) -> str | None:
+    """Append the durable audit envelope for a completed team-kill.
+
+    Returns the event id on success.  Emission failures are intentionally
+    non-fatal: the destructive operation has already happened and should not be
+    reported as failed solely because the audit log could not be written.
+    """
+    event_id = f"team-lead:team-kill:{uuid.uuid4().hex[:12]}"
+    event = VisibilityEvent(
+        kind="team_kill_completed",
+        event_id=event_id,
+        team=team_name,
+        agent="team-lead",
+        backend="claude_teams.teardown",
+        seq=0,
+        severity="info" if result.get("success") else "warn",
+        summary=result["message"][:300],
+        # Completion is an audit-only fact after the destructive CLI/MCP call
+        # returns; there is no follow-up lead action to force through inbox.
+        visibility={
+            "mailbox": False,
+            "task_state": False,
+            "event_log": True,
+            "stderr": False,
+        },
+        payload={
+            "surface": "team_kill_completed",
+            "team_name": team_name,
+            "requested": result.get("requested", 0),
+            "graceful": list(result.get("graceful", [])),
+            "forced": list(result.get("forced", [])),
+            "elapsed_s": result.get("elapsed_s"),
+            "graceful_timeout_s": result.get("graceful_timeout_s"),
+            "purge": result.get("purge", False),
+            "purged": result.get("purged", False),
+            "purge_error": result.get("purge_error"),
+        },
+    )
+    events_dir, per_agent_path, aggregate_path = _visibility_event_paths(team_name, base_dir=base_dir)
+    events_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = events_dir / ".lock"
+    lock_path.touch(exist_ok=True)
+    line = event.model_dump_json(by_alias=True, exclude_none=True)
+    with file_lock(lock_path):
+        with per_agent_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.write("\n")
+        with aggregate_path.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.write("\n")
+    lock_path.touch(exist_ok=True)
+    return event_id
+
+
 def force_kill_team(
     team_name: str,
     *,
     force: bool,
     purge: bool = False,
-    graceful_timeout_s: float = DEFAULT_GRACEFUL_TIMEOUT_S,
+    graceful_timeout_s: float | None = None,
     reason: str = "fast team teardown requested",
     base_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -296,8 +516,7 @@ def force_kill_team(
     """
     if not force:
         raise ValueError("team-kill is destructive; re-run with --force to stop teammates")
-    if graceful_timeout_s < 0:
-        raise ValueError("graceful_timeout_s must be >= 0")
+    graceful_timeout_s = resolve_graceful_timeout_s(graceful_timeout_s)
 
     started_at = time.monotonic()
     members = _teammate_members(team_name, base_dir=base_dir)
@@ -328,51 +547,14 @@ def force_kill_team(
     except FileNotFoundError:
         remaining_members = {}
 
-    forced_names: list[str] = []
-    for name, member in remaining_members.items():
-        row = results.setdefault(name, {"name": name})
-        row["graceful"] = False
-        row["forced"] = True
-        row["tmux_pane_id"] = member.tmux_pane_id
-        row["tmux_killed"] = False
-        row["wrapper_pid"] = None
-        row["wrapper_pid_killed"] = False
-        row["removed"] = False
-        row["tasks_reset"] = False
-        row.setdefault("errors", [])
-
-        pane_id = member.tmux_pane_id
-        if pane_id and pane_id != "in-process":
-            try:
-                kill_tmux_pane(pane_id)
-                row["tmux_killed"] = True
-            except Exception as exc:
-                row["errors"].append(f"kill tmux target {pane_id!r} failed: {exc}")
-
-        wrapper_pid = _latest_wrapper_diag_pid(team_name, name, base_dir=base_dir)
-        row["wrapper_pid"] = wrapper_pid
-        killed_pid, pid_errors = _kill_validated_wrapper_pid(
-            wrapper_pid,
-            team_name=team_name,
-            agent_name=name,
-        )
-        row["wrapper_pid_killed"] = killed_pid
-        row["errors"].extend(pid_errors)
-
-        try:
-            teams.remove_member(team_name, name, base_dir=base_dir)
-            row["removed"] = True
-        except Exception as exc:
-            row["errors"].append(f"remove member failed: {exc}")
-
-        try:
-            tasks.reset_owner_tasks(team_name, name, base_dir=base_dir)
-            row["tasks_reset"] = True
-        except Exception as exc:
-            row["errors"].append(f"reset owned tasks failed: {exc}")
-
-        row["cleaned_files"] = _cleanup_member_files(team_name, name, base_dir=base_dir)
-        forced_names.append(name)
+    forced_results = _force_cleanup_members_parallel(
+        team_name,
+        remaining_members,
+        base_dir=base_dir,
+    )
+    for name, row in forced_results.items():
+        results.setdefault(name, {"name": name}).update(row)
+    forced_names = sorted(forced_results)
 
     purged = False
     purge_error: str | None = None
@@ -393,7 +575,7 @@ def force_kill_team(
     elif purge_error:
         message += f"; purge failed: {purge_error}"
 
-    return {
+    result: dict[str, Any] = {
         "success": purge_error is None,
         "team_name": team_name,
         "requested": len(members),
@@ -409,3 +591,19 @@ def force_kill_team(
         "team_dir": str(_team_root(team_name, base_dir)),
         "tasks_dir": str(_tasks_root(base_dir) / team_name),
     }
+
+    if purged:
+        result["visibility_event_error"] = (
+            "not emitted: --purge removed the team event log with the rest of team state"
+        )
+    else:
+        try:
+            result["visibility_event_id"] = _append_team_kill_completed_event(
+                team_name,
+                result,
+                base_dir=base_dir,
+            )
+        except Exception as exc:
+            result["visibility_event_error"] = str(exc)
+
+    return result

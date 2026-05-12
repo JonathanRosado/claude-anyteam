@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -46,6 +51,36 @@ def _seed_task(home: Path, team: str, task_id: str, *, owner: str, status: str =
         "status": status,
         "owner": owner,
     }))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _terminate_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+
+
+def _spawn_sleeping_python(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.Popen:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", *args],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    proc_root = Path("/proc") / str(proc.pid)
+    for _ in range(50):
+        if proc_root.exists():
+            break
+        time.sleep(0.01)
+    return proc
 
 
 # --------------------------------------------------------------------------- #
@@ -424,6 +459,38 @@ def test_team_kill_requires_force(fake_home, capsys):
     assert [m["name"] for m in cfg["members"]] == ["team-lead", "codex-alice"]
 
 
+def test_team_kill_timeout_s_is_bilaterally_bounded(capsys):
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--timeout-s", "0"])
+    assert rc == 2
+    assert "--timeout-s must be in [1, 60]" in capsys.readouterr().err
+
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--timeout-s", "600"])
+    assert rc == 2
+    assert "--timeout-s must be in [1, 60]" in capsys.readouterr().err
+
+    assert team_teardown.resolve_graceful_timeout_s(1) == 1
+    assert team_teardown.resolve_graceful_timeout_s(60) == 60
+
+
+def test_force_kill_team_reads_graceful_timeout_env(fake_home, monkeypatch):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+    ])
+    seen: dict[str, float] = {}
+
+    def fake_wait(team_name, initial_names, *, timeout_s, base_dir=None):
+        seen["timeout_s"] = timeout_s
+        return set()
+
+    monkeypatch.setenv(team_teardown.TEAM_KILL_GRACEFUL_TIMEOUT_ENV, "2")
+    monkeypatch.setattr(team_teardown, "_wait_for_graceful_exits", fake_wait)
+
+    result = team_teardown.force_kill_team("build", force=True, base_dir=fake_home / ".claude")
+
+    assert seen["timeout_s"] == 2
+    assert result["graceful_timeout_s"] == 2
+
+
 def test_team_kill_force_removes_members_and_resets_tasks(fake_home, monkeypatch, capsys):
     _seed_team_config(fake_home, "build", [
         {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
@@ -456,8 +523,9 @@ def test_team_kill_force_removes_members_and_resets_tasks(fake_home, monkeypatch
     killed_panes: list[str] = []
     monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: killed_panes.append(pane_id))
     monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+    monkeypatch.setattr(team_teardown, "_wait_for_graceful_exits", lambda *args, **kwargs: set())
 
-    rc = cli_main(["team-kill", "--team", "build", "--force", "--timeout-s", "0"])
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--timeout-s", "1"])
 
     assert rc == 0
     assert killed_panes == ["%1"]
@@ -469,6 +537,13 @@ def test_team_kill_force_removes_members_and_resets_tasks(fake_home, monkeypatch
     out = capsys.readouterr().out
     assert "shutdown_request sent to 2 teammate" in out
     assert "2 force-killed" in out
+    events = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "events" / "team-lead.jsonl")
+    assert events[-1]["kind"] == "team_kill_completed"
+    assert events[-1]["payload"]["surface"] == "team_kill_completed"
+    assert events[-1]["payload"]["forced"] == ["codex-alice", "gemini-bob"]
+    assert events[-1]["payload"]["graceful"] == []
+    aggregate = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "visibility.jsonl")
+    assert aggregate[-1]["event_id"] == events[-1]["event_id"]
 
 
 def test_team_kill_purge_deletes_team_and_tasks_dirs(fake_home, monkeypatch):
@@ -490,12 +565,52 @@ def test_team_kill_purge_deletes_team_and_tasks_dirs(fake_home, monkeypatch):
     _seed_task(fake_home, "build", "1", owner="codex-alice")
     monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: None)
     monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+    monkeypatch.setattr(team_teardown, "_wait_for_graceful_exits", lambda *args, **kwargs: set())
 
-    rc = cli_main(["team-kill", "--team", "build", "--force", "--purge", "--timeout-s", "0"])
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--purge", "--timeout-s", "1"])
 
     assert rc == 0
     assert not (fake_home / ".claude" / "teams" / "build").exists()
     assert not (fake_home / ".claude" / "tasks" / "build").exists()
+
+
+def test_force_kill_team_reports_purge_error_and_audits_completion(fake_home, monkeypatch):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+        {
+            "name": "codex-alice",
+            "agentId": "codex-alice@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": 2,
+            "tmuxPaneId": "%1",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+    ])
+    _seed_task(fake_home, "build", "1", owner="codex-alice")
+    monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: None)
+    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+    monkeypatch.setattr(team_teardown, "_wait_for_graceful_exits", lambda *args, **kwargs: set())
+    monkeypatch.setattr(team_teardown.teams, "delete_team", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk busy")))
+
+    result = team_teardown.force_kill_team(
+        "build",
+        force=True,
+        purge=True,
+        graceful_timeout_s=1,
+        base_dir=fake_home / ".claude",
+    )
+
+    assert result["success"] is False
+    assert result["purge_error"] == "disk busy"
+    assert "purge failed: disk busy" in result["message"]
+    events = _read_jsonl(fake_home / ".claude" / "teams" / "build" / "events" / "team-lead.jsonl")
+    assert events[-1]["kind"] == "team_kill_completed"
+    assert events[-1]["severity"] == "warn"
+    assert events[-1]["payload"]["purge_error"] == "disk busy"
 
 
 def test_force_kill_team_counts_members_that_deregister_during_grace_period(fake_home, monkeypatch):
@@ -531,7 +646,7 @@ def test_force_kill_team_counts_members_that_deregister_during_grace_period(fake
     result = team_teardown.force_kill_team(
         "build",
         force=True,
-        graceful_timeout_s=0.2,
+        graceful_timeout_s=1,
         base_dir=base_dir,
     )
 
@@ -563,21 +678,87 @@ def test_force_kill_team_four_member_stuck_path_finishes_under_budget(fake_home,
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / ".lock").touch()
     killed_panes: list[str] = []
+    active_pid_kills = 0
+    max_active_pid_kills = 0
+    pid_lock = threading.Lock()
+
+    def fake_kill_validated_wrapper_pid(*args, **kwargs):
+        nonlocal active_pid_kills, max_active_pid_kills
+        with pid_lock:
+            active_pid_kills += 1
+            max_active_pid_kills = max(max_active_pid_kills, active_pid_kills)
+        time.sleep(0.05)
+        with pid_lock:
+            active_pid_kills -= 1
+        return False, []
+
     monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: killed_panes.append(pane_id))
-    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", fake_kill_validated_wrapper_pid)
+    monkeypatch.setattr(team_teardown, "_wait_for_graceful_exits", lambda *args, **kwargs: set())
 
     result = team_teardown.force_kill_team(
         "build",
         force=True,
-        graceful_timeout_s=0.01,
+        graceful_timeout_s=1,
         base_dir=fake_home / ".claude",
     )
 
     assert result["elapsed_s"] < 10.0
     assert len(result["forced"]) == 4
-    assert killed_panes == ["%1", "%2", "%3", "%4"]
+    assert set(killed_panes) == {"%1", "%2", "%3", "%4"}
+    assert max_active_pid_kills > 1
     cfg = json.loads(_team_path(fake_home, "build").read_text())
     assert [m["name"] for m in cfg["members"]] == ["team-lead"]
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/proc").exists(), reason="/proc is required")
+def test_pid_matches_identity_defensive_guards_reject_unrelated_pid_and_arg_spoof():
+    assert team_teardown._pid_matches_identity(
+        os.getpid(),
+        team_name="build",
+        agent_name="codex-alice",
+    ) is False
+
+    proc = _spawn_sleeping_python(["--team", "build", "--name", "codex-alice"])
+    try:
+        assert team_teardown._pid_matches_identity(
+            proc.pid,
+            team_name="build",
+            agent_name="codex-alice",
+        ) is False
+    finally:
+        _terminate_process(proc)
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/proc").exists(), reason="/proc is required")
+def test_pid_matches_identity_accepts_env_or_wrapper_arg_identity():
+    env = os.environ.copy()
+    env["CLAUDE_ANYTEAM_TEAM"] = "build"
+    env["CLAUDE_ANYTEAM_NAME"] = "codex-alice"
+    proc = _spawn_sleeping_python([], env=env)
+    try:
+        assert team_teardown._pid_matches_identity(
+            proc.pid,
+            team_name="build",
+            agent_name="codex-alice",
+        ) is True
+        assert team_teardown._pid_matches_identity(
+            proc.pid,
+            team_name="build",
+            agent_name="codex-bob",
+        ) is False
+    finally:
+        _terminate_process(proc)
+
+    proc = _spawn_sleeping_python(["codex-teammate-wrapper", "--team", "build", "--name", "codex-alice"])
+    try:
+        assert team_teardown._pid_matches_identity(
+            proc.pid,
+            team_name="build",
+            agent_name="codex-alice",
+        ) is True
+    finally:
+        _terminate_process(proc)
 
 
 # --------------------------------------------------------------------------- #
