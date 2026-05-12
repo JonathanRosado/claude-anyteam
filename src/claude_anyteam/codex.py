@@ -2345,8 +2345,6 @@ def app_server_invoke(
             )
 
         while not done and time.monotonic() < deadline:
-            _emit_unrecovered_wrapper_tool_failures(time.monotonic())
-
             # 1. Deliver any pending steers. Non-blocking pop.
             if steer_queue is not None:
                 while True:
