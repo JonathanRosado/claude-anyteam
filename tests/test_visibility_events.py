@@ -516,6 +516,16 @@ def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
             return 301
 
     update_calls: list[tuple[tuple, dict]] = []
+    # Task #5 / RFC #50 Phase B: ``non_progress_warn_s`` default flipped
+    # to None (opt-in). The watchdog test must pass explicit opt-in values
+    # via dataclasses.replace so it still exercises the firing path. Also
+    # pins ``turn_timeout_s`` to the prior 900 so the payload assertion
+    # below stays stable across default changes.
+    import dataclasses as _dataclasses
+
+    watchdog_settings = _dataclasses.replace(
+        _settings(), turn_timeout_s=900.0, non_progress_warn_s=300.0
+    )
     with (
         patch.object(app_server_mod, "AppServerClient", make_client),
         patch.object(loop_mod.pio, "read_own_inbox", return_value=[]),
@@ -528,7 +538,7 @@ def test_app_server_watchdog_fans_out_to_event_log_mailbox_and_active_form(
     ):
         m.setattr(codex_mod.time, "monotonic", fake_monotonic)
         result = loop_mod._execute_task_app_server(
-            loop_mod.LoopState(settings=_settings()),
+            loop_mod.LoopState(settings=watchdog_settings),
             SimpleNamespace(id="16"),
             "long task",
         )

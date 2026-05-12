@@ -2,6 +2,32 @@
 
 All notable changes to claude-anyteam are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **`turn_timeout_s` default bumped 900 → 1800s** (task #5). The prior 900s cap interrupted legitimately long Codex turns (large test suites, multi-file refactors at `xhigh` effort) and was the dominant pain the visibility-driven RFC at `docs/design/timers-vs-visibility.md` (issue #50) was written to address. Cap remains 3600s — no single turn should run longer than an hour. Affects Codex App Server (`turn_timeout_s`), Codex Exec, and `claude-native` (`CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S`). Set `--turn-timeout-s 900` or `CLAUDE_ANYTEAM_TURN_TIMEOUT_S=900` to restore the prior default for any single teammate.
+- **`non_progress_warn_s` default flipped from 300s to None (opt-in)** (task #5 / RFC #50 Phase B). The soft non-progress watchdog now ships disabled by default. Lead reads typed visibility events instead — see `docs/design/timers-vs-visibility.md` for the migration plan and the new envelope taxonomy. Existing users who want the prior behavior set `--non-progress-warn-s 300` or `CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S=300`.
+- **`non_progress_warn_s` range upper bumped 900 → 1800s** so opt-in users can scale the watchdog proportionally to the new `turn_timeout_s` default. Range now `[60, 1800]` when explicitly set.
+- **Kimi / Gemini subprocess `timeout_s` defaults bumped 600 → 1800s** in `backends/kimi/invoke.py` and `backends/gemini/invoke.py` for consistency with the new `turn_timeout_s` default. Headless callers that rely on the function-default behavior get the longer cap; explicit callers are unaffected.
+
+### Documentation
+
+- New design RFC at `docs/design/timers-vs-visibility.md` (issue #50): audits every timer in the wrapper, classifies stall-detection vs bounded-I/O vs teardown, proposes four new typed envelopes (`wrapper_tool_failure_unrecovered`, `app_server_idle_quiet`, `subprocess_pressure`, `transport_alive`) and a model-emitted `working_on` contract that together replace the soft watchdog. Cites #40, #43, #49 as the false-positive cases.
+
+### Migration notes
+
+This is a **default change**, not an API break. Configs that set `turn_timeout_s` or `non_progress_warn_s` explicitly are unaffected. Teammates spawned with no overrides will see the new defaults next time the adapter starts. To preserve the prior behavior wholesale, add to your team config:
+
+```json
+{
+  "turn_timeout_s": 900,
+  "non_progress_warn_s": 300
+}
+```
+
+Or set environment variables: `CLAUDE_ANYTEAM_TURN_TIMEOUT_S=900 CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S=300`.
+
 ## [0.8.4] — 2026-05-05
 
 **Cross-backend access to Claude Code skills.** Routed teammates (codex-*, gemini-*, kimi-*) can now seamlessly discover and follow Claude Code skills at `skills/<name>/SKILL.md` without any special instruction in the user's task. The first non-Claude backend that meets the user's request — "write me a cold email," "audit my SEO," "rewrite my hero copy" — fetches the relevant skill body via the wrapper-MCP and follows the prose verbatim. Empirically validated across 4 diverse domain tasks (marketing-ideas, cold-email, seo, copywriting) with codex-app-server backend; 4/4 hit rate.

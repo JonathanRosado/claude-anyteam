@@ -584,10 +584,10 @@ _BASE_CAPABILITY_MANIFEST: dict[str, dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "non_progress_warn_s": {
-                    "type": "number",
-                    "default": 300,
+                    "type": ["number", "null"],
+                    "default": None,
                     "minimum": 60,
-                    "maximum": 900,
+                    "maximum": 1800,
                 },
                 "non_progress_interrupt_s": {
                     "type": ["number", "null"],

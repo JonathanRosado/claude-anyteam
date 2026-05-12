@@ -52,7 +52,10 @@ def test_codex_app_server_backend_metadata_declares_expected_capabilities(tmp_pa
     assert metadata.capability_manifest["turn_steer"]["callable_from_peers"] is False
     watchdog = metadata.capability_manifest["soft_non_progress_watchdog"]
     assert watchdog["callable_from_peers"] is False
-    assert watchdog["schema"]["properties"]["non_progress_warn_s"]["default"] == 300
+    # Task #5 / RFC #50 Phase B: ``non_progress_warn_s`` is now opt-in
+    # (default None) — see docs/design/timers-vs-visibility.md.
+    assert watchdog["schema"]["properties"]["non_progress_warn_s"]["default"] is None
+    assert watchdog["schema"]["properties"]["non_progress_warn_s"]["maximum"] == 1800
 
 
 def test_codex_app_server_metadata_advertises_native_host_tools_inventory(tmp_path: Path):

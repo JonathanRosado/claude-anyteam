@@ -71,17 +71,27 @@ class Settings:
     effort: str | None = None
     # Per-teammate Codex App Server turn timeout in seconds. Bounds the
     # wall-clock duration of a single turn (`app_server_invoke` polling
-    # loop). Default 900s preserves pre-v0.6.0 behavior. Configurable via
-    # `team-agent --turn-timeout-s`, the `CLAUDE_ANYTEAM_TURN_TIMEOUT_S` env,
-    # or the per-teammate `agents/<name>.json` shim config so coding teammates
-    # running long pytest/build invocations can have a higher cap without
-    # touching team-wide config. Range [60, 3600] enforced at parse time.
-    turn_timeout_s: float = 900.0
-    # Codex App Server-only soft non-progress watchdog. It emits a
+    # loop). Default 1800s as of task #5 — the prior 900s default
+    # interrupted legitimately long Codex turns (large test suites,
+    # multi-file refactors at xhigh effort) and was the dominant pain
+    # the RFC at docs/design/timers-vs-visibility.md (issue #50) was
+    # written to address. Configurable via `team-agent --turn-timeout-s`,
+    # the `CLAUDE_ANYTEAM_TURN_TIMEOUT_S` env, or the per-teammate
+    # `agents/<name>.json` shim config. Range [60, 3600] enforced at
+    # parse time; cap stays 3600 (we have no business running a single
+    # turn longer than an hour).
+    turn_timeout_s: float = 1800.0
+    # Codex App Server-only soft non-progress watchdog. When set, emits a
     # turn_progress warning envelope and checkpoint steer after this many
-    # seconds with no App Server-visible progress. Range [60, 900]; default
-    # 300s per B9 §5 / 09 R20.
-    non_progress_warn_s: float = 300.0
+    # seconds with no App Server-visible progress. ``None`` (the default
+    # as of task #5) disables the soft watchdog — see the RFC at
+    # docs/design/timers-vs-visibility.md (issue #50) for why visibility
+    # events (e.g. a future ``app_server_idle_quiet``) are the preferred
+    # signal. Existing users who want the prior behavior can re-enable
+    # by setting any value in [60, 1800]. Range upper raised from the
+    # prior 900s so opt-in users can scale proportionally to the new
+    # 1800s ``turn_timeout_s`` default.
+    non_progress_warn_s: float | None = None
     # Optional Codex App Server-only hard early interrupt threshold. None is
     # the default and means the watchdog never interrupts before the normal
     # turn_timeout_s cap. When set, R20 only uses it after the soft watchdog
@@ -150,7 +160,7 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
     turn_timeout_raw = _pick(
         overrides,
         "turn_timeout_s",
-        env_first(os.environ, TURN_TIMEOUT_ENV, LEGACY_TURN_TIMEOUT_ENV, default="900"),
+        env_first(os.environ, TURN_TIMEOUT_ENV, LEGACY_TURN_TIMEOUT_ENV, default="1800"),
     )
     try:
         turn_timeout_s = float(turn_timeout_raw)
@@ -168,20 +178,28 @@ def from_env(overrides: dict[str, object] | None = None) -> Settings:
             os.environ,
             NON_PROGRESS_WARN_ENV,
             LEGACY_NON_PROGRESS_WARN_ENV,
-            default="300",
         ),
     )
-    try:
-        non_progress_warn_s = float(non_progress_warn_raw)
-    except (TypeError, ValueError) as e:
-        raise ValueError(
-            f"non_progress_warn_s must be numeric, got {non_progress_warn_raw!r}"
-        ) from e
-    if not (60.0 <= non_progress_warn_s <= 900.0):
-        raise ValueError(
-            "non_progress_warn_s must be in [60, 900] seconds, "
-            f"got {non_progress_warn_s}"
-        )
+    non_progress_warn_s: float | None
+    if non_progress_warn_raw in (None, ""):
+        # Task #5 / RFC #50 Phase B: the soft watchdog is opt-in. Default
+        # None disables warn-time steering; the lead reads typed visibility
+        # events instead (see docs/design/timers-vs-visibility.md). Existing
+        # users who want the prior behavior pass an explicit value here, via
+        # ``--non-progress-warn-s``, or via ``CLAUDE_ANYTEAM_NON_PROGRESS_WARN_S``.
+        non_progress_warn_s = None
+    else:
+        try:
+            non_progress_warn_s = float(non_progress_warn_raw)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"non_progress_warn_s must be numeric, got {non_progress_warn_raw!r}"
+            ) from e
+        if not (60.0 <= non_progress_warn_s <= 1800.0):
+            raise ValueError(
+                "non_progress_warn_s must be in [60, 1800] seconds, "
+                f"got {non_progress_warn_s}"
+            )
 
     non_progress_interrupt_raw = _pick(
         overrides,

@@ -1493,8 +1493,8 @@ def app_server_invoke(
     settings_team: str,
     settings_agent: str,
     codex_binary: str = "codex",
-    overall_timeout_s: float = 900.0,
-    non_progress_warn_s: float = 300.0,
+    overall_timeout_s: float = 1800.0,
+    non_progress_warn_s: float | None = None,
     non_progress_interrupt_s: float | None = None,
     steer_queue: "_SteerQueue | None" = None,
     mid_turn_hook: "Any | None" = None,
@@ -2085,9 +2085,13 @@ def app_server_invoke(
                 # Triggers at most once per turn; doesn't kill, just warns
                 # the lead and nudges the model. The optional hard interrupt
                 # is checked separately below and is disabled by default.
+                # Task #5 / RFC #50 Phase B: ``non_progress_warn_s`` is now
+                # opt-in (default None). When None the watchdog is skipped
+                # entirely; lead reads typed visibility events instead.
                 now = time.monotonic()
                 if (
-                    not non_progress_warned
+                    non_progress_warn_s is not None
+                    and not non_progress_warned
                     and (now - last_progress_at) >= non_progress_warn_s
                 ):
                     elapsed_s = now - turn_started_at

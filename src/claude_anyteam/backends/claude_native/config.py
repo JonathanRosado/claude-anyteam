@@ -40,7 +40,8 @@ class ClaudeNativeSettings:
     claude_binary: str = "claude"
     model: str | None = None
     effort: str | None = None
-    turn_timeout_s: float = 900.0
+    # Default bumped 900 → 1800 in task #5 to match codex turn_timeout_s.
+    turn_timeout_s: float = 1800.0
 
 
 def from_env(overrides: dict[str, object] | None = None) -> ClaudeNativeSettings:
@@ -68,7 +69,7 @@ def from_env(overrides: dict[str, object] | None = None) -> ClaudeNativeSettings
         raise ValueError(
             f"Claude effort must be one of {', '.join(sorted(CLAUDE_EFFORTS))}, got {effort!r}"
         )
-    timeout_raw = _pick(overrides, "turn_timeout_s", os.environ.get("CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S", "900"))
+    timeout_raw = _pick(overrides, "turn_timeout_s", os.environ.get("CLAUDE_ANYTEAM_CLAUDE_TURN_TIMEOUT_S", "1800"))
 
     return ClaudeNativeSettings(
         team_name=str(team_name),

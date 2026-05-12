@@ -36,7 +36,7 @@ def _settings(tmp_path: Path, **overrides: Any) -> ClaudeNativeSettings:
         "claude_binary": "claude",
         "model": "sonnet",
         "effort": None,
-        "turn_timeout_s": 900.0,
+        "turn_timeout_s": 1800.0,
     }
     values.update(overrides)
     return ClaudeNativeSettings(**values)

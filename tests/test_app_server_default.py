@@ -34,11 +34,16 @@ def _baseline_overrides() -> dict:
 
 
 def test_default_app_server_is_on():
-    """Task #21 default flip: no flag, no env → app_server=True."""
+    """Task #21 default flip: no flag, no env → app_server=True.
+
+    Task #5 / RFC #50 Phase B: ``turn_timeout_s`` default bumped from 900
+    to 1800; ``non_progress_warn_s`` default flipped from 300.0 to None
+    (opt-in). See docs/design/timers-vs-visibility.md.
+    """
     s = from_env(overrides=_baseline_overrides())
     assert s.app_server is True
-    assert s.turn_timeout_s == 900.0
-    assert s.non_progress_warn_s == 300.0
+    assert s.turn_timeout_s == 1800.0
+    assert s.non_progress_warn_s is None
     assert s.non_progress_interrupt_s is None
 
 
@@ -182,10 +187,13 @@ def test_non_progress_env_and_overrides_are_honored():
 
 
 def test_non_progress_warn_range_is_validated():
+    # Task #5 / RFC #50 Phase B: range upper bumped from 900 → 1800 so
+    # opt-in users can scale proportionally to the new 1800s turn_timeout
+    # default.
     with pytest.raises(ValueError, match="non_progress_warn_s"):
         from_env(overrides=_baseline_overrides() | {"non_progress_warn_s": 59})
     with pytest.raises(ValueError, match="non_progress_warn_s"):
-        from_env(overrides=_baseline_overrides() | {"non_progress_warn_s": 901})
+        from_env(overrides=_baseline_overrides() | {"non_progress_warn_s": 1801})
 
 
 def test_non_progress_interrupt_range_is_validated():

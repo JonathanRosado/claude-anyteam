@@ -152,10 +152,10 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
         type=float,
         help=(
             "Wall-clock cap (seconds) on a single Codex App Server turn. "
-            "Range [60, 3600], default 900. Forwarded to the adapter as "
-            "--turn-timeout-s. Useful for teammates that run long pytest "
-            "or build invocations; tighten for short-loop executor roles. "
-            "Codex App Server-only today."
+            "Range [60, 3600], default 1800 (bumped from 900 in task #5). "
+            "Forwarded to the adapter as --turn-timeout-s. Useful for "
+            "teammates that run long pytest or build invocations; tighten "
+            "for short-loop executor roles. Codex App Server-only today."
         ),
     )
     p.add_argument(
@@ -163,8 +163,9 @@ def _build_team_agent_parser() -> argparse.ArgumentParser:
         type=float,
         help=(
             "Codex App Server soft non-progress watchdog threshold in seconds. "
-            "Range [60, 900], default 300. Forwarded to the adapter as "
-            "--non-progress-warn-s."
+            "Range [60, 1800], default unset (opt-in as of task #5; see "
+            "docs/design/timers-vs-visibility.md). Forwarded to the adapter "
+            "as --non-progress-warn-s."
         ),
     )
     p.add_argument(
@@ -228,10 +229,10 @@ def _team_agent_command(argv: list[str], *, stdout: TextIO | None = None, stderr
         )
         return 2
     if args.non_progress_warn_s is not None and not (
-        60.0 <= args.non_progress_warn_s <= 900.0
+        60.0 <= args.non_progress_warn_s <= 1800.0
     ):
         err.write(
-            "error: --non-progress-warn-s must be in [60, 900] seconds, "
+            "error: --non-progress-warn-s must be in [60, 1800] seconds, "
             f"got {args.non_progress_warn_s}\n"
         )
         return 2

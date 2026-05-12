@@ -526,7 +526,7 @@ def run(
     cwd: Path,
     schema: Path | None = None,
     gemini_binary: str = "gemini",
-    timeout_s: float = 600.0,
+    timeout_s: float = 1800.0,
     wrapper_identity: tuple[str, str] | None = None,
     resume_session_id: str | None = None,
     model: str | None = None,
