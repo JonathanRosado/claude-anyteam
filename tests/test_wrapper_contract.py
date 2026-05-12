@@ -650,7 +650,7 @@ def test_all_cs50victor_tools_are_categorised():
     fail this test, forcing an explicit decision on whether to surface
     it to Codex.
     """
-    # We hard-code cs50victor's current 14-tool surface. If upstream grows
+    # We hard-code cs50victor's current 15-tool surface. If upstream grows
     # the tool surface, this list will diverge from live — that's the point.
     cs50victor_current_tools = frozenset({
         "team_create",
@@ -665,6 +665,7 @@ def test_all_cs50victor_tools_are_categorised():
         "read_inbox",
         "read_config",
         "force_kill_teammate",
+        "force_kill_team",
         "process_shutdown_approved",
         "check_teammate",
     })

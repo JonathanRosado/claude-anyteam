@@ -13,6 +13,7 @@ import pytest
 
 from claude_anyteam import team_cli
 from claude_anyteam.cli import main as cli_main
+from claude_teams import teardown as team_teardown
 
 
 @pytest.fixture
@@ -28,6 +29,23 @@ def _agent_path(home: Path, team: str, agent: str) -> Path:
 
 def _team_path(home: Path, team: str) -> Path:
     return home / ".claude" / "teams" / team / "config.json"
+
+
+def _task_path(home: Path, team: str, task_id: str) -> Path:
+    return home / ".claude" / "tasks" / team / f"{task_id}.json"
+
+
+def _seed_task(home: Path, team: str, task_id: str, *, owner: str, status: str = "in_progress") -> None:
+    path = _task_path(home, team, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (path.parent / ".lock").touch()
+    path.write_text(json.dumps({
+        "id": task_id,
+        "subject": f"task {task_id}",
+        "description": "seed task",
+        "status": status,
+        "owner": owner,
+    }))
 
 
 # --------------------------------------------------------------------------- #
@@ -214,7 +232,14 @@ def test_team_agent_invalid_non_progress_values_are_rejected(fake_home, capsys):
 def _seed_team_config(home: Path, team: str, members: list[dict]) -> None:
     p = _team_path(home, team)
     p.parent.mkdir(parents=True)
-    p.write_text(json.dumps({"name": team, "members": members}))
+    p.write_text(json.dumps({
+        "name": team,
+        "description": "",
+        "createdAt": 1,
+        "leadAgentId": f"team-lead@{team}",
+        "leadSessionId": "test-session",
+        "members": members,
+    }))
 
 
 def test_team_patch_sets_agent_type_for_named_agent(fake_home, capsys):
@@ -367,6 +392,192 @@ def test_team_roster_missing_team(fake_home, capsys):
     rc = cli_main(["team-roster", "--team", "missing"])
     assert rc == 1
     assert "no team config" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# team-kill
+# --------------------------------------------------------------------------- #
+
+
+def test_team_kill_requires_force(fake_home, capsys):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+        {
+            "name": "codex-alice",
+            "agentId": "codex-alice@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": 2,
+            "tmuxPaneId": "%1",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+    ])
+
+    rc = cli_main(["team-kill", "--team", "build", "--timeout-s", "0"])
+
+    assert rc == 2
+    assert "re-run with --force" in capsys.readouterr().err
+    cfg = json.loads(_team_path(fake_home, "build").read_text())
+    assert [m["name"] for m in cfg["members"]] == ["team-lead", "codex-alice"]
+
+
+def test_team_kill_force_removes_members_and_resets_tasks(fake_home, monkeypatch, capsys):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+        {
+            "name": "codex-alice",
+            "agentId": "codex-alice@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": 2,
+            "tmuxPaneId": "%1",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+        {
+            "name": "gemini-bob",
+            "agentId": "gemini-bob@build",
+            "agentType": "claude-anyteam",
+            "model": "gemini-cli",
+            "prompt": "work",
+            "color": "yellow",
+            "joinedAt": 3,
+            "tmuxPaneId": "in-process",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+    ])
+    _seed_task(fake_home, "build", "1", owner="codex-alice")
+    killed_panes: list[str] = []
+    monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: killed_panes.append(pane_id))
+    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--timeout-s", "0"])
+
+    assert rc == 0
+    assert killed_panes == ["%1"]
+    cfg = json.loads(_team_path(fake_home, "build").read_text())
+    assert [m["name"] for m in cfg["members"]] == ["team-lead"]
+    task = json.loads(_task_path(fake_home, "build", "1").read_text())
+    assert task["status"] == "pending"
+    assert "owner" not in task
+    out = capsys.readouterr().out
+    assert "shutdown_request sent to 2 teammate" in out
+    assert "2 force-killed" in out
+
+
+def test_team_kill_purge_deletes_team_and_tasks_dirs(fake_home, monkeypatch):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+        {
+            "name": "codex-alice",
+            "agentId": "codex-alice@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": 2,
+            "tmuxPaneId": "%1",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+    ])
+    _seed_task(fake_home, "build", "1", owner="codex-alice")
+    monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: None)
+    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+
+    rc = cli_main(["team-kill", "--team", "build", "--force", "--purge", "--timeout-s", "0"])
+
+    assert rc == 0
+    assert not (fake_home / ".claude" / "teams" / "build").exists()
+    assert not (fake_home / ".claude" / "tasks" / "build").exists()
+
+
+def test_force_kill_team_counts_members_that_deregister_during_grace_period(fake_home, monkeypatch):
+    _seed_team_config(fake_home, "build", [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+        {
+            "name": "codex-alice",
+            "agentId": "codex-alice@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": 2,
+            "tmuxPaneId": "%1",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        },
+    ])
+    base_dir = fake_home / ".claude"
+
+    def fake_send_shutdown(team_name, recipient, reason="", base_dir=None):
+        from claude_teams import teams
+        teams.remove_member(team_name, recipient, base_dir=base_dir)
+        return f"shutdown-test@{recipient}"
+
+    monkeypatch.setattr(team_teardown.messaging, "send_shutdown_request", fake_send_shutdown)
+    monkeypatch.setattr(
+        team_teardown,
+        "kill_tmux_pane",
+        lambda pane_id: pytest.fail("graceful exits must not be force-killed"),
+    )
+
+    result = team_teardown.force_kill_team(
+        "build",
+        force=True,
+        graceful_timeout_s=0.2,
+        base_dir=base_dir,
+    )
+
+    assert result["graceful"] == ["codex-alice"]
+    assert result["forced"] == []
+    assert result["members"][0]["graceful"] is True
+
+
+def test_force_kill_team_four_member_stuck_path_finishes_under_budget(fake_home, monkeypatch):
+    members = [
+        {"name": "team-lead", "agentId": "team-lead@build", "agentType": "team-lead", "model": "opus", "joinedAt": 1, "tmuxPaneId": "", "cwd": "/tmp"},
+    ]
+    for idx in range(4):
+        name = f"codex-{idx}"
+        members.append({
+            "name": name,
+            "agentId": f"{name}@build",
+            "agentType": "claude-anyteam",
+            "model": "codex-cli",
+            "prompt": "work",
+            "color": "green",
+            "joinedAt": idx + 2,
+            "tmuxPaneId": f"%{idx + 1}",
+            "cwd": "/tmp",
+            "backendType": "in-process",
+        })
+    _seed_team_config(fake_home, "build", members)
+    task_dir = fake_home / ".claude" / "tasks" / "build"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / ".lock").touch()
+    killed_panes: list[str] = []
+    monkeypatch.setattr(team_teardown, "kill_tmux_pane", lambda pane_id: killed_panes.append(pane_id))
+    monkeypatch.setattr(team_teardown, "_kill_validated_wrapper_pid", lambda *args, **kwargs: (False, []))
+
+    result = team_teardown.force_kill_team(
+        "build",
+        force=True,
+        graceful_timeout_s=0.01,
+        base_dir=fake_home / ".claude",
+    )
+
+    assert result["elapsed_s"] < 10.0
+    assert len(result["forced"]) == 4
+    assert killed_panes == ["%1", "%2", "%3", "%4"]
+    cfg = json.loads(_team_path(fake_home, "build").read_text())
+    assert [m["name"] for m in cfg["members"]] == ["team-lead"]
 
 
 # --------------------------------------------------------------------------- #

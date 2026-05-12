@@ -170,6 +170,7 @@ def _build_run_parser() -> argparse.ArgumentParser:
             "  claude-anyteam team-roster  Print one-line-per-member team summary (flags ghosts and dead-pane members)\n"
             "  claude-anyteam team-config  Print resolved spawn-time config for a teammate (host model + adapter overrides)\n"
             "  claude-anyteam team-prune-dead  Remove members whose backing tmux pane is gone (use --yes to apply)\n"
+            "  claude-anyteam team-kill   Fast whole-team teardown (requires --force; optional --purge)\n"
             "  claude-anyteam diagnose     Inspect substrate state; use --codex-log-bloat for Codex sqlite WAL checks\n"
             "  claude-anyteam status       One-screen team snapshot — roster, adapter overrides, incidents, last activity\n"
             "  claude-anyteam visibility-tail  Follow the live VisibilityEvent JSONL stream"
@@ -1093,7 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.state_path is not None:
                 kwargs["state_path"] = args.state_path
             return _uninstall_command(**kwargs)
-        if command in ("team-agent", "team-patch", "team-roster", "team-config", "team-prune-dead"):
+        if command in ("team-agent", "team-patch", "team-roster", "team-config", "team-prune-dead", "team-kill"):
             from . import team_cli
             return team_cli.main_dispatch(command, argv[1:])
         if command == "diagnose":

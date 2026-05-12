@@ -19,6 +19,7 @@ ORIENTATION_MESSAGE = (
     "`claude-anyteam team-agent <name> --team <team> ...` before Agent(...), or the spawn shim refuses "
     "the bare prefix (override: CLAUDE_ANYTEAM_ALLOW_BARE_PREFIX=1). After spawn run "
     "`claude-anyteam team-patch --all-external`; inspect with `team-roster`. "
+    "For fast whole-team teardown use `claude-anyteam team-kill --team T --force [--purge]`. "
     "Docs: https://github.com/JonathanRosado/claude-anyteam"
 )
 DRIFT_WARNING = "claude-anyteam: settings drifted — run `claude-anyteam install` to repair"

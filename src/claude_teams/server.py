@@ -10,7 +10,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware import Middleware
 
-from claude_teams import messaging, tasks, teams
+from claude_teams import messaging, tasks, teams, teardown
 from claude_teams.models import (
     COLOR_PALETTE,
     InboxMessage,
@@ -847,6 +847,36 @@ def force_kill_teammate(team_name: str, agent_name: str, ctx: Context) -> dict:
     teams.remove_member(team_name, agent_name)
     tasks.reset_owner_tasks(team_name, agent_name)
     return {"success": True, "message": f"{agent_name} has been stopped."}
+
+
+@mcp.tool
+def force_kill_team(
+    team_name: str,
+    ctx: Context,
+    purge: bool = False,
+    graceful_timeout_s: float = teardown.DEFAULT_GRACEFUL_TIMEOUT_S,
+) -> dict:
+    """Fast whole-team teardown for lead control-plane use.
+
+    Sends shutdown_request to all non-lead members in parallel, waits a short
+    bounded grace period, force-kills any remaining tmux targets / known wrapper
+    subprocesses, removes those members from config, resets their tasks, and
+    optionally purges the team config + tasks directories.
+    """
+    try:
+        result = teardown.force_kill_team(
+            team_name,
+            force=True,
+            purge=purge,
+            graceful_timeout_s=graceful_timeout_s,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        raise ToolError(str(e))
+    if purge and result.get("purged"):
+        ls = _get_lifespan(ctx)
+        if ls.get("active_team") == team_name:
+            ls["active_team"] = None
+    return result
 
 
 @mcp.tool

@@ -156,15 +156,16 @@ The adapter passes the anyteam MCP wrapper through an ephemeral `--mcp-config-fi
 
 ## Team management CLI
 
-Three subcommands of `claude-anyteam` cover the routine team-management writes that previously required `Write`/`Edit`/`Bash` calls. They are all allowlisted by the installer (`Bash(claude-anyteam team-* *)`) so coordinating leads never hit a permission prompt.
+The `claude-anyteam team-*` subcommands cover the routine team-management writes and teardown operations that previously required `Write`/`Edit`/`Bash` calls. They are all allowlisted by the installer (`Bash(claude-anyteam team-* *)`) so coordinating leads never hit a permission prompt.
 
 | Command | Purpose |
 |---|---|
 | `claude-anyteam team-agent <name> --team <team> [--model X] [--effort Y] [--wrapper-tool-failure-window-s N]` | Write `~/.claude/teams/<team>/agents/<name>.json`. Whitelisted keys: `model`, `effort`, and Codex App Server timing knobs (`turn_timeout_s`, `non_progress_warn_s`, `non_progress_interrupt_s`, `wrapper_tool_failure_window_s`). Use `--remove` to delete. `--print-path` emits the file path on stdout. |
 | `claude-anyteam team-patch <name> --team <team>` <br> `claude-anyteam team-patch --team <team> --all-external` | Set `agentType="claude-anyteam"` on a routed-adapter member in `~/.claude/teams/<team>/config.json`. The host `Agent(...)` tool spawns external-LLM teammates with `agentType="general-purpose"` which the wrapper MCP rejects; this command is the post-spawn fixup. `--all-external` patches every `codex-*`, `gemini-*`, or `kimi-*` member at once. |
 | `claude-anyteam team-roster --team <team>` <br> `claude-anyteam team-roster --team <team> --json` | Print a one-line-per-member roster summary (or a JSON array) so a coordinating LLM can introspect the team without parsing config.json. |
+| `claude-anyteam team-kill --team <team> --force` <br> `claude-anyteam team-kill --team <team> --force --purge` | Fast whole-team teardown for the common "kill team X, create team Y" workflow. The command sends shutdown requests in parallel, waits a bounded grace period, force-kills remaining tmux targets / known wrapper subprocesses, removes non-lead members, resets their unfinished task ownership, and optionally purges the team + tasks directories. |
 
-All three commands fail with exit 1 (or 2 for argparse errors) on missing teams, missing members, or malformed input — never silently. They are safe to run from automation and idempotent on no-op runs.
+These commands fail with exit 1 (or 2 for argparse errors) on missing teams, missing members, or malformed input — never silently. They are safe to run from automation and idempotent on no-op runs where applicable. `team-kill` is intentionally destructive and requires `--force`.
 
 ## Diagnostic skill
 

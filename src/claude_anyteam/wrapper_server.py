@@ -2,7 +2,7 @@
 
 **Why a narrowed MCP surface.** The full team-control surface includes
 destructive lifecycle operations (`team_delete`, `force_kill_teammate`,
-`spawn_teammate`, `team_create`, `process_shutdown_approved`,
+`force_kill_team`, `spawn_teammate`, `team_create`, `process_shutdown_approved`,
 `check_teammate`) that have no business being accessible from a running
 teammate's context. A hallucinated tool call to any of them would have
 outsized consequences.
@@ -294,6 +294,7 @@ BLOCKED_TOOLS: tuple[str, ...] = (
     "team_delete",
     "spawn_teammate",
     "force_kill_teammate",
+    "force_kill_team",
     "process_shutdown_approved",
     "check_teammate",
 )
