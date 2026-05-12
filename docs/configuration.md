@@ -162,6 +162,14 @@ The report combines `team-roster --json`, the rich manifest cache under `~/.clau
 
 `claude-anyteam diagnose` is read-only by default. The only mutating option is `--instrument-spawn`, which writes `env.CLAUDE_ANYTEAM_WRAPPER_MCP_DIAGNOSTICS=1` to `~/.claude/settings.json` so the next teammate spawn captures wrapper MCP diagnostics; use it only when the user explicitly asks to enable instrumentation.
 
+For Codex App Server initialize hangs that mention sqlite/WAL bloat (#43), run:
+
+```bash
+claude-anyteam diagnose --codex-log-bloat
+```
+
+This scans Codex's sqlite home (`CODEX_SQLITE_HOME`, else `CODEX_HOME`, else `~/.codex`) for `logs_*.sqlite-wal` files over the 100 MiB warning threshold. At runtime, claude-anyteam emits a typed `visibility_degraded` warning before spawning `codex app-server` when the threshold is exceeded and attempts a bounded `PRAGMA wal_checkpoint(TRUNCATE)` through sqlite's locking API; it never deletes Codex-owned log files directly.
+
 ## Shim configuration
 
 | Variable | Purpose |

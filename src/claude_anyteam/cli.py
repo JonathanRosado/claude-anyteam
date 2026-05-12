@@ -170,7 +170,7 @@ def _build_run_parser() -> argparse.ArgumentParser:
             "  claude-anyteam team-roster  Print one-line-per-member team summary (flags ghosts and dead-pane members)\n"
             "  claude-anyteam team-config  Print resolved spawn-time config for a teammate (host model + adapter overrides)\n"
             "  claude-anyteam team-prune-dead  Remove members whose backing tmux pane is gone (use --yes to apply)\n"
-            "  claude-anyteam diagnose     Inspect substrate state: roster, manifests, visibility, wrapper MCP diagnostics\n"
+            "  claude-anyteam diagnose     Inspect substrate state; use --codex-log-bloat for Codex sqlite WAL checks\n"
             "  claude-anyteam status       One-screen team snapshot — roster, adapter overrides, incidents, last activity\n"
             "  claude-anyteam visibility-tail  Follow the live VisibilityEvent JSONL stream"
         ),

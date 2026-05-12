@@ -49,6 +49,10 @@ from .env import (
     identity_env,
     env_first,
 )
+from .codex_log_bloat import (
+    checkpoint_bloated_codex_wals,
+    inspect_codex_log_bloat,
+)
 from .headless_visibility import HeadlessTurnVisibility, coerce_stream_text
 from .messages import VisibilityEvent
 from .prompts import TEAM_MESSAGING_BLOCK
@@ -1535,6 +1539,7 @@ def app_server_invoke(
     client = AppServerClient(
         codex_binary=codex_binary,
         env=identity_env(os.environ, team=settings_team, name=settings_agent),
+        pre_start_hook=lambda: _codex_log_bloat_pre_spawn(),
     )
 
     events: list[dict[str, Any]] = []
@@ -1611,6 +1616,84 @@ def app_server_invoke(
                     error=str(e),
                 )
         return event
+
+    def _codex_log_bloat_pre_spawn() -> None:
+        """Emit #43 pre-spawn visibility and run a bounded WAL checkpoint."""
+
+        try:
+            report = inspect_codex_log_bloat(env=os.environ)
+        except Exception as e:
+            logger.debug("codex.sqlite_wal_bloat.inspect_failed", error=str(e))
+            return
+        if not report.is_bloated:
+            return
+
+        report_payload = report.to_dict()
+        _emit_visibility_event(
+            kind="visibility_degraded",
+            severity="warn",
+            summary=(
+                "Codex sqlite WAL bloat detected before App Server spawn; "
+                "initialize may be delayed"
+            ),
+            visibility={
+                "mailbox": False,
+                "task_state": False,
+                "event_log": True,
+                "stderr": True,
+            },
+            payload={
+                "surface": "codex_sqlite_wal_bloat",
+                "action": "bounded_checkpoint_before_spawn",
+                "diagnose_command": "claude-anyteam diagnose --codex-log-bloat",
+                **report_payload,
+            },
+        )
+
+        try:
+            checkpoint_results = checkpoint_bloated_codex_wals(report, env=os.environ)
+        except Exception as e:
+            logger.debug("codex.sqlite_wal_bloat.checkpoint_failed", error=str(e))
+            return
+        if not checkpoint_results:
+            return
+        checkpoint_payload = {
+            "surface": "codex_sqlite_wal_checkpoint",
+            "results": [row.to_dict() for row in checkpoint_results],
+        }
+        all_ok = all(row.ok for row in checkpoint_results if row.attempted)
+        any_attempted = any(row.attempted for row in checkpoint_results)
+        if not any_attempted:
+            return
+        if all_ok:
+            _emit_visibility_event(
+                kind="turn_progress",
+                severity="info",
+                summary="Codex sqlite WAL checkpoint completed before spawn",
+                visibility={
+                    "mailbox": False,
+                    "task_state": False,
+                    "event_log": True,
+                    "stderr": True,
+                },
+                payload=checkpoint_payload,
+            )
+        else:
+            _emit_visibility_event(
+                kind="visibility_degraded",
+                severity="warn",
+                summary=(
+                    "Codex sqlite WAL checkpoint did not complete before "
+                    "App Server spawn"
+                ),
+                visibility={
+                    "mailbox": False,
+                    "task_state": False,
+                    "event_log": True,
+                    "stderr": True,
+                },
+                payload=checkpoint_payload,
+            )
 
     def _record(ev: dict[str, Any]) -> None:
         nonlocal tool_call_events

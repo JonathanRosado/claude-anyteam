@@ -26,6 +26,7 @@ from typing import Any, TextIO
 
 from . import team_cli
 from .capabilities import CAPABILITY_HOOKS, CAPABILITY_MANIFEST_VERSION
+from .codex_log_bloat import format_bytes, inspect_codex_log_bloat
 from .env import LEGACY_TEAM_ENV, TEAM_ENV
 
 INSTRUMENT_ENV_KEY = "CLAUDE_ANYTEAM_WRAPPER_MCP_DIAGNOSTICS"
@@ -201,6 +202,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", help="ISO timestamp lower bound for events/diagnostic logs (e.g. 2026-04-28T15:00:00Z).")
     p.add_argument("--limit", type=int, default=10, help="Recent rows per section (default: 10).")
     p.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable report.")
+    p.add_argument(
+        "--codex-log-bloat",
+        action="store_true",
+        help=(
+            "Check Codex CLI logs_*.sqlite-wal size and print the #43 "
+            "operator diagnostic. Does not require --team."
+        ),
+    )
+    p.add_argument(
+        "--codex-sqlite-home",
+        help=argparse.SUPPRESS,
+    )
     p.add_argument(
         "--instrument-spawn",
         action="store_true",
@@ -1049,6 +1062,82 @@ def _render_bundle(report: dict[str, Any], inner: str, args: argparse.Namespace)
 
 
 # --------------------------------------------------------------------------- #
+# Codex sqlite WAL bloat diagnostic (#43)
+# --------------------------------------------------------------------------- #
+
+
+def _build_codex_log_bloat_report(args: argparse.Namespace) -> dict[str, Any]:
+    sqlite_home = (
+        Path(args.codex_sqlite_home).expanduser()
+        if getattr(args, "codex_sqlite_home", None)
+        else None
+    )
+    report = inspect_codex_log_bloat(sqlite_home=sqlite_home)
+    status = "degraded" if report.is_bloated else "ok"
+    return {
+        "schema_version": 1,
+        "mode": "read-only",
+        "status": status,
+        "codex_log_bloat": report.to_dict(),
+        "impact": (
+            "Bloated Codex logs_*.sqlite-wal files can stall `codex app-server` "
+            "before JSON-RPC initialize is serviced."
+        ),
+        "operator_actions": [
+            "Run `claude-anyteam diagnose --codex-log-bloat` to confirm size before a repro.",
+            (
+                "If no Codex process is running, run a sqlite checkpoint or move/remove "
+                "the matching logs_*.sqlite* files after backing them up."
+            ),
+            (
+                "claude-anyteam automatically emits a typed visibility_degraded warning "
+                "and attempts a bounded sqlite checkpoint before Codex App Server spawn."
+            ),
+        ],
+    }
+
+
+def _render_codex_log_bloat_report(report: dict[str, Any]) -> str:
+    data = report.get("codex_log_bloat") or {}
+    lines: list[str] = []
+    lines.append("claude-anyteam diagnose --codex-log-bloat mode=read-only")
+    lines.append(
+        f"sqlite_home={data.get('sqlite_home')} source={data.get('sqlite_home_source')}"
+    )
+    threshold = data.get("threshold_bytes")
+    lines.append(f"threshold={format_bytes(threshold)} ({threshold} bytes)")
+    lines.append("")
+    lines.append("[codex-log-bloat]")
+    lines.append(
+        "status={status} wal_files={files} bloated={bloated} total_wal={total} max_wal={max_wal}".format(
+            status=report.get("status"),
+            files=data.get("wal_file_count", 0),
+            bloated=data.get("bloated_wal_file_count", 0),
+            total=format_bytes(data.get("total_wal_bytes")),
+            max_wal=format_bytes(data.get("max_wal_bytes")),
+        )
+    )
+    wal_files = data.get("wal_files") or []
+    if not wal_files:
+        lines.append("(no logs_*.sqlite-wal files found)")
+    for row in wal_files:
+        state = "BLOATED" if row.get("exceeds_threshold") else "ok"
+        lines.append(
+            f"- {row.get('path')} status={state} wal={format_bytes(row.get('size_bytes'))} "
+            f"db={format_bytes(row.get('database_size_bytes'))}"
+        )
+    lines.append("")
+    if report.get("status") == "degraded":
+        lines.append("impact: " + str(report.get("impact")))
+        lines.append("operator_actions:")
+        for action in report.get("operator_actions") or []:
+            lines.append(f"- {action}")
+    else:
+        lines.append("impact: no threshold-exceeding Codex sqlite WAL files detected")
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -1062,6 +1151,27 @@ def main(argv: list[str], *, stdout: TextIO | None = None, stderr: TextIO | None
     if args.limit < 0:
         err.write("error: --limit must be >= 0\n")
         return 2
+
+    if args.codex_log_bloat:
+        if args.incident or args.incidents:
+            err.write("error: --codex-log-bloat cannot be combined with incident mode\n")
+            return 2
+        if args.instrument_spawn:
+            err.write("error: --codex-log-bloat cannot be combined with --instrument-spawn\n")
+            return 2
+        if args.bundle:
+            err.write("error: --codex-log-bloat cannot be combined with --bundle\n")
+            return 2
+        try:
+            report = _build_codex_log_bloat_report(args)
+        except (OSError, ValueError) as exc:
+            err.write(f"error: {exc}\n")
+            return 1
+        if args.json:
+            out.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        else:
+            out.write(_render_codex_log_bloat_report(report))
+        return 1 if report.get("status") == "degraded" else 0
 
     if args.incident or args.incidents:
         if args.instrument_spawn:
