@@ -764,6 +764,12 @@ def run(
 
 _DEFAULT_INITIALIZE_TIMEOUT_S = 90.0
 _DEFAULT_INITIALIZE_PROGRESS_INTERVAL_S = 30.0
+_DEFAULT_INITIALIZE_RETRIES = 1
+_DEFAULT_INITIALIZE_RETRY_BACKOFF_S = 2.0
+APP_SERVER_INITIALIZE_RETRIES_ENV = "CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_RETRIES"
+APP_SERVER_INITIALIZE_RETRY_BACKOFF_ENV = (
+    "CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_RETRY_BACKOFF_S"
+)
 
 
 def _read_float_env(name: str, default: float, *, allow_zero: bool = False) -> float:
@@ -777,6 +783,21 @@ def _read_float_env(name: str, default: float, *, allow_zero: bool = False) -> f
     if allow_zero:
         return max(0.0, value)
     return max(0.001, value)
+
+
+def _read_int_env(name: str, default: int, *, min_value: int = 0, max_value: int = 5) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return min(max_value, max(min_value, value))
+
+
+def _is_initialize_timeout_error(exc: BaseException) -> bool:
+    return "did not respond to initialize" in str(exc).lower()
 
 
 def _read_proc_cpu_pct(pid: int) -> float | None:
@@ -1783,13 +1804,65 @@ def app_server_invoke(
     if model is not None:
         thread_kwargs["model"] = model
 
-    try:
-        client.start()
-        _initialize_with_progress_events(
-            client,
-            emit_visibility=_emit_visibility_event,
-            prompt_byte_size=len(task_prompt.encode("utf-8")),
+    def _start_and_initialize_with_retry() -> None:
+        max_retries = _read_int_env(
+            APP_SERVER_INITIALIZE_RETRIES_ENV,
+            _DEFAULT_INITIALIZE_RETRIES,
+            min_value=0,
+            max_value=3,
         )
+        backoff_s = _read_float_env(
+            APP_SERVER_INITIALIZE_RETRY_BACKOFF_ENV,
+            _DEFAULT_INITIALIZE_RETRY_BACKOFF_S,
+            allow_zero=True,
+        )
+        attempt = 0
+        while True:
+            try:
+                client.start()
+                _initialize_with_progress_events(
+                    client,
+                    emit_visibility=_emit_visibility_event,
+                    prompt_byte_size=len(task_prompt.encode("utf-8")),
+                )
+                return
+            except AppServerError as exc:
+                if not _is_initialize_timeout_error(exc) or attempt >= max_retries:
+                    raise
+                attempt += 1
+                _emit_visibility_event(
+                    kind="turn_warning",
+                    severity="warn",
+                    summary=(
+                        "Codex App Server initialize timed out; "
+                        f"retrying cold start ({attempt}/{max_retries})"
+                    ),
+                    visibility={
+                        "mailbox": False,
+                        "task_state": True,
+                        "event_log": True,
+                        "stderr": True,
+                    },
+                    payload={
+                        "surface": "app_server_initialize_retry",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_s": backoff_s,
+                        "raw_backend_error": str(exc)[:600],
+                    },
+                )
+                try:
+                    client.close()
+                except Exception as close_exc:
+                    logger.debug(
+                        "app_server.initialize_retry_close_failed",
+                        error=str(close_exc),
+                    )
+                if backoff_s > 0:
+                    time.sleep(backoff_s)
+
+    try:
+        _start_and_initialize_with_retry()
 
         thread_id = _start_or_fork_thread(
             client,

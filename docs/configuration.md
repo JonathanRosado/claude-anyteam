@@ -75,6 +75,11 @@ Every flag has an equivalent env var:
 | `CLAUDE_ANYTEAM_EFFORT` | `--effort` |
 | `CLAUDE_ANYTEAM_PLAN_MODE` | `--plan-mode` (set to `true`) |
 | `CLAUDE_ANYTEAM_APP_SERVER` | set `false` to match `--no-app-server` |
+| `CLAUDE_ANYTEAM_APP_SERVER_START_GATE` | set `0`/`false` to disable the #40 Codex App Server cold-start gate |
+| `CLAUDE_ANYTEAM_APP_SERVER_START_GATE_JITTER_S` | max randomized pre-start jitter for concurrent Codex App Server spawns (default `0.25`) |
+| `CLAUDE_ANYTEAM_APP_SERVER_START_GATE_COOLDOWN_S` | short post-start serialization window before another Codex App Server spawn proceeds (default `0.25`) |
+| `CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_RETRIES` | retry count for Codex App Server initialize timeouts before surfacing failure (default `1`) |
+| `CLAUDE_ANYTEAM_APP_SERVER_INITIALIZE_RETRY_BACKOFF_S` | backoff before the initialize retry (default `2.0`) |
 | `CLAUDE_ANYTEAM_POLL_S` | `--poll-s` |
 | `CLAUDE_ANYTEAM_COLOR` | `--color` |
 | `CLAUDE_ANYTEAM_LOG` | `--log` |

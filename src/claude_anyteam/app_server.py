@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from contextlib import contextmanager
+import os
+from pathlib import Path
+import random
+import time
+from typing import Any, Callable, Iterator, Mapping
+
+from filelock import Timeout
+
+from claude_teams._filelock import file_lock
 
 from . import logger
 from .jsonrpc_stdio import JsonRpcStdioClient, JsonRpcStdioError
@@ -10,6 +19,130 @@ from .jsonrpc_stdio import JsonRpcStdioClient, JsonRpcStdioError
 
 class AppServerError(JsonRpcStdioError):
     """Raised on Codex App Server protocol/transport errors."""
+
+
+APP_SERVER_START_GATE_ENV = "CLAUDE_ANYTEAM_APP_SERVER_START_GATE"
+APP_SERVER_START_GATE_LOCK_PATH_ENV = "CLAUDE_ANYTEAM_APP_SERVER_START_GATE_LOCK_PATH"
+APP_SERVER_START_GATE_LOCK_TIMEOUT_ENV = (
+    "CLAUDE_ANYTEAM_APP_SERVER_START_GATE_LOCK_TIMEOUT_S"
+)
+APP_SERVER_START_GATE_JITTER_ENV = "CLAUDE_ANYTEAM_APP_SERVER_START_GATE_JITTER_S"
+APP_SERVER_START_GATE_COOLDOWN_ENV = "CLAUDE_ANYTEAM_APP_SERVER_START_GATE_COOLDOWN_S"
+
+_DEFAULT_START_GATE_LOCK_TIMEOUT_S = 5.0
+_DEFAULT_START_GATE_JITTER_S = 0.25
+_DEFAULT_START_GATE_COOLDOWN_S = 0.25
+_FALSEY = {"0", "false", "no", "off", "disabled"}
+
+
+def _float_env(env: Mapping[str, str], name: str, default: float) -> float:
+    raw = env.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, value)
+
+
+def _start_gate_enabled(env: Mapping[str, str]) -> bool:
+    raw = env.get(APP_SERVER_START_GATE_ENV)
+    if raw is None or raw == "":
+        return True
+    return raw.strip().lower() not in _FALSEY
+
+
+def _start_gate_lock_path(env: Mapping[str, str]) -> Path:
+    raw = env.get(APP_SERVER_START_GATE_LOCK_PATH_ENV)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".claude" / "claude-anyteam" / "codex-app-server-start.lock"
+
+
+@contextmanager
+def app_server_start_gate(
+    *,
+    env: Mapping[str, str] | None = None,
+    rng: random.Random | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Briefly serialize Codex App Server cold starts across wrappers (#40).
+
+    The original #40 incident was ultimately dominated by Codex sqlite WAL
+    bloat, but concurrent cold starts still compete on Codex-owned global
+    resources (sqlite state, auth/cache startup, helper binaries). This gate
+    preserves the native Codex harness while adding a tiny cross-process
+    critical section around child-process launch: a randomized pre-lock jitter,
+    a bounded file lock, and a short post-launch cool-down. If the lock cannot
+    be acquired quickly, startup proceeds rather than turning the mitigation
+    into a new hang.
+    """
+
+    env_map = env if env is not None else os.environ
+    if not _start_gate_enabled(env_map):
+        yield {"enabled": False, "locked": False}
+        return
+
+    rand = rng if rng is not None else random
+    jitter_s = _float_env(
+        env_map,
+        APP_SERVER_START_GATE_JITTER_ENV,
+        _DEFAULT_START_GATE_JITTER_S,
+    )
+    actual_jitter_s = rand.uniform(0.0, jitter_s) if jitter_s > 0 else 0.0
+    if actual_jitter_s > 0:
+        time.sleep(actual_jitter_s)
+
+    lock_timeout_s = _float_env(
+        env_map,
+        APP_SERVER_START_GATE_LOCK_TIMEOUT_ENV,
+        _DEFAULT_START_GATE_LOCK_TIMEOUT_S,
+    )
+    cooldown_s = _float_env(
+        env_map,
+        APP_SERVER_START_GATE_COOLDOWN_ENV,
+        _DEFAULT_START_GATE_COOLDOWN_S,
+    )
+    lock_path = _start_gate_lock_path(env_map)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(exist_ok=True)
+    except OSError as exc:
+        logger.warn("app_server.start_gate_prepare_failed", path=str(lock_path), error=str(exc))
+        yield {"enabled": True, "locked": False, "error": str(exc)}
+        return
+
+    wait_started = time.monotonic()
+    try:
+        with file_lock(lock_path, timeout=lock_timeout_s):
+            wait_ms = int((time.monotonic() - wait_started) * 1000)
+            state = {
+                "enabled": True,
+                "locked": True,
+                "lock_path": str(lock_path),
+                "wait_ms": wait_ms,
+                "jitter_ms": int(actual_jitter_s * 1000),
+                "cooldown_ms": int(cooldown_s * 1000),
+            }
+            logger.info("app_server.start_gate_acquired", **state)
+            try:
+                yield state
+            finally:
+                if cooldown_s > 0:
+                    time.sleep(cooldown_s)
+    except Timeout:
+        logger.warn(
+            "app_server.start_gate_timeout",
+            path=str(lock_path),
+            timeout_s=lock_timeout_s,
+            jitter_ms=int(actual_jitter_s * 1000),
+        )
+        yield {
+            "enabled": True,
+            "locked": False,
+            "lock_path": str(lock_path),
+            "timeout_s": lock_timeout_s,
+        }
 
 
 class AppServerClient(JsonRpcStdioClient):
@@ -47,11 +180,12 @@ class AppServerClient(JsonRpcStdioClient):
         self.last_thread_result: dict[str, Any] | None = None
 
     def start(self) -> None:
-        """Start the child process after any wrapper-side preflight hook."""
+        """Start Codex App Server behind the #40 cold-start gate after any wrapper-side preflight hook."""
 
         if self._pre_start_hook is not None:
             self._pre_start_hook()
-        super().start()
+        with app_server_start_gate(env=self._env):
+            super().start()
 
     # ---- transport health / restart ---------------------------------------
 
